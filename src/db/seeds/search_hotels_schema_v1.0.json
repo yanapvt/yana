@@ -1,0 +1,323 @@
+{
+  "schemaName": "search_hotels",
+  "version": "1.0",
+  "description": "Hotel search workflow schema for collecting search parameters and executing hotel search",
+  "requiredFields": ["location", "checkin_date"],
+  "optionalFields": ["checkout_date", "guests", "budget", "currency"],
+  "fields": {
+    "location": {
+      "name": "location",
+      "type": "location_or_text",
+      "ui": {
+        "promptKey": "hotel.location.prompt",
+        "mode": "list_or_text",
+        "placeholder": "Enter city or location"
+      },
+      "validation": {
+        "required": true,
+        "pattern": "^.{2,}$"
+      }
+    },
+    "checkin_date": {
+      "name": "checkin_date",
+      "type": "date",
+      "ui": {
+        "promptKey": "hotel.checkin.prompt",
+        "mode": "buttons",
+        "options": [
+          {
+            "id": "checkin_today",
+            "labelKey": "hotel.checkin.today",
+            "value": "today"
+          },
+          {
+            "id": "checkin_tomorrow",
+            "labelKey": "hotel.checkin.tomorrow",
+            "value": "tomorrow"
+          },
+          {
+            "id": "checkin_custom",
+            "labelKey": "hotel.checkin.pick_date",
+            "value": "custom"
+          }
+        ]
+      },
+      "validation": {
+        "required": true
+      }
+    },
+    "checkout_date": {
+      "name": "checkout_date",
+      "type": "date",
+      "ui": {
+        "promptKey": "hotel.checkout.prompt",
+        "mode": "buttons",
+        "options": [
+          {
+            "id": "checkout_next_day",
+            "labelKey": "hotel.checkout.next_day",
+            "value": "next_day"
+          },
+          {
+            "id": "checkout_custom",
+            "labelKey": "hotel.checkout.pick_date",
+            "value": "custom"
+          }
+        ]
+      },
+      "validation": {
+        "required": false
+      }
+    },
+    "guests": {
+      "name": "guests",
+      "type": "number",
+      "ui": {
+        "promptKey": "hotel.guests.prompt",
+        "mode": "buttons",
+        "options": [
+          {
+            "id": "guests_1",
+            "labelKey": "hotel.guests.one",
+            "value": 1
+          },
+          {
+            "id": "guests_2",
+            "labelKey": "hotel.guests.two",
+            "value": 2
+          },
+          {
+            "id": "guests_3",
+            "labelKey": "hotel.guests.three",
+            "value": 3
+          },
+          {
+            "id": "guests_4",
+            "labelKey": "hotel.guests.four",
+            "value": 4
+          },
+          {
+            "id": "guests_more",
+            "labelKey": "hotel.guests.more",
+            "value": "custom"
+          }
+        ]
+      },
+      "validation": {
+        "required": false,
+        "min": 1,
+        "max": 20
+      }
+    },
+    "budget": {
+      "name": "budget",
+      "type": "number",
+      "ui": {
+        "promptKey": "hotel.budget.prompt",
+        "mode": "list",
+        "options": [
+          {
+            "id": "budget_economy",
+            "labelKey": "hotel.budget.economy",
+            "value": "economy"
+          },
+          {
+            "id": "budget_moderate",
+            "labelKey": "hotel.budget.moderate",
+            "value": "moderate"
+          },
+          {
+            "id": "budget_luxury",
+            "labelKey": "hotel.budget.luxury",
+            "value": "luxury"
+          },
+          {
+            "id": "budget_custom",
+            "labelKey": "hotel.budget.custom",
+            "value": "custom"
+          }
+        ]
+      },
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "currency": {
+      "name": "currency",
+      "type": "text",
+      "ui": {
+        "promptKey": "hotel.currency.prompt",
+        "mode": "list",
+        "options": [
+          {
+            "id": "currency_usd",
+            "labelKey": "currency.usd",
+            "value": "USD"
+          },
+          {
+            "id": "currency_eur",
+            "labelKey": "currency.eur",
+            "value": "EUR"
+          },
+          {
+            "id": "currency_gbp",
+            "labelKey": "currency.gbp",
+            "value": "GBP"
+          },
+          {
+            "id": "currency_lkr",
+            "labelKey": "currency.lkr",
+            "value": "LKR"
+          }
+        ]
+      },
+      "validation": {
+        "required": false,
+        "pattern": "^[A-Z]{3}$"
+      }
+    }
+  },
+  "metadata": {
+    "collectionOrder": ["location", "checkin_date", "checkout_date", "guests", "budget", "currency"],
+    "toolBinding": "search_hotels",
+    "providerMappings": {
+      "booking_com": {
+        "location": "destination",
+        "checkin_date": "checkin",
+        "checkout_date": "checkout",
+        "guests": "adults"
+      }
+    },
+    "localizationKeys": {
+      "hotel.location.prompt": {
+        "en": "Where would you like to stay?",
+        "es": "¿Dónde te gustaría alojarte?",
+        "fr": "Où souhaitez-vous séjourner?"
+      },
+      "hotel.checkin.prompt": {
+        "en": "When are you checking in?",
+        "es": "¿Cuándo haces el check-in?",
+        "fr": "Quand arrivez-vous?"
+      },
+      "hotel.checkin.today": {
+        "en": "Today",
+        "es": "Hoy",
+        "fr": "Aujourd'hui"
+      },
+      "hotel.checkin.tomorrow": {
+        "en": "Tomorrow",
+        "es": "Mañana",
+        "fr": "Demain"
+      },
+      "hotel.checkin.pick_date": {
+        "en": "Pick a date",
+        "es": "Elegir fecha",
+        "fr": "Choisir une date"
+      },
+      "hotel.checkout.prompt": {
+        "en": "When are you checking out?",
+        "es": "¿Cuándo haces el check-out?",
+        "fr": "Quand partez-vous?"
+      },
+      "hotel.checkout.next_day": {
+        "en": "Next day",
+        "es": "Día siguiente",
+        "fr": "Jour suivant"
+      },
+      "hotel.checkout.pick_date": {
+        "en": "Pick a date",
+        "es": "Elegir fecha",
+        "fr": "Choisir une date"
+      },
+      "hotel.guests.prompt": {
+        "en": "How many guests?",
+        "es": "¿Cuántos huéspedes?",
+        "fr": "Combien d'invités?"
+      },
+      "hotel.guests.one": {
+        "en": "1 guest",
+        "es": "1 huésped",
+        "fr": "1 invité"
+      },
+      "hotel.guests.two": {
+        "en": "2 guests",
+        "es": "2 huéspedes",
+        "fr": "2 invités"
+      },
+      "hotel.guests.three": {
+        "en": "3 guests",
+        "es": "3 huéspedes",
+        "fr": "3 invités"
+      },
+      "hotel.guests.four": {
+        "en": "4 guests",
+        "es": "4 huéspedes",
+        "fr": "4 invités"
+      },
+      "hotel.guests.more": {
+        "en": "More than 4",
+        "es": "Más de 4",
+        "fr": "Plus de 4"
+      },
+      "hotel.budget.prompt": {
+        "en": "What's your budget range?",
+        "es": "¿Cuál es tu rango de presupuesto?",
+        "fr": "Quelle est votre gamme de budget?"
+      },
+      "hotel.budget.economy": {
+        "en": "Economy (< $50/night)",
+        "es": "Económico (< $50/noche)",
+        "fr": "Économique (< 50$/nuit)"
+      },
+      "hotel.budget.moderate": {
+        "en": "Moderate ($50-150/night)",
+        "es": "Moderado ($50-150/noche)",
+        "fr": "Modéré (50-150$/nuit)"
+      },
+      "hotel.budget.luxury": {
+        "en": "Luxury (> $150/night)",
+        "es": "Lujo (> $150/noche)",
+        "fr": "Luxe (> 150$/nuit)"
+      },
+      "hotel.budget.custom": {
+        "en": "Custom amount",
+        "es": "Cantidad personalizada",
+        "fr": "Montant personnalisé"
+      },
+      "hotel.currency.prompt": {
+        "en": "Preferred currency?",
+        "es": "¿Moneda preferida?",
+        "fr": "Devise préférée?"
+      },
+      "currency.usd": {
+        "en": "US Dollar (USD)",
+        "es": "Dólar estadounidense (USD)",
+        "fr": "Dollar américain (USD)"
+      },
+      "currency.eur": {
+        "en": "Euro (EUR)",
+        "es": "Euro (EUR)",
+        "fr": "Euro (EUR)"
+      },
+      "currency.gbp": {
+        "en": "British Pound (GBP)",
+        "es": "Libra esterlina (GBP)",
+        "fr": "Livre sterling (GBP)"
+      },
+      "currency.lkr": {
+        "en": "Sri Lankan Rupee (LKR)",
+        "es": "Rupia de Sri Lanka (LKR)",
+        "fr": "Roupie sri-lankaise (LKR)"
+      }
+    },
+    "fallbackPrompts": {
+      "location": "Please enter the city or location where you'd like to stay",
+      "checkin_date": "Please enter your check-in date (YYYY-MM-DD)",
+      "checkout_date": "Please enter your check-out date (YYYY-MM-DD)",
+      "guests": "Please enter the number of guests",
+      "budget": "Please enter your maximum budget per night",
+      "currency": "Please enter your preferred currency code (e.g., USD, EUR, GBP)"
+    }
+  }
+}
