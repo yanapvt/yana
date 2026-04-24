@@ -19,6 +19,18 @@ export function validateTwilioSignature(
   const signature = req.headers['x-twilio-signature'] as string;
   const correlationId = req.headers['x-correlation-id'] as string;
 
+  /**
+   * ✅ DEV MODE BYPASS (ADDED)
+   * Skip Twilio validation in development environment
+   */
+  if (env.nodeEnv === 'development') {
+    console.warn(
+      `[${correlationId}] ⚠️ DEV MODE: Skipping Twilio signature validation`
+    );
+    next();
+    return;
+  }
+
   if (!signature) {
     console.error(`[${correlationId}] Missing Twilio signature header`);
     res.status(403).json({ error: 'Missing signature' });
@@ -38,18 +50,15 @@ export function validateTwilioSignature(
   );
 
   // Compare signatures using timing-safe comparison
-  // Note: timingSafeEqual requires buffers of equal length
   let isValid = false;
   try {
     const signatureBuffer = Buffer.from(signature);
     const expectedBuffer = Buffer.from(expectedSignature);
-    
-    // Only compare if lengths match (otherwise definitely invalid)
+
     if (signatureBuffer.length === expectedBuffer.length) {
       isValid = crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
     }
   } catch (error) {
-    // If comparison fails for any reason, signature is invalid
     isValid = false;
   }
 
@@ -61,23 +70,17 @@ export function validateTwilioSignature(
     return;
   }
 
-  // Signature is valid, proceed to next middleware
   next();
 }
 
 /**
  * Computes the expected Twilio signature using HMAC-SHA1
- * @param authToken - Twilio auth token
- * @param url - Full URL of the webhook endpoint
- * @param params - Request body parameters
- * @returns Base64-encoded HMAC-SHA1 signature
  */
 function computeTwilioSignature(
   authToken: string,
   url: string,
   params: Record<string, unknown>
 ): string {
-  // Sort parameters alphabetically and concatenate
   const data =
     url +
     Object.keys(params)
@@ -85,7 +88,6 @@ function computeTwilioSignature(
       .map((key) => `${key}${params[key]}`)
       .join('');
 
-  // Compute HMAC-SHA1 signature
   const hmac = crypto.createHmac('sha1', authToken);
   hmac.update(data);
   return hmac.digest('base64');

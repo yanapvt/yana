@@ -1,6 +1,7 @@
 /**
  * StateStore Service
  * Wraps Redis for hot session state management
+ * Supports both standard Redis and Upstash Redis REST API
  * 
  * Validates: Requirements 16.1, 16.3
  */
@@ -21,62 +22,149 @@ export interface ToolCacheEntry {
 }
 
 // ============================================================================
+// Upstash Redis REST Client
+// ============================================================================
+
+class UpstashRedisClient {
+  private restUrl: string;
+  private restToken: string;
+
+  constructor(restUrl: string, restToken: string) {
+    this.restUrl = restUrl.replace(/\/$/, ''); // Remove trailing slash
+    this.restToken = restToken;
+  }
+
+  private async execute(command: string[]): Promise<any> {
+    const response = await fetch(`${this.restUrl}/${command.join('/')}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${this.restToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Upstash Redis error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.result;
+  }
+
+  async get(key: string): Promise<string | null> {
+    return await this.execute(['GET', key]);
+  }
+
+  async set(key: string, value: string, options?: { NX?: boolean; EX?: number }): Promise<string | null> {
+    const command = ['SET', key, value];
+    
+    if (options?.NX) {
+      command.push('NX');
+    }
+    
+    if (options?.EX) {
+      command.push('EX', options.EX.toString());
+    }
+    
+    return await this.execute(command);
+  }
+
+  async setEx(key: string, seconds: number, value: string): Promise<string> {
+    return await this.execute(['SETEX', key, seconds.toString(), value]);
+  }
+
+  async del(key: string): Promise<number> {
+    return await this.execute(['DEL', key]);
+  }
+
+  async flushDb(): Promise<string> {
+    return await this.execute(['FLUSHDB']);
+  }
+}
+
+// ============================================================================
 // StateStore Service
 // ============================================================================
 
 export class StateStore {
-  private client: RedisClientType;
+  private client: RedisClientType | UpstashRedisClient;
   private connected: boolean = false;
+  private isUpstash: boolean = false;
 
   constructor() {
-    this.client = createClient({
-      socket: {
-        host: env.redis.host,
-        port: env.redis.port,
-      },
-      password: env.redis.password,
-      database: env.redis.db,
-    });
+    // Check if using Upstash Redis REST API
+    const upstashUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-    // Error handling
-    this.client.on('error', (err) => {
-      console.error('Redis Client Error:', err);
-    });
+    if (upstashUrl && upstashToken) {
+      // Use Upstash REST API
+      console.log('Using Upstash Redis REST API');
+      this.client = new UpstashRedisClient(upstashUrl, upstashToken);
+      this.isUpstash = true;
+      this.connected = true; // REST API doesn't need connection
+    } else {
+      // Use standard Redis client
+      console.log('Using standard Redis client');
+      this.client = createClient({
+        socket: {
+          host: env.redis.host,
+          port: env.redis.port,
+        },
+        password: env.redis.password,
+        database: env.redis.db,
+      }) as RedisClientType;
 
-    this.client.on('connect', () => {
-      console.log('Redis Client Connected');
-      this.connected = true;
-    });
+      // Error handling for standard Redis
+      (this.client as RedisClientType).on('error', (err) => {
+        console.error('Redis Client Error:', err);
+      });
 
-    this.client.on('disconnect', () => {
-      console.log('Redis Client Disconnected');
-      this.connected = false;
-    });
+      (this.client as RedisClientType).on('connect', () => {
+        console.log('Redis Client Connected');
+        this.connected = true;
+      });
+
+      (this.client as RedisClientType).on('disconnect', () => {
+        console.log('Redis Client Disconnected');
+        this.connected = false;
+      });
+    }
   }
 
   /**
    * Get the underlying Redis client for advanced operations
    * Use with caution - prefer using the provided methods when possible
    */
-  getClient(): RedisClientType {
+  getClient(): RedisClientType | UpstashRedisClient {
     return this.client;
   }
 
   /**
-   * Connect to Redis
+   * Connect to Redis (only needed for standard Redis, not Upstash)
    */
   async connect(): Promise<void> {
+    if (this.isUpstash) {
+      // Upstash REST API doesn't need connection
+      this.connected = true;
+      return;
+    }
+
     if (!this.connected) {
-      await this.client.connect();
+      await (this.client as RedisClientType).connect();
     }
   }
 
   /**
-   * Disconnect from Redis
+   * Disconnect from Redis (only needed for standard Redis, not Upstash)
    */
   async disconnect(): Promise<void> {
+    if (this.isUpstash) {
+      // Upstash REST API doesn't need disconnection
+      this.connected = false;
+      return;
+    }
+
     if (this.connected) {
-      await this.client.quit();
+      await (this.client as RedisClientType).quit();
       this.connected = false;
     }
   }
