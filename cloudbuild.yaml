@@ -1,0 +1,91 @@
+# Google Cloud Build configuration
+# Automatically builds and deploys on git push
+
+steps:
+  # Install dependencies
+  - name: 'node:18'
+    entrypoint: npm
+    args: ['install']
+
+  # Run tests
+  - name: 'node:18'
+    entrypoint: npm
+    args: ['test']
+    env:
+      - 'NODE_ENV=test'
+
+  # Build TypeScript
+  - name: 'node:18'
+    entrypoint: npm
+    args: ['run', 'build']
+
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/yana-ogo-platform:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/yana-ogo-platform:latest'
+      - '-f'
+      - 'Dockerfile.gcp'
+      - '.'
+
+  # Push Docker image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/yana-ogo-platform:$COMMIT_SHA'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/yana-ogo-platform:latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'yana-ogo-platform'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/yana-ogo-platform:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'NODE_ENV=production,GCP_PROJECT_ID=$PROJECT_ID'
+      - '--add-cloudsql-instances'
+      - '$PROJECT_ID:us-central1:yana-ogo-db'
+      - '--vpc-connector'
+      - 'yana-ogo-connector'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '10'
+      - '--memory'
+      - '1Gi'
+      - '--cpu'
+      - '1'
+      - '--timeout'
+      - '300'
+      - '--service-account'
+      - 'yana-ogo-sa@$PROJECT_ID.iam.gserviceaccount.com'
+      - '--update-secrets'
+      - 'POSTGRES_PASSWORD=postgres-password:latest,TWILIO_AUTH_TOKEN=twilio-auth-token:latest,LLM_API_KEY=llm-api-key:latest,JWT_SECRET=jwt-secret:latest'
+
+# Store images in Container Registry
+images:
+  - 'gcr.io/$PROJECT_ID/yana-ogo-platform:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/yana-ogo-platform:latest'
+
+# Build timeout
+timeout: 1200s
+
+# Build options
+options:
+  machineType: 'N1_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY

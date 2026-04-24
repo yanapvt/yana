@@ -2,6 +2,8 @@
 
 WhatsApp-first AI orchestration platform for tourism and real-world service domains.
 
+**Cloud Platform Support:** AWS | Google Cloud Platform (GCP)
+
 ## Overview
 
 YANA / OGO is a state-aware orchestration engine that uses WhatsApp as the primary user interface, backend-controlled state and context, schema-driven workflows, one primary LLM for decision support, MCP-style tool calling as an interface layer, and Nango as the integration/auth/normalization layer.
@@ -45,6 +47,39 @@ Run in development mode with hot reload:
 ```bash
 npm run dev
 ```
+
+## Deployment
+
+### Google Cloud Platform (Recommended)
+
+**Quick Start (5 minutes):**
+```bash
+# Run automated setup
+./scripts/setup-gcp.sh
+
+# Deploy to Cloud Run
+npm run deploy:gcp:run
+```
+
+See [GCP_QUICKSTART.md](GCP_QUICKSTART.md) for detailed instructions.
+
+**Full Documentation:** [PRODUCTION_DEPLOYMENT_GCP.md](PRODUCTION_DEPLOYMENT_GCP.md)
+
+### Amazon Web Services
+
+See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for AWS deployment instructions.
+
+### Deployment Options
+
+| Platform | Command | Best For |
+|----------|---------|----------|
+| **GCP Cloud Run** | `npm run deploy:gcp:run` | Serverless, auto-scaling |
+| **GCP App Engine** | `npm run deploy:gcp:appengine` | Fully managed PaaS |
+| **GCP GKE** | `npm run deploy:gcp:gke` | Kubernetes, full control |
+| **AWS Elastic Beanstalk** | `eb deploy` | AWS managed platform |
+| **AWS ECS** | See AWS guide | Docker containers |
+| **Heroku** | `git push heroku main` | Simplest deployment |
+
 
 ## Scripts
 

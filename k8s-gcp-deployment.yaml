@@ -1,0 +1,214 @@
+# Kubernetes deployment configuration for Google Kubernetes Engine (GKE)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yana-ogo
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: yana-ogo-secrets
+  namespace: yana-ogo
+type: Opaque
+stringData:
+  # These will be populated from GCP Secret Manager
+  # Use Workload Identity or External Secrets Operator in production
+  POSTGRES_PASSWORD: ""
+  TWILIO_AUTH_TOKEN: ""
+  LLM_API_KEY: ""
+  JWT_SECRET: ""
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yana-ogo-config
+  namespace: yana-ogo
+data:
+  NODE_ENV: "production"
+  GCP_PROJECT_ID: "your-project-id"
+  GCP_REGION: "us-central1"
+  POSTGRES_HOST: "/cloudsql/your-project-id:us-central1:yana-ogo-db"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "yana_ogo_production"
+  POSTGRES_USER: "yana_ogo_app"
+  REDIS_HOST: "10.xxx.xxx.xxx"
+  REDIS_PORT: "6379"
+  TWILIO_ACCOUNT_SID: "ACxxxx"
+  TWILIO_WHATSAPP_NUMBER: "whatsapp:+14155238886"
+  LLM_PROVIDER: "openai"
+  LLM_MODEL: "gpt-4-turbo"
+  TRANSLATION_PROVIDER: "google-cloud"
+  TTS_PROVIDER: "google-cloud"
+  TTS_ENABLED: "true"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yana-ogo-platform
+  namespace: yana-ogo
+  labels:
+    app: yana-ogo-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: yana-ogo-platform
+  template:
+    metadata:
+      labels:
+        app: yana-ogo-platform
+    spec:
+      serviceAccountName: yana-ogo-sa
+      containers:
+      # Main application container
+      - name: yana-ogo-platform
+        image: gcr.io/your-project-id/yana-ogo-platform:latest
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: yana-ogo-config
+        env:
+        - name: PORT
+          value: "8080"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: yana-ogo-secrets
+              key: POSTGRES_PASSWORD
+        - name: TWILIO_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: yana-ogo-secrets
+              key: TWILIO_AUTH_TOKEN
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: yana-ogo-secrets
+              key: LLM_API_KEY
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: yana-ogo-secrets
+              key: JWT_SECRET
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      
+      # Cloud SQL Proxy sidecar
+      - name: cloud-sql-proxy
+        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.8.0
+        args:
+          - "--structured-logs"
+          - "--port=5432"
+          - "your-project-id:us-central1:yana-ogo-db"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yana-ogo-service
+  namespace: yana-ogo
+  labels:
+    app: yana-ogo-platform
+spec:
+  type: LoadBalancer
+  selector:
+    app: yana-ogo-platform
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  sessionAffinity: ClientIP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: yana-ogo-hpa
+  namespace: yana-ogo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: yana-ogo-platform
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: yana-ogo-pdb
+  namespace: yana-ogo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: yana-ogo-platform
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: yana-ogo-sa
+  namespace: yana-ogo
+  annotations:
+    iam.gke.io/gcp-service-account: yana-ogo-sa@your-project-id.iam.gserviceaccount.com
