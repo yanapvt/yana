@@ -227,21 +227,26 @@ async function processAndReply(
     userText: userText.substring(0, 100),
   });
 
-  const { decision, replyText, fromCache, shortCircuited } = await llmService.decideAndReply({
-    userMessage: userText,
-    conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
-    userProfile: userProfile ? {
-      preferredLanguage: userProfile.preferredLanguage,
-      nationality: userProfile.nationality,
-      recentActions: contextPackage?.behavioralSummary.recentActions,
-    } : undefined,
-    sessionState: activeFlowState ? {
-      currentIntent: activeFlowState.currentIntent,
-      activeSchema: activeFlowState.activeSchema,
-      collectedFields: schemaProgress?.collectedFields,
-      missingFields: schemaProgress?.missingFields,
-    } : undefined,
-  });
+  const { decision, replyText, fromCache, shortCircuited, activeSubMenu, pendingIntents } =
+    await llmService.decideAndReply(
+      {
+        userMessage: userText,
+        conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+        userProfile: userProfile ? {
+          preferredLanguage: userProfile.preferredLanguage,
+          nationality: userProfile.nationality,
+          recentActions: contextPackage?.behavioralSummary.recentActions,
+        } : undefined,
+        sessionState: activeFlowState ? {
+          currentIntent: activeFlowState.currentIntent,
+          activeSchema: activeFlowState.activeSchema,
+          collectedFields: schemaProgress?.collectedFields,
+          missingFields: schemaProgress?.missingFields,
+        } : undefined,
+      },
+      // Pass active sub-menu from session so numbered replies resolve correctly
+      (activeFlowState?.collectedFields?.['activeSubMenu'] as string | undefined)
+    );
 
   logger.info('Webhook', 'LLM response ready', {
     correlationId,
@@ -254,15 +259,30 @@ async function processAndReply(
   });
 
   // ── 5. Update session state (best-effort) ─────────────────────────────────
-  if (sessionId && !shortCircuited) {
+  if (sessionId) {
     try {
+      const updatedFields: Record<string, unknown> = {
+        ...(schemaProgress?.collectedFields ?? {}),
+        ...decision.parameters,
+      };
+
+      // Persist active sub-menu so next numbered reply resolves correctly
+      if (activeSubMenu) {
+        updatedFields['activeSubMenu'] = activeSubMenu;
+      } else if (shortCircuited && decision.intent !== 'greeting' && decision.intent !== 'help') {
+        // Clear sub-menu when user moves on
+        delete updatedFields['activeSubMenu'];
+      }
+
+      // Persist pending intents for multi-intent flow
+      if (pendingIntents && pendingIntents.length > 0) {
+        updatedFields['pendingIntents'] = pendingIntents;
+      }
+
       await sessionManager.updateSessionState(sessionId, {
         currentIntent: decision.intent,
         missingFields: decision.missingFields,
-        collectedFields: {
-          ...(schemaProgress?.collectedFields ?? {}),
-          ...decision.parameters,
-        },
+        collectedFields: updatedFields,
       });
     } catch (stateErr: any) {
       logger.warn('Webhook', 'Could not update session state', {

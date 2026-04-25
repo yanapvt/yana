@@ -21,6 +21,7 @@ import { LLMDecisionOutput } from '../types/core.js';
 import { env } from '../config/environment.js';
 import { logger } from '../config/logger.js';
 import { getStateStore } from './StateStore.js';
+import { getMenuService } from './MenuService.js';
 
 // ============================================================================
 // Types
@@ -54,8 +55,12 @@ export interface DecisionWithReply {
   replyText: string;
   /** true = served from cache, no LLM call made */
   fromCache: boolean;
-  /** true = handled by short-circuit rules, no LLM call made */
+  /** true = handled by short-circuit rules or menu, no LLM call made */
   shortCircuited: boolean;
+  /** Set when a main menu item with sub-items was selected — store in session */
+  activeSubMenu?: string;
+  /** Set when multiple intents detected — store in session for sequential handling */
+  pendingIntents?: string[];
 }
 
 /**
@@ -106,39 +111,40 @@ Do NOT make up specific prices, schedules, or contact details — say you're not
 interface ShortCircuitRule {
   pattern: RegExp;
   intent: string;
-  reply: string | ((match: RegExpMatchArray) => string);
+  /** null = use the main menu reply */
+  reply: string | null;
 }
 
 const SHORT_CIRCUIT_RULES: ShortCircuitRule[] = [
   {
-    pattern: /^(hi|hello|hey|hiya|howdy|good\s*(morning|afternoon|evening|day))[!.,\s]*$/i,
+    pattern: /^(hi|hello|hey|hiya|howdy|good\s*(morning|afternoon|evening|day)|start|menu)[!.,\s]*$/i,
     intent: 'greeting',
-    reply: "Hello! 👋 I'm Yana, your Sri Lanka concierge. Ask me about places to visit, food, transport, or anything else for your trip! 🌴",
+    reply: null, // replaced with main menu at runtime
   },
   {
     pattern: /^(thanks?|thank\s*you|thx|ty|cheers|great|awesome|perfect|wonderful)[!.,\s]*$/i,
     intent: 'acknowledgement',
-    reply: "You're welcome! 😊 Anything else I can help you with?",
+    reply: "You're welcome! 😊 Need anything else? Reply *menu* to see all options.",
   },
   {
     pattern: /^(yes|yeah|yep|yup|sure|ok|okay|alright|sounds good|go ahead)[!.,\s]*$/i,
     intent: 'confirmation',
-    reply: "Got it! Let me know what you'd like to do next. 😊",
+    reply: null, // handled in webhook based on session state
   },
   {
     pattern: /^(no|nope|nah|not now|cancel|stop)[!.,\s]*$/i,
     intent: 'cancellation',
-    reply: "No problem! Let me know whenever you need help. 😊",
+    reply: "No problem! Reply *menu* anytime to start over. 😊",
   },
   {
     pattern: /^(bye|goodbye|see\s*you|cya|take\s*care|good\s*night)[!.,\s]*$/i,
     intent: 'farewell',
-    reply: "Goodbye! 🌴 Have a wonderful time in Sri Lanka. Feel free to message me anytime!",
+    reply: "Goodbye! 🌴 Have a wonderful time in Sri Lanka. Message me anytime!",
   },
   {
-    pattern: /^(help|\?|what can you do|what do you do|how does this work)[?!.,\s]*$/i,
+    pattern: /^(help|\?|what can you do|what do you do|how does this work|menu|options)[?!.,\s]*$/i,
     intent: 'help',
-    reply: "I can help you with:\n🏖 *Places* — beaches, temples, parks\n🍛 *Food* — local eats, restaurants\n🚌 *Transport* — tuk-tuks, trains, taxis\n🎭 *Culture* — customs, festivals, tips\n\nJust ask me anything!",
+    reply: null, // replaced with main menu at runtime
   },
 ];
 
@@ -181,21 +187,53 @@ export class LLMService {
    * Primary entry point: decide intent AND generate reply in a single LLM call.
    *
    * Optimisation order:
-   *   1. Short-circuit check  → 0 LLM calls
-   *   2. Redis cache check    → 0 LLM calls
-   *   3. Single combined call → 1 LLM call  (was previously 2)
+   *   1. Menu selection check → 0 LLM calls (user tapped a numbered option)
+   *   2. Short-circuit check  → 0 LLM calls (greeting, thanks, bye, etc.)
+   *   3. Multi-intent detect  → 0 LLM calls (user mentioned 2+ services)
+   *   4. Redis cache check    → 0 LLM calls
+   *   5. Single combined call → 1 LLM call  (was previously 2)
    *
    * Validates: Requirements 4.1, 4.2, 4.3
    */
-  async decideAndReply(contextPackage: ContextPackage): Promise<DecisionWithReply> {
+  async decideAndReply(
+    contextPackage: ContextPackage,
+    activeSubMenu?: string
+  ): Promise<DecisionWithReply> {
     const userText = contextPackage.userMessage.trim();
+    const menu = getMenuService();
 
-    // ── Optimisation 1: short-circuit for simple inputs ──────────────────────
+    // ── Optimisation 1: menu selection (number or item name) ─────────────────
+    const menuSelection = menu.resolveMenuSelection(userText, activeSubMenu);
+    if (menuSelection) {
+      logger.debug('LLMService', 'Menu selection matched — no LLM call', {
+        itemId: menuSelection.itemId,
+        intent: menuSelection.intent,
+      });
+
+      const selectedItem = menu.getItemById(menuSelection.itemId);
+      let replyText: string;
+
+      if (!menuSelection.isSub && selectedItem?.subItems && selectedItem.subItems.length > 0) {
+        // Show sub-menu for this item
+        replyText = menu.renderSubMenu(selectedItem);
+      } else {
+        replyText = `Got it! Let me help you with *${menuSelection.label}*. What would you like to know? 😊`;
+      }
+
+      return {
+        decision: this.buildMinimalDecision(menuSelection.intent),
+        replyText,
+        fromCache: false,
+        shortCircuited: true,
+        activeSubMenu: menuSelection.isSub ? undefined : menuSelection.itemId,
+      };
+    }
+
+    // ── Optimisation 2: short-circuit for simple inputs ──────────────────────
     const shortCircuit = this.tryShortCircuit(userText);
     if (shortCircuit) {
       logger.debug('LLMService', 'Short-circuit matched — no LLM call', {
         intent: shortCircuit.intent,
-        pattern: userText.substring(0, 30),
       });
       return {
         decision: this.buildMinimalDecision(shortCircuit.intent),
@@ -205,7 +243,33 @@ export class LLMService {
       };
     }
 
-    // ── Optimisation 2: Redis response cache ──────────────────────────────────
+    // ── Optimisation 3: multi-intent detection ────────────────────────────────
+    const multiIntents = menu.detectMultipleIntents(userText);
+    if (multiIntents.length >= 2) {
+      logger.debug('LLMService', 'Multi-intent detected — no LLM call', {
+        intents: multiIntents.map((i) => i.intent),
+      });
+
+      const intentList = multiIntents
+        .map((item, idx) => `*${idx + 1}.* ${item.emoji} ${item.label}`)
+        .join('\n');
+
+      const replyText = [
+        `Looks like you need help with a few things! Let's tackle them one by one 😊\n`,
+        intentList,
+        `\nWhich would you like to start with? Reply with a number.`,
+      ].join('\n');
+
+      return {
+        decision: this.buildMinimalDecision('multi_intent'),
+        replyText,
+        fromCache: false,
+        shortCircuited: true,
+        pendingIntents: multiIntents.map((i) => i.intent),
+      };
+    }
+
+    // ── Optimisation 4: Redis response cache ──────────────────────────────────
     const cacheKey = this.buildCacheKey(contextPackage);
     const cached = await this.getCachedResponse(cacheKey);
     if (cached) {
@@ -213,7 +277,7 @@ export class LLMService {
       return { ...cached, fromCache: true, shortCircuited: false };
     }
 
-    // ── Optimisation 3: single combined LLM call ──────────────────────────────
+    // ── Optimisation 5: single combined LLM call ──────────────────────────────
     logger.debug('LLMService', 'Making combined decide+reply LLM call', {
       userMessage: userText.substring(0, 50),
       historyLength: contextPackage.conversationHistory?.length ?? 0,
@@ -283,10 +347,11 @@ export class LLMService {
   // ==========================================================================
 
   private tryShortCircuit(text: string): { intent: string; reply: string } | null {
+    const menu = getMenuService();
     for (const rule of SHORT_CIRCUIT_RULES) {
-      const match = text.match(rule.pattern);
-      if (match) {
-        const reply = typeof rule.reply === 'function' ? rule.reply(match) : rule.reply;
+      if (rule.pattern.test(text)) {
+        // null reply means show the main menu
+        const reply = rule.reply ?? menu.renderMainMenu();
         return { intent: rule.intent, reply };
       }
     }
