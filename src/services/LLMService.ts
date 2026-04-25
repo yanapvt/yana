@@ -102,7 +102,15 @@ You help visitors with:
 Tone: warm, helpful, and conversational — like a knowledgeable local friend.
 Format: keep replies short and suitable for WhatsApp (2–4 sentences max unless a list is genuinely needed).
 Language: match the user's language if possible, default to English.
-Do NOT make up specific prices, schedules, or contact details — say you're not sure and suggest where to check.`;
+Do NOT make up specific prices, schedules, or contact details — say you're not sure and suggest where to check.
+
+CRITICAL BEHAVIOUR RULES:
+- When a user asks for recommendations (hotels, restaurants, places, etc.) GIVE THE ANSWER IMMEDIATELY.
+  Do NOT ask clarifying questions first. Use whatever information they provided and give a direct, helpful answer.
+- If they ask for "top 3 hotels in Colombo" — list 3 hotels. Do not ask what type, what area, what budget.
+- Only ask a follow-up question if the request is genuinely impossible to answer without it (e.g. "book a hotel" with no location at all).
+- Never ask more than ONE follow-up question per turn.
+- If the user has already answered a question in the conversation history, do not ask it again.`;
 
 // ============================================================================
 // Short-circuit rules — handled without any LLM call
@@ -122,14 +130,9 @@ const SHORT_CIRCUIT_RULES: ShortCircuitRule[] = [
     reply: null, // replaced with main menu at runtime
   },
   {
-    pattern: /^(thanks?|thank\s*you|thx|ty|cheers|great|awesome|perfect|wonderful)[!.,\s]*$/i,
+    pattern: /^(thanks?|thank\s*you|thx|ty|cheers)[!.,\s]*$/i,
     intent: 'acknowledgement',
     reply: "You're welcome! 😊 Need anything else? Reply *menu* to see all options.",
-  },
-  {
-    pattern: /^(yes|yeah|yep|yup|sure|ok|okay|alright|sounds good|go ahead)[!.,\s]*$/i,
-    intent: 'confirmation',
-    reply: null, // handled in webhook based on session state
   },
   {
     pattern: /^(no|nope|nah|not now|cancel|stop)[!.,\s]*$/i,
@@ -230,17 +233,38 @@ export class LLMService {
     }
 
     // ── Optimisation 2: short-circuit for simple inputs ──────────────────────
-    const shortCircuit = this.tryShortCircuit(userText);
-    if (shortCircuit) {
-      logger.debug('LLMService', 'Short-circuit matched — no LLM call', {
-        intent: shortCircuit.intent,
-      });
-      return {
-        decision: this.buildMinimalDecision(shortCircuit.intent),
-        replyText: shortCircuit.reply,
-        fromCache: false,
-        shortCircuited: true,
-      };
+    // Only fire when there is NO active conversation — if the user has history,
+    // short words like "yes", "ok", "great" are continuations, not commands.
+    const hasActiveConversation = (contextPackage.conversationHistory?.length ?? 0) > 0
+      || !!contextPackage.sessionState?.currentIntent;
+
+    if (!hasActiveConversation) {
+      const shortCircuit = this.tryShortCircuit(userText);
+      if (shortCircuit) {
+        logger.debug('LLMService', 'Short-circuit matched — no LLM call', {
+          intent: shortCircuit.intent,
+        });
+        return {
+          decision: this.buildMinimalDecision(shortCircuit.intent),
+          replyText: shortCircuit.reply,
+          fromCache: false,
+          shortCircuited: true,
+        };
+      }
+    } else {
+      // Even with active conversation, still short-circuit pure greetings/farewells
+      const shortCircuit = this.tryShortCircuit(userText);
+      if (shortCircuit && ['greeting', 'farewell', 'help'].includes(shortCircuit.intent)) {
+        logger.debug('LLMService', 'Short-circuit matched (greeting/farewell) — no LLM call', {
+          intent: shortCircuit.intent,
+        });
+        return {
+          decision: this.buildMinimalDecision(shortCircuit.intent),
+          replyText: shortCircuit.reply,
+          fromCache: false,
+          shortCircuited: true,
+        };
+      }
     }
 
     // ── Optimisation 3: multi-intent detection ────────────────────────────────
@@ -460,6 +484,11 @@ export class LLMService {
       '- suggestedAction: one of "ask_missing", "execute_tool", "clarify", "handoff"',
       '- confidence: score 0–1 (number)',
       '- reply: your actual WhatsApp reply to the user (string, 2–4 sentences max)',
+      '',
+      'IMPORTANT: For recommendation requests (hotels, restaurants, places, transport),',
+      'set suggestedAction to "clarify" and put the actual recommendations in "reply".',
+      'Do NOT set suggestedAction to "ask_missing" unless you truly cannot answer at all.',
+      'If the user asked for top hotels/restaurants/places — list them directly in "reply".',
       '',
       'User message:',
       ctx.userMessage,
