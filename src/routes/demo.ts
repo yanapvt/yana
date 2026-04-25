@@ -260,4 +260,71 @@ router.get('/tools', async (req: Request, res: Response) => {
   res.json({ success: true, tools });
 });
 
+// ============================================================================
+// Hotel Card Demo — sends a sample hotel card to a WhatsApp number
+// POST /demo/hotel-card  { "to": "whatsapp:+94770677470" }
+// ============================================================================
+
+router.post('/hotel-card', async (req: Request, res: Response) => {
+  try {
+    const { to } = req.body;
+    if (!to) {
+      return res.status(400).json({ success: false, error: 'Missing "to" field (e.g. whatsapp:+94770677470)' });
+    }
+
+    const { default: twilio } = await import('twilio');
+    const { env } = await import('../config/environment.js');
+    const { sendHotelCard, sendHotelList } = await import('../utils/hotelCard.js');
+
+    const twilioClient = twilio(env.twilio.accountSid, env.twilio.authToken);
+    const from = `whatsapp:${env.twilio.whatsappNumber}`;
+
+    // Sample hotel results with all link types populated
+    const sampleHotels = [
+      {
+        name: 'Galle Face Hotel',
+        price: 150,
+        currency: 'USD',
+        rating: 4.5,
+        reviewCount: 1250,
+        location: 'Colombo, Sri Lanka',
+        distance: 0.5,
+        amenities: ['WiFi', 'Pool', 'Restaurant', 'Spa', 'Beach Access'],
+        cancellationPolicy: 'Free cancellation up to 24 hours before check-in',
+        bookingToken: 'demo_gfh',
+        photoUrl: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800&q=80',
+        bookingComUrl: 'https://www.booking.com/hotel/lk/galle-face.html',
+        tripAdvisorUrl: 'https://www.tripadvisor.com/Hotel_Review-g304138-d301416-Reviews-Galle_Face_Hotel-Colombo_Western_Province.html',
+        websiteUrl: 'https://www.gallefacehotel.com',
+        googleMapsUrl: 'https://maps.google.com/?q=Galle+Face+Hotel+Colombo',
+      },
+      {
+        name: 'Jetwing Lighthouse',
+        price: 200,
+        currency: 'USD',
+        rating: 4.8,
+        reviewCount: 890,
+        location: 'Galle, Sri Lanka',
+        distance: 1.2,
+        amenities: ['WiFi', 'Pool', 'Beach Access', 'Restaurant', 'Bar'],
+        cancellationPolicy: 'Free cancellation up to 48 hours before check-in',
+        bookingToken: 'demo_jlh',
+        photoUrl: 'https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=800&q=80',
+        bookingComUrl: 'https://www.booking.com/hotel/lk/jetwing-lighthouse.html',
+        tripAdvisorUrl: 'https://www.tripadvisor.com/Hotel_Review-g297896-d301418-Reviews-Jetwing_Lighthouse-Galle_Southern_Province.html',
+        websiteUrl: 'https://www.jetwinghotels.com/jetwingleighthouse',
+        googleMapsUrl: 'https://maps.google.com/?q=Jetwing+Lighthouse+Galle',
+      },
+    ];
+
+    // Send as a list first, then full card for the first result
+    await sendHotelList(twilioClient as any, to, from, sampleHotels, 'Hotels near Galle 🏨');
+    await sendHotelCard(twilioClient as any, to, from, sampleHotels[0]);
+
+    res.json({ success: true, message: `Sent ${sampleHotels.length} hotel results + 1 full card to ${to}` });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export default router;

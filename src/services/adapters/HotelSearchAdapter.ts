@@ -17,9 +17,9 @@ import { CorrelationContext, ErrorCategory } from '../../types/core.js';
 
 /**
  * Internal hotel result schema
- * 
+ *
  * Normalized representation of hotel search results independent of provider.
- * 
+ *
  * Requirement 7.4: Normalize hotel search results into internal schema
  */
 export interface HotelResult {
@@ -43,6 +43,16 @@ export interface HotelResult {
   cancellationPolicy: string;
   /** Booking token for reservation */
   bookingToken: string;
+  /** Hotel's own website URL — WhatsApp will auto-generate a link preview from OG tags */
+  websiteUrl?: string;
+  /** Booking.com listing URL — has OG tags, generates a preview with photo + price */
+  bookingComUrl?: string;
+  /** TripAdvisor listing URL — has OG tags, generates a preview with rating + photo */
+  tripAdvisorUrl?: string;
+  /** Direct photo URL for the hotel (used as media attachment in WhatsApp) */
+  photoUrl?: string;
+  /** Google Maps URL — generates a map thumbnail preview */
+  googleMapsUrl?: string;
 }
 
 /**
@@ -232,6 +242,15 @@ export class HotelSearchAdapter extends NangoAdapter {
       amenities: this.normalizeAmenities(hotel.amenities || hotel.facilities || []),
       cancellationPolicy: hotel.cancellationPolicy || hotel.cancellation || hotel.cancellation_policy || 'Contact hotel for details',
       bookingToken: hotel.bookingToken || hotel.token || hotel.id || hotel.hotelId || '',
+      // Link fields — populated when available from provider
+      websiteUrl: hotel.websiteUrl || hotel.website_url || hotel.website || undefined,
+      bookingComUrl: hotel.bookingComUrl || hotel.booking_com_url || hotel.bookingUrl || undefined,
+      tripAdvisorUrl: hotel.tripAdvisorUrl || hotel.tripadvisor_url || undefined,
+      photoUrl: hotel.photoUrl || hotel.photo_url || hotel.image || hotel.thumbnail || undefined,
+      googleMapsUrl: hotel.googleMapsUrl || hotel.maps_url || hotel.mapUrl ||
+        (hotel.latitude && hotel.longitude
+          ? `https://maps.google.com/?q=${hotel.latitude},${hotel.longitude}`
+          : undefined),
     };
   }
 
