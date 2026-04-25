@@ -316,7 +316,7 @@ async function processAndReply(
   if (sessionId) {
     try {
       await sessionManager.appendMessage(sessionId, {
-        correlationId: `${correlationId}-reply`,
+        correlationId: crypto.randomUUID(),
         fromNumber: inboundMessage.to,
         toNumber: inboundMessage.from,
         messageType: 'text',

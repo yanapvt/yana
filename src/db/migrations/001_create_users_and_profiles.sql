@@ -5,7 +5,7 @@
 -- Users table (core user identity)
 CREATE TABLE users (
   user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone_number VARCHAR(20) UNIQUE NOT NULL,
+  phone_number VARCHAR(30) UNIQUE NOT NULL,
   phone_hash VARCHAR(64) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

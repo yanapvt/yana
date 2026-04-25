@@ -64,6 +64,28 @@ export class LLMServiceError extends Error {
 }
 
 // ============================================================================
+// System Prompt
+// ============================================================================
+
+/**
+ * Core persona for the concierge assistant.
+ * Injected into both decision and UI-support modes so the LLM
+ * understands its role when classifying intents AND when replying.
+ */
+const CONCIERGE_SYSTEM_PROMPT = `You are Yana, a friendly and knowledgeable tourist concierge for Sri Lanka. 
+You help visitors with:
+- Places to visit (beaches, temples, national parks, cities, hidden gems)
+- Food and restaurants (local cuisine, street food, dietary needs)
+- Transport (tuk-tuks, trains, buses, taxis, car hire)
+- Culture and customs (etiquette, festivals, dress codes, tipping)
+- Practical tips (weather, safety, currency, SIM cards, opening hours)
+
+Tone: warm, helpful, and conversational — like a knowledgeable local friend.
+Format: keep replies short and suitable for WhatsApp (2–4 sentences max unless a list is genuinely needed).
+Language: match the user's language if possible, default to English.
+Do NOT make up specific prices, schedules, or contact details — say you're not sure and suggest where to check.`;
+
+// ============================================================================
 // LLM Service
 // ============================================================================
 
@@ -230,8 +252,11 @@ export class LLMService {
    */
   private buildDecisionPrompt(contextPackage: ContextPackage): string {
     const parts: string[] = [
-      'You are an intent detection and parameter extraction assistant for a WhatsApp-based booking platform.',
-      'Analyze the user message and context, then provide a structured decision output.',
+      // Persona context so intent classification is tourism-aware
+      CONCIERGE_SYSTEM_PROMPT,
+      '',
+      '---',
+      'Your current task is INTENT DETECTION. Analyze the user message below and return a structured JSON decision.',
       '',
       'User message:',
       contextPackage.userMessage,
@@ -281,18 +306,17 @@ export class LLMService {
   }
 
   /**
-   * Builds the prompt for UI content generation
+   * Builds the prompt for UI content generation (the actual user-facing reply)
    */
   private buildUIContentPrompt(prompt: string, userLanguage: string): string {
     return [
-      `You are a helpful assistant generating user-facing content for a WhatsApp booking platform.`,
+      CONCIERGE_SYSTEM_PROMPT,
       `Target language: ${userLanguage}`,
-      ``,
+      '',
       `Task: ${prompt}`,
-      ``,
-      `Generate clear, friendly, concise content suitable for WhatsApp.`,
-      `Keep messages short and actionable.`,
-      `Do not include any instructions to execute actions, bookings, or payments.`,
+      '',
+      'Reply directly to the user. Do not include meta-commentary or explain what you are doing.',
+      'Keep it short — 2 to 4 sentences max unless a list genuinely helps.',
     ].join('\n');
   }
 
@@ -337,8 +361,8 @@ export class LLMService {
       : 'https://api.openai.com/v1';
 
     const systemPrompt = mode === 'decision'
-      ? 'You are an intent detection assistant. Always respond with valid JSON only, no markdown, no extra text.'
-      : 'You are a helpful assistant generating user-facing content for a WhatsApp booking platform. Be concise and friendly.';
+      ? `${CONCIERGE_SYSTEM_PROMPT}\n\nYou are now in INTENT DETECTION mode. Always respond with valid JSON only, no markdown, no extra text.`
+      : CONCIERGE_SYSTEM_PROMPT;
 
     const body = JSON.stringify({
       model: this.config.model,
@@ -476,7 +500,7 @@ export class LLMService {
         reasoning: 'User wants to search for hotels but has not provided location or dates',
       });
     } else {
-      return 'Thank you for your message. How can I help you today?';
+      return 'Welcome to Sri Lanka! 🌴 I\'m Yana, your local concierge. Ask me about places to visit, food, transport, or anything else you need for your trip!';
     }
   }
 }

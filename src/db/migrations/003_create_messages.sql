@@ -8,8 +8,8 @@ CREATE TABLE messages (
   session_id UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   correlation_id UUID NOT NULL,
-  from_number VARCHAR(20) NOT NULL,
-  to_number VARCHAR(20) NOT NULL,
+  from_number VARCHAR(30) NOT NULL,
+  to_number VARCHAR(30) NOT NULL,
   message_type VARCHAR(50) NOT NULL, -- text, media, audio, interactive
   role VARCHAR(20) NOT NULL, -- user, assistant, system
   content JSONB NOT NULL,

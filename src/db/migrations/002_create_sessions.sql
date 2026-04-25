@@ -6,7 +6,7 @@
 CREATE TABLE sessions (
   session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  phone_number VARCHAR(20) NOT NULL,
+  phone_number VARCHAR(30) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
