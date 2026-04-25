@@ -215,19 +215,19 @@ async function processAndReply(
     }
   }
 
-  // ── 4. Call LLM with whatever context we have ─────────────────────────────
+  // ── 4. Single LLM call: decide intent + generate reply simultaneously ────────
   const userProfile = contextPackage?.userProfile;
   const activeFlowState = contextPackage?.activeFlowState;
   const schemaProgress = contextPackage?.schemaProgress;
 
-  logger.debug('Webhook', 'Calling LLM', {
+  logger.debug('Webhook', 'Calling LLM (combined decide+reply)', {
     correlationId,
     sessionId,
     historyLength: conversationHistory.length,
     userText: userText.substring(0, 100),
   });
 
-  const decision = await llmService.decide({
+  const { decision, replyText, fromCache, shortCircuited } = await llmService.decideAndReply({
     userMessage: userText,
     conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
     userProfile: userProfile ? {
@@ -243,17 +243,18 @@ async function processAndReply(
     } : undefined,
   });
 
-  logger.info('Webhook', 'LLM decision received', {
+  logger.info('Webhook', 'LLM response ready', {
     correlationId,
     sessionId,
     intent: decision.intent,
     suggestedAction: decision.suggestedAction,
     confidence: decision.confidence,
-    missingFields: decision.missingFields,
+    fromCache,
+    shortCircuited,
   });
 
   // ── 5. Update session state (best-effort) ─────────────────────────────────
-  if (sessionId) {
+  if (sessionId && !shortCircuited) {
     try {
       await sessionManager.updateSessionState(sessionId, {
         currentIntent: decision.intent,
@@ -271,34 +272,7 @@ async function processAndReply(
     }
   }
 
-  // ── 6. Generate reply text ─────────────────────────────────────────────────
-  const lang = userProfile?.preferredLanguage || 'en';
-  let replyText: string;
-
-  if (decision.suggestedAction === 'ask_missing' && decision.missingFields.length > 0) {
-    const missingField = decision.missingFields[0];
-    replyText = await llmService.generateUIContent(
-      `The user wants to ${decision.intent}. Ask them for their ${missingField} in a friendly, conversational way. Keep it to one sentence.`,
-      lang
-    );
-  } else if (decision.suggestedAction === 'execute_tool') {
-    replyText = await llmService.generateUIContent(
-      `The user wants to ${decision.intent} with parameters: ${JSON.stringify(decision.parameters)}. Acknowledge their request and let them know you're processing it.`,
-      lang
-    );
-  } else if (decision.suggestedAction === 'clarify') {
-    replyText = await llmService.generateUIContent(
-      `The user said something unclear. Their detected intent was "${decision.intent}". Ask a clarifying question.`,
-      lang
-    );
-  } else {
-    replyText = await llmService.generateUIContent(
-      `Respond helpfully to a user who said: "${userText}". Keep it brief and friendly.`,
-      lang
-    );
-  }
-
-  // ── 7. Send reply via Twilio ───────────────────────────────────────────────
+  // ── 6. Send reply via Twilio ───────────────────────────────────────────────
   await twilioClient.messages.create({
     from: `whatsapp:${env.twilio.whatsappNumber}`,
     to: inboundMessage.from,
@@ -312,7 +286,7 @@ async function processAndReply(
     replyLength: replyText.length,
   });
 
-  // ── 8. Persist the bot reply (best-effort) ────────────────────────────────
+  // ── 7. Persist the bot reply (best-effort) ────────────────────────────────
   if (sessionId) {
     try {
       await sessionManager.appendMessage(sessionId, {
