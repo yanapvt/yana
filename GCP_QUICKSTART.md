@@ -41,7 +41,32 @@ This script will:
 - ✅ Create VPC Access Connector
 - ✅ Store secrets in Secret Manager
 
-### **Step 3: Deploy to Cloud Run**
+### **Step 3: Run Database Migrations**
+
+After the Cloud SQL instance is created, you must run migrations manually before deploying the app:
+
+```bash
+# Connect via Cloud SQL Proxy
+./cloud-sql-proxy your-project-id:us-central1:yana-ogo-db &
+
+# Run migrations
+POSTGRES_HOST=localhost \
+POSTGRES_USER=yana_ogo_app \
+POSTGRES_PASSWORD=your_password \
+POSTGRES_DB=yana_ogo_production \
+npm run migrate
+```
+
+Expected output:
+```
+Found 13 migration files.
+  APPLY 001_create_users_and_profiles.sql
+  APPLY 002_create_sessions.sql
+  ...
+Done. Applied: 13, Skipped: 0
+```
+
+### **Step 4: Deploy to Cloud Run**
 
 ```bash
 # Deploy with one command

@@ -1,111 +1,66 @@
-# 🚀 Start the YANA/OGO Demo
+# Start the YANA Bot
 
-## **Follow These Steps Exactly:**
+## Step 1 — Start PostgreSQL (Windows)
 
-### **Step 1: Open a NEW Terminal**
-- In VS Code, click Terminal → New Terminal
-- Or press `` Ctrl+Shift+` ``
+PostgreSQL does not auto-start on Windows. Open PowerShell as Administrator:
 
-### **Step 2: Kill any existing process on port 3000**
-Copy and paste this command:
-```bash
-lsof -ti:3000 | xargs kill -9 2>/dev/null; sleep 1; echo "✓ Port 3000 is now free"
+```powershell
+Start-Service postgresql-x64-16
 ```
 
-### **Step 3: Start the server**
-Copy and paste this command:
+Or via pg_ctl:
+```bash
+"C:\Program Files\PostgreSQL\16\bin\pg_ctl.exe" start -D "C:\Program Files\PostgreSQL\16\data"
+```
+
+## Step 2 — Start Redis
+
+Redis should already be running. Verify:
+```bash
+redis-cli ping
+# Expected: PONG
+```
+
+## Step 3 — Start the server
+
 ```bash
 npm run dev
 ```
 
-You should see:
+Expected output:
 ```
-YANA / OGO Platform starting...
-Environment: development
-Development mode: true
-Server listening on port 3000
-Webhook endpoint: POST http://localhost:3000/webhook/whatsapp
-Health check: GET http://localhost:3000/health
+[INFO ] [Platform] YANA / OGO Platform starting...
+[INFO ] [Platform] Server started {"port":"3000"}
+[DEBUG] [Database] New connection established
+[INFO ] [StateStore] Redis client connected {"host":"localhost","port":6379}
 ```
 
-### **Step 4: Open your browser**
-Go to: **http://localhost:3000/demo**
+If you see `Database unavailable` warnings, PostgreSQL isn't running or credentials are wrong.
 
----
+## Step 4 — Expose to Twilio (for WhatsApp testing)
 
-## ✅ **What You'll See**
-
-A web page with interactive buttons to test:
-1. **System Status** - See which components are running
-2. **Hotel Search** - Test the MCPInterface with a hotel search
-3. **Session Creation** - Test the SessionManager
-4. **Schema Validation** - Test the SchemaEngine
-5. **List Tools** - See all registered tools
-
----
-
-## 🎮 **How to Use**
-
-1. Click any "Test Now" or "Test..." button
-2. Wait a moment for the result
-3. See the JSON response with all the data
-4. Try different tests!
-
----
-
-## 📸 **Screenshot of What You'll See**
-
-The demo page has:
-- A clean, modern interface
-- Interactive buttons for each component
-- Real-time JSON responses
-- Success/error indicators
-
----
-
-## 🐛 **If Something Goes Wrong**
-
-### **Problem: "address already in use"**
 ```bash
-# Run this in the terminal:
-lsof -ti:3000 | xargs kill -9
-# Then start again:
-npm run dev
+ngrok http 3000
 ```
 
-### **Problem: "Cannot GET /demo"**
-- Make sure the server is running (you should see "Server listening on port 3000")
-- Try refreshing the browser
-- Check the URL is exactly: http://localhost:3000/demo
+Copy the `https://` URL and set it as your Twilio WhatsApp Sandbox webhook.
 
-### **Problem: Buttons don't work**
-- Open browser console (F12)
-- Look for JavaScript errors
-- Refresh the page
+## Step 5 — Send a message
+
+Send `Hi` to your Twilio sandbox number on WhatsApp. You should receive the numbered menu within 1–2 seconds.
 
 ---
 
-## 🎯 **What's Being Tested**
+## Troubleshooting
 
-When you click the buttons, you're testing:
+**"Database unavailable"** → PostgreSQL not running or wrong credentials in `.env`
 
-✅ **MCPInterface** - Tool call validation, routing, logging  
-✅ **ToolRegistry** - Tool registration and retrieval  
-✅ **SessionManager** - Session creation and management  
-✅ **SchemaEngine** - Schema validation and field checking  
-✅ **StateStore** - Redis state management  
+**"Redis client error"** → Redis not running. Start with `redis-server`
 
-All with **real code** that's been implemented and tested!
+**No reply on WhatsApp** → Check ngrok is running and Twilio webhook URL is correct
 
----
-
-## 💡 **Pro Tips**
-
-- Keep the terminal open to see server logs
-- Each test shows detailed JSON responses
-- You can test multiple times
-- Try the curl commands in `DEMO_QUICKSTART.md` for command-line testing
-
----
-
-**Ready? Start with Step 1! 🚀**
+**Port 3000 in use:**
+```bash
+netstat -ano | findstr :3000
+taskkill /PID <pid> /F
+```

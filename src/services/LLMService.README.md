@@ -1,317 +1,149 @@
 # LLMService
 
-The `LLMService` wraps LLM interactions with two distinct modes: **decision mode** and **UI-support mode**. This service ensures that the LLM provides recommendations and content generation without having direct execution capabilities.
+Handles all LLM interactions for the YANA concierge. Optimised to minimise API calls while maintaining quality.
 
-## Architecture Principle
+---
 
-**LLM decides; backend executes.**
+## How It Works
 
-The LLM may infer intent, extract parameters, suggest the next step, and format UI-supporting content, but all critical execution remains under backend control through the Orchestrator.
+Every inbound message goes through `decideAndReply()` which tries to avoid an LLM call entirely before falling back to one:
 
-## Requirements Validated
-
-- **Requirement 4.1**: LLM operates in decision mode producing structured output (intent, extracted parameters, identified missing fields, suggested next action, confidence metadata)
-- **Requirement 4.2**: LLM operates in UI-support mode for generating wording and formatting assistance for non-critical response content
-- **Requirement 4.3**: LLM shall not directly execute side effects, tool calls, bookings, or payments
-
-## Two Operating Modes
-
-### 1. Decision Mode
-
-Decision mode produces structured output for the Orchestrator to validate and act upon.
-
-**Input**: `ContextPackage` containing:
-- User message
-- Conversation history (optional)
-- User profile (optional)
-- Session state (optional)
-- Available schemas (optional)
-
-**Output**: `LLMDecisionOutput` containing:
-- `intent`: Detected user intent (e.g., "search_hotels")
-- `parameters`: Extracted parameters from user message
-- `missingFields`: List of required fields not yet provided
-- `suggestedAction`: One of "ask_missing", "execute_tool", "clarify", "handoff"
-- `confidence`: Confidence score between 0 and 1
-- `reasoning`: Optional explanation of the decision
-
-**Example**:
-
-```typescript
-import { getLLMService } from './services/index.js';
-
-const llmService = getLLMService();
-
-const decision = await llmService.decide({
-  userMessage: 'I want to book a hotel in Galle',
-  sessionState: {
-    currentIntent: 'search_hotels',
-    collectedFields: {},
-    missingFields: ['location', 'checkin_date'],
-  },
-});
-
-console.log(decision);
-// {
-//   intent: 'search_hotels',
-//   parameters: { location: 'Galle' },
-//   missingFields: ['checkin_date'],
-//   suggestedAction: 'ask_missing',
-//   confidence: 0.93,
-//   reasoning: 'User provided location but check-in date is still needed'
-// }
+```
+decideAndReply(contextPackage, activeSubMenu?)
+  │
+  ├─ 1. Menu selection?     → 0 LLM calls  (user replied "1"–"6")
+  ├─ 2. Short-circuit?      → 0 LLM calls  (Hi, Thanks, Yes, No, Bye, Help)
+  ├─ 3. Multi-intent?       → 0 LLM calls  ("hotels and transport in Galle")
+  ├─ 4. Redis cache hit?    → 0 LLM calls  (same question, 10 min TTL)
+  └─ 5. Single LLM call     → 1 API call   (intent + reply in one response)
 ```
 
-### 2. UI-Support Mode
+Previously the code made 2 LLM calls per message (`decide()` then `generateUIContent()`). Now it's at most 1.
 
-UI-support mode generates user-facing content like prompts, confirmations, and messages.
+---
 
-**Input**:
-- `prompt`: Description of the content to generate
-- `userLanguage`: Target language for the content (defaults to 'en')
+## Primary API
 
-**Output**: Generated content string
+### `decideAndReply(contextPackage, activeSubMenu?)`
 
-**Example**:
+The main entry point. Returns a `DecisionWithReply` containing:
+
+- `decision` — structured intent/parameters/missingFields/suggestedAction/confidence
+- `replyText` — the actual text to send to the user
+- `fromCache` — true if served from Redis cache
+- `shortCircuited` — true if handled without LLM
+- `activeSubMenu` — set when a menu category with sub-items was selected
+- `pendingIntents` — set when multiple intents were detected
 
 ```typescript
-import { getLLMService } from './services/index.js';
+const { decision, replyText, fromCache, shortCircuited, activeSubMenu, pendingIntents } =
+  await llmService.decideAndReply(
+    {
+      userMessage: 'Best beach near Colombo?',
+      conversationHistory: [...],
+      userProfile: { preferredLanguage: 'en' },
+      sessionState: { currentIntent: 'explore_places' },
+    },
+    activeSubMenuFromSession  // e.g. 'transport' if user previously selected transport
+  );
+```
 
-const llmService = getLLMService();
+### `decide(contextPackage)` — legacy
 
-const content = await llmService.generateUIContent(
-  'Generate a friendly confirmation message for a hotel booking at Galle Beach Hotel',
+Delegates to `decideAndReply()` and returns only the decision. Kept for compatibility.
+
+### `generateUIContent(prompt, userLanguage)` — standalone reply generation
+
+Used when you need to generate a reply independently of intent detection (e.g. formatting tool results). Makes one LLM call.
+
+```typescript
+const text = await llmService.generateUIContent(
+  'Format these hotel results for WhatsApp: [...]',
   'en'
 );
-
-console.log(content);
-// "Great! Your booking at Galle Beach Hotel has been confirmed. 
-//  You'll receive a confirmation message shortly."
 ```
 
-## API Reference
+---
 
-### Constructor
+## Short-Circuit Rules
 
-```typescript
-new LLMService(config?: Partial<LLMConfig>)
-```
+These patterns are matched before any LLM call:
 
-Creates a new LLMService instance with optional configuration.
+| Pattern | Intent | Reply |
+|---|---|---|
+| Hi, Hello, Hey, Good morning/evening, Start, Menu | `greeting` | Main menu |
+| Thanks, Thank you, Great, Awesome | `acknowledgement` | "You're welcome! 😊" |
+| Yes, Yeah, Ok, Sure, Alright | `confirmation` | "Got it!" |
+| No, Nope, Cancel, Stop | `cancellation` | "No problem!" |
+| Bye, Goodbye, Take care | `farewell` | Farewell message |
+| Help, ?, What can you do, Menu, Options | `help` | Main menu |
 
-**Parameters**:
-- `config.provider`: LLM provider name (defaults to env.llm.provider)
-- `config.apiKey`: API key for the LLM provider (required)
-- `config.model`: Model name to use (defaults to env.llm.model)
-- `config.confidenceThreshold`: Confidence threshold for decisions (defaults to env.llm.confidenceThreshold)
+---
 
-**Throws**: `LLMServiceError` if API key is missing
+## Menu System
 
-### decide()
+The `MenuService` handles the interactive menu. `decideAndReply()` calls it automatically.
 
-```typescript
-async decide(contextPackage: ContextPackage): Promise<LLMDecisionOutput>
-```
+**Main menu categories:**
+1. 🏖 Places to Visit → sub-menu: Beaches, Temples, Nature, Cities
+2. 🍛 Food & Restaurants → sub-menu: Local Cuisine, Street Food, Seafood, Vegetarian
+3. 🚌 Transport → sub-menu: Tuk-tuk, Taxi, Train, Car Hire
+4. 🏨 Hotels & Stays
+5. 🎭 Culture & Tips → sub-menu: Customs, Festivals, Practical Tips
+6. 🆘 Emergency & Help
 
-Decision mode: calls LLM and returns structured decision output.
+When a user selects a category with sub-items, the `activeSubMenu` is returned and should be stored in the session's `collectedFields`. On the next message, pass it back to `decideAndReply()` so numbered replies resolve against the sub-menu.
 
-**Parameters**:
-- `contextPackage`: User message and session context
+**Multi-intent detection** — if the user's message contains keywords for 2+ categories (e.g. "hotels and transport"), a numbered list of detected intents is returned without an LLM call.
 
-**Returns**: Structured decision output for the Orchestrator
+---
 
-**Throws**: `LLMServiceError` if the LLM call fails
+## Response Cache
 
-### generateUIContent()
+Informational replies are cached in Redis for 10 minutes using a normalised key derived from the user's message (filler words stripped, lowercased).
 
-```typescript
-async generateUIContent(prompt: string, userLanguage?: string): Promise<string>
-```
+**Cached:** `explore_places`, `explore_food`, `explore_transport`, `explore_culture`, and similar informational intents.
 
-UI-support mode: generates wording and formatting for non-critical content.
+**Never cached:** `book_hotel`, `make_payment`, `cancel_booking`, `handoff`, `clarify`, or any `execute_tool` action.
 
-**Parameters**:
-- `prompt`: Description of the content to generate
-- `userLanguage`: Target language (defaults to 'en')
+---
 
-**Returns**: Generated content string
+## System Prompt (Persona)
 
-**Throws**: `LLMServiceError` if the LLM call fails
+The `CONCIERGE_SYSTEM_PROMPT` constant is injected into every LLM call as the `system` message:
 
-## Singleton Pattern
+- **Identity:** Yana, friendly Sri Lanka tourist concierge
+- **Topics:** Places, food, transport, culture, practical tips
+- **Tone:** Warm, conversational, like a knowledgeable local friend
+- **Format:** 2–4 sentences max, WhatsApp-friendly
+- **Constraint:** Do not make up prices, schedules, or contact details
 
-The service provides singleton access for convenience:
-
-```typescript
-import { getLLMService, initLLMService } from './services/index.js';
-
-// Get the singleton instance (uses default config from environment)
-const llmService = getLLMService();
-
-// Or initialize with custom configuration
-const customService = initLLMService({
-  provider: 'openai',
-  apiKey: 'your-api-key',
-  model: 'gpt-4',
-  confidenceThreshold: 0.9,
-});
-```
+---
 
 ## Configuration
 
-The LLMService reads configuration from environment variables:
-
 ```env
-LLM_PROVIDER=openai
-LLM_API_KEY=your-api-key-here
-LLM_MODEL=gpt-4
+LLM_PROVIDER=groq          # or 'openai'
+LLM_API_KEY=gsk_xxx        # Groq or OpenAI API key
+LLM_MODEL=llama-3.1-8b-instant
 LLM_CONFIDENCE_THRESHOLD=0.85
 ```
 
+Supported providers: `groq`, `openai` (both use the OpenAI-compatible API format).
+
+---
+
 ## Error Handling
 
-The service throws `LLMServiceError` for all errors:
+All errors throw `LLMServiceError` with:
+- `message` — human-readable description
+- `code` — machine-readable code (`MISSING_API_KEY`, `API_ERROR`, `PARSE_ERROR`, `EMPTY_RESPONSE`)
+- `retryable` — whether the caller should retry
 
-```typescript
-import { LLMServiceError } from './services/index.js';
+The webhook catches these and logs them without crashing.
 
-try {
-  const decision = await llmService.decide(contextPackage);
-} catch (error) {
-  if (error instanceof LLMServiceError) {
-    console.error('LLM error:', error.message);
-    console.error('Error code:', error.code);
-    console.error('Retryable:', error.retryable);
-  }
-}
-```
+---
 
-**Error Properties**:
-- `message`: Human-readable error description
-- `code`: Machine-readable error code
-- `retryable`: Boolean indicating if the operation can be retried
+## History Trimming
 
-**Common Error Codes**:
-- `MISSING_API_KEY`: API key not provided
-- `PROVIDER_NOT_IMPLEMENTED`: LLM provider not yet implemented
-- `DECISION_FAILED`: Failed to get LLM decision
-- `UI_GENERATION_FAILED`: Failed to generate UI content
-- `PARSE_ERROR`: Failed to parse LLM response
-- `EMPTY_RESPONSE`: LLM returned empty response
-
-## Integration with Orchestrator
-
-The Orchestrator uses the LLMService to make decisions but always validates the output before taking action:
-
-```typescript
-import { getLLMService } from './services/index.js';
-import { env } from './config/environment.js';
-
-const llmService = getLLMService();
-
-// Get LLM decision
-const decision = await llmService.decide(contextPackage);
-
-// Validate confidence against threshold
-if (decision.confidence < env.llm.confidenceThreshold) {
-  // Low confidence: fall back to UI-based narrowing
-  return generateNarrowingPrompt();
-}
-
-// Validate against schema and business rules
-const validationResult = schemaEngine.validate(decision.parameters);
-if (!validationResult.valid) {
-  // Invalid parameters: ask for clarification
-  return generateClarificationPrompt(validationResult.errors);
-}
-
-// Only after validation, proceed with suggested action
-if (decision.suggestedAction === 'execute_tool') {
-  // Orchestrator executes the tool (not the LLM)
-  return await mcpInterface.executeTool(decision.intent, decision.parameters);
-}
-```
-
-## Design Principles
-
-### 1. No Direct Execution
-
-The LLMService does NOT have methods for:
-- Executing tool calls
-- Creating bookings
-- Processing payments
-- Directly modifying state
-
-All execution is handled by the Orchestrator after validation.
-
-### 2. Structured Output
-
-Decision mode always returns structured, typed output that can be validated programmatically.
-
-### 3. Separation of Concerns
-
-- **LLM**: Provides recommendations and generates content
-- **Orchestrator**: Validates recommendations and executes actions
-- **Schema Engine**: Validates parameters against schemas
-- **MCP Interface**: Executes validated tool calls
-
-### 4. Observability
-
-All LLM decisions are logged for debugging and audit purposes:
-
-```typescript
-console.log('[LLMService] Decision made:', {
-  userMessage: contextPackage.userMessage.substring(0, 100),
-  intent: decision.intent,
-  suggestedAction: decision.suggestedAction,
-  confidence: decision.confidence,
-  missingFieldsCount: decision.missingFields.length,
-});
-```
-
-## Testing
-
-Run unit tests:
-
-```bash
-npm test src/services/LLMService.test.ts
-```
-
-The test suite covers:
-- Decision mode with various context packages
-- UI-support mode with different languages
-- Error handling and validation
-- Requirements validation
-- Edge cases (empty messages, special characters, long messages)
-
-## Usage Examples
-
-See `src/services/LLMService.example.ts` for comprehensive usage examples including:
-- Basic intent detection
-- Conversation history handling
-- Session state integration
-- User profile context
-- Confirmation message generation
-- Error message generation
-- Multilingual content
-- Custom configuration
-- Low confidence handling
-- Error handling
-
-## Future Enhancements
-
-- Support for multiple LLM providers (OpenAI, Anthropic, etc.)
-- Streaming responses for long-running generations
-- Caching of common decisions
-- A/B testing of different prompts
-- Fine-tuning support
-- Token usage tracking and optimization
-- Fallback to simpler models for low-priority tasks
-
-## Related Components
-
-- **Orchestrator**: Uses LLMService for decision making
-- **Schema Engine**: Validates LLM-extracted parameters
-- **MCP Interface**: Executes validated tool calls
-- **WhatsApp Renderer**: Uses UI-support mode for content generation
-- **Translation Service**: May use LLM for translation tasks
+Only the last 3 turns (6 messages: 3 user + 3 assistant) are sent to the LLM. This keeps prompts lean while providing enough context for continuity. The full history is stored in Postgres.

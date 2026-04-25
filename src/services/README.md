@@ -1,126 +1,73 @@
 # Services
 
-This directory contains service layer implementations for the YANA / OGO platform.
+Overview of all services and their current status.
 
-## StateStore Service
+---
 
-The `StateStore` service wraps Redis to provide hot session state management with TTL-based expiry.
+## Active (called from the message pipeline)
 
-### Purpose
+### `LLMService`
+Handles all LLM interactions. Optimised to minimise API calls via short-circuit rules, menu resolution, multi-intent detection, and Redis caching. Makes at most 1 API call per message. See `LLMService.README.md`.
 
-- Maintains active session state for fast access during user interactions
-- Provides short-lived tool result caching to reduce redundant API calls
-- Implements TTL-based expiry to automatically clean up stale data
-- Serves as the hot state layer, with Postgres as the durable fallback
+### `MenuService`
+Manages the interactive numbered menu system. 6 main categories with sub-menus. Handles menu selection resolution and multi-intent keyword detection. No LLM calls.
 
-### Requirements Validated
+### `SessionManager`
+Session lifecycle management. Creates users and sessions on first contact, resumes on subsequent messages. Loads/saves conversation history. Persists messages to both the `messages` table and `session_state.conversation_history`. Has a `getSessionManager()` singleton factory.
 
-- **Requirement 16.1**: Maintains active session state, current schema progress, short-lived tool caches, pending UI state, and recent context summaries for active sessions
-- **Requirement 16.3**: Session_Manager loads active session state from State_Store and falls back to Durable_Store when State_Store entry has expired
+### `StateStore`
+Redis wrapper. Caches session state (TTL from `SESSION_TTL_SECONDS`), tool results (5 min TTL), and LLM response cache (10 min TTL, managed by LLMService). Has a `getStateStore()` singleton factory.
 
-### API
+---
 
-#### Connection Management
+## Built, Not Yet Wired
+
+These are complete implementations that are not yet called from `processAndReply()`:
+
+### `Orchestrator`
+Validates LLM decision outputs against schema and business rules. Enforces confidence thresholds. Returns `ValidatedDecision` with `shouldProceed` and `fallbackAction`. Has a `getOrchestrator()` singleton factory.
+
+### `SchemaEngine`
+Schema-driven field collection. Given a schema definition and collected fields, determines what's missing and generates prompts to collect them. Used for multi-step flows like hotel search.
+
+### `MCPInterface`
+Tool call routing layer. Validates tool calls against registered contracts, routes to provider adapters, handles retries with exponential backoff, logs all executions. Requires adapters to be registered via `registerAdapter()`.
+
+### `ToolRegistry`
+Stores tool definitions in the `tool_registry` table. Tools define their parameters, provider mapping, and execution policy. No tools are registered yet.
+
+### `WhatsAppRenderer`
+Formats content as WhatsApp-safe messages. Handles text, buttons (max 3), lists (max 10 items), confirmations, field prompts, and hotel results. Falls back to plain text when UI limits are exceeded.
+
+### `TranslationService`
+Language detection and translation. Currently configured with `TRANSLATION_PROVIDER=mock`.
+
+### `LanguagePreferenceManager`
+Detects and persists user language preferences.
+
+---
+
+## Adapters (`services/adapters/`)
+
+### `HotelSearchAdapter`
+Extends `NangoAdapter`. Searches hotels via a provider API and normalises results into `HotelResult[]`. The `performHttpRequest` method is a stub that throws — needs a real HTTP implementation.
+
+### `NangoAdapter`
+Base class for OAuth-based provider integrations. Handles token caching, retry logic, rate limit detection. `fetchTokenFromNango` throws — needs Nango credentials or a direct API key bypass.
+
+### `ProviderAdapter` / `BaseProviderAdapter`
+Interface and base class for direct (non-Nango) provider integrations.
+
+---
+
+## Singleton Pattern
+
+All active services use the same singleton pattern:
 
 ```typescript
-const store = new StateStore();
-await store.connect();
-await store.disconnect();
-store.isConnected(); // boolean
+// Get existing instance (creates one if needed)
+const service = getSessionManager();  // or getLLMService(), getStateStore(), etc.
+
+// Initialize with custom config (replaces singleton)
+const service = initLLMService({ provider: 'openai', apiKey: '...' });
 ```
-
-#### Session State Methods
-
-```typescript
-// Set session state with TTL (defaults to env.operational.sessionTtlSeconds)
-await store.setSessionState(sessionId, state, ttlSeconds?);
-
-// Get session state (returns null if expired or not found)
-const state = await store.getSessionState(sessionId);
-
-// Delete session state
-const deleted = await store.deleteSessionState(sessionId);
-```
-
-#### Tool Cache Methods
-
-```typescript
-// Set tool cache with TTL (defaults to 300 seconds = 5 minutes)
-await store.setToolCache(cacheKey, entry, ttlSeconds?);
-
-// Get tool cache entry (returns null if expired or not found)
-const entry = await store.getToolCache(cacheKey);
-```
-
-### Usage Example
-
-```typescript
-import { getStateStore, initStateStore } from './services/index.js';
-
-// Initialize on application startup
-const stateStore = await initStateStore();
-
-// Store session state
-await stateStore.setSessionState('session_123', {
-  currentIntent: 'search_hotels',
-  currentStep: 'collect_location',
-  activeSchema: 'hotel_search',
-  schemaVersion: '1.0',
-  missingFields: ['location', 'checkin_date'],
-  collectedFields: {},
-});
-
-// Retrieve session state
-const state = await stateStore.getSessionState('session_123');
-
-// Cache tool results
-await stateStore.setToolCache('search_hotels:hash123', {
-  toolName: 'search_hotels',
-  params: { location: 'Galle', checkin_date: '2026-05-01' },
-  result: { hotels: [...] },
-  timestamp: new Date(),
-}, 300); // 5 minute TTL
-```
-
-### Configuration
-
-The StateStore reads Redis configuration from environment variables:
-
-```env
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=optional_password
-REDIS_DB=0
-SESSION_TTL_SECONDS=3600
-```
-
-### Testing
-
-Run unit tests:
-
-```bash
-npm test src/services/StateStore.test.ts
-```
-
-The test suite covers:
-- Connection management
-- Session state CRUD operations
-- Tool cache operations
-- TTL expiry behavior
-- Edge cases (unicode, special characters, complex data structures)
-
-### Design Notes
-
-1. **Singleton Pattern**: Use `getStateStore()` or `initStateStore()` to get the singleton instance
-2. **TTL-Based Expiry**: All data has automatic expiry to prevent stale state accumulation
-3. **Graceful Degradation**: Returns `null` for expired or missing entries, allowing fallback to Durable_Store
-4. **Type Safety**: Strongly typed with TypeScript interfaces from `src/types/core.ts`
-5. **Error Handling**: Logs parse errors but returns `null` rather than throwing, ensuring resilience
-
-### Future Enhancements
-
-- Add support for batch operations (multi-get, multi-set)
-- Implement cache invalidation patterns
-- Add metrics and monitoring hooks
-- Support for Redis Cluster mode
-- Implement cache warming strategies

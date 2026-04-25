@@ -43,10 +43,12 @@ const result = await logger.trace('Context', 'operation', async () => {
 - `App` - Express application setup
 - `HTTP` - HTTP requests/responses
 - `Middleware` - Middleware execution
-- `Webhook` - Webhook handler
+- `Webhook` - Webhook handler and processAndReply pipeline
 - `Database` - Database operations
-- `SessionManager` - Session management
-- `LLMService` - LLM interactions
+- `SessionManager` - Session lifecycle and conversation history
+- `LLMService` - LLM interactions, short-circuit, cache
+- `MenuService` - Interactive menu resolution
+- `StateStore` - Redis operations
 - `TwilioSignature` - Twilio validation
 - `RateLimiter` - Rate limiting
 - `Deduplication` - Message deduplication
