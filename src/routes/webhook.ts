@@ -109,11 +109,18 @@ export default router;
 // ============================================================================
 
 /**
- * Sends a WhatsApp interactive button message via Twilio Content API.
- * Buttons are real tappable UI elements — not numbered text.
- * Button payloads come back as req.body.ButtonPayload on the next webhook.
+ * Sends a WhatsApp interactive button message.
  *
- * WhatsApp limits: max 3 buttons, button title max 20 chars.
+ * Twilio SDK v5 requires pre-approved Content Templates (contentSid) for
+ * true interactive buttons — inline JSON is not supported.
+ *
+ * For the Sandbox and non-approved numbers we fall back to a richly formatted
+ * text message that mimics the button UX: bold labels, emoji, and a clear
+ * instruction to reply with the option text or number.
+ *
+ * When you have a WhatsApp Business account and approved templates you can
+ * replace this with:
+ *   client.messages.create({ contentSid: 'HX...', contentVariables: '{}', from, to })
  */
 async function sendInteractiveButtons(
   twilioClient: ReturnType<typeof twilio>,
@@ -122,7 +129,7 @@ async function sendInteractiveButtons(
   buttons: Array<{ id: string; title: string }>
 ): Promise<void> {
   if (buttons.length === 0) {
-    // Leaf node — send plain text
+    // Leaf node — send plain text only
     await twilioClient.messages.create({
       from: `whatsapp:${env.twilio.whatsappNumber}`,
       to,
@@ -131,73 +138,140 @@ async function sendInteractiveButtons(
     return;
   }
 
-  await (twilioClient.messages.create as Function)({
+  // Build a formatted text message that looks like a button menu
+  const lines: string[] = [body, ''];
+  buttons.forEach((btn, i) => {
+    lines.push(`*${i + 1}.* ${btn.title}`);
+  });
+  lines.push('');
+  lines.push('_Reply with a number to select._');
+
+  await twilioClient.messages.create({
     from: `whatsapp:${env.twilio.whatsappNumber}`,
     to,
-    contentType: 'application/json',
-    content: JSON.stringify({
-      type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: { text: body },
-        action: {
-          buttons: buttons.map((btn) => ({
-            type: 'reply',
-            reply: { id: btn.id, title: btn.title.substring(0, 20) },
-          })),
-        },
-      },
-    }),
+    body: lines.join('\n'),
   });
 }
 
 /**
- * Handles the "test" keyword and all subsequent button payload responses.
+ * Handles the "test" keyword and all subsequent button navigation replies.
+ *
+ * Navigation state (which node the user is at) is stored in session via
+ * collectedFields.activeButtonNode. Numbered replies ("1", "2", "3") are
+ * resolved against the current node's children.
+ *
  * Returns true if the message was handled as a button interaction,
  * false if it should fall through to the normal LLM pipeline.
  */
 async function handleButtonFlow(
   twilioClient: ReturnType<typeof twilio>,
   to: string,
-  payload: string,
-  correlationId: string
+  rawText: string,
+  correlationId: string,
+  activeButtonNode: string | undefined,
+  sessionId: string | null,
+  sessionManager: ReturnType<typeof getSessionManager>
 ): Promise<boolean> {
   const menu = getMenuService();
-  const trimmed = payload.trim().toLowerCase();
+  const trimmed = rawText.trim().toLowerCase();
 
   // ── Entry point: user sends "test" ────────────────────────────────────────
   if (trimmed === 'test') {
     logger.info('Webhook', 'Button menu triggered by "test" keyword', { correlationId, to });
     const mainMenu = menu.getMainButtonMenu();
     await sendInteractiveButtons(twilioClient, to, mainMenu.body, mainMenu.buttons);
+
+    // Store that we're at the root node
+    if (sessionId) {
+      try {
+        await sessionManager.updateSessionState(sessionId, {
+          collectedFields: { activeButtonNode: 'root' },
+        });
+      } catch { /* non-fatal */ }
+    }
     return true;
   }
 
-  // ── Button payload: user tapped a button ──────────────────────────────────
-  // ButtonPayload values are the button IDs we defined in BUTTON_TREE
-  const { message, intent, isLeaf } = menu.resolveButtonPayload(payload);
+  // ── Numbered reply while in button navigation ─────────────────────────────
+  if (activeButtonNode) {
+    const numMatch = trimmed.match(/^(\d+)$/);
+    if (numMatch) {
+      const index = parseInt(numMatch[1], 10) - 1;
 
-  if (!message) {
-    // Unknown payload — not a button interaction, let LLM handle it
-    return false;
+      // Find the current node and get its child at that index
+      const { message: currentMsg, intent: _i, isLeaf: _l } =
+        menu.resolveButtonPayload(activeButtonNode);
+
+      if (currentMsg && currentMsg.buttons[index]) {
+        const selectedId = currentMsg.buttons[index].id;
+        const { message, intent, isLeaf } = menu.resolveButtonPayload(selectedId);
+
+        if (!message) return false;
+
+        if (isLeaf) {
+          logger.info('Webhook', 'Button leaf reached', { correlationId, to, selectedId, intent });
+          await twilioClient.messages.create({
+            from: `whatsapp:${env.twilio.whatsappNumber}`,
+            to,
+            body: message.body,
+          });
+          // Clear button navigation state, set intent
+          if (sessionId) {
+            try {
+              await sessionManager.updateSessionState(sessionId, {
+                currentIntent: intent ?? undefined,
+                collectedFields: { activeButtonNode: undefined },
+              });
+            } catch { /* non-fatal */ }
+          }
+        } else {
+          logger.debug('Webhook', 'Button navigation', { correlationId, to, selectedId });
+          await sendInteractiveButtons(twilioClient, to, message.body, message.buttons);
+          if (sessionId) {
+            try {
+              await sessionManager.updateSessionState(sessionId, {
+                collectedFields: { activeButtonNode: selectedId },
+              });
+            } catch { /* non-fatal */ }
+          }
+        }
+        return true;
+      }
+    }
+
+    // Non-numeric while in button nav — let LLM handle it, clear nav state
+    if (sessionId) {
+      try {
+        await sessionManager.updateSessionState(sessionId, {
+          collectedFields: { activeButtonNode: undefined },
+        });
+      } catch { /* non-fatal */ }
+    }
   }
 
-  if (isLeaf) {
-    // Leaf node: send the contextual body text, then let the LLM take over
-    // on the next message (intent is now set in session)
-    logger.info('Webhook', 'Button leaf reached', { correlationId, to, payload, intent });
-    await twilioClient.messages.create({
-      from: `whatsapp:${env.twilio.whatsappNumber}`,
-      to,
-      body: message.body,
-    });
+  // ── Direct button ID payload (future: real button taps) ───────────────────
+  const { message, intent, isLeaf } = menu.resolveButtonPayload(rawText.trim());
+  if (message) {
+    if (isLeaf) {
+      await twilioClient.messages.create({
+        from: `whatsapp:${env.twilio.whatsappNumber}`,
+        to,
+        body: message.body,
+      });
+    } else {
+      await sendInteractiveButtons(twilioClient, to, message.body, message.buttons);
+      if (sessionId) {
+        try {
+          await sessionManager.updateSessionState(sessionId, {
+            collectedFields: { activeButtonNode: rawText.trim() },
+          });
+        } catch { /* non-fatal */ }
+      }
+    }
     return true;
   }
 
-  // Non-leaf: send the next level of buttons
-  logger.debug('Webhook', 'Button navigation', { correlationId, to, payload, nextButtons: message.buttons.length });
-  await sendInteractiveButtons(twilioClient, to, message.body, message.buttons);
-  return true;
+  return false;
 }
 
 /**
@@ -227,23 +301,25 @@ async function processAndReply(
     userText = `[${inboundMessage.content.type} message]`;
   }
 
-  // ── Button flow: handle "test" keyword and button payload responses ────────
-  // This runs before session loading — button navigation is stateless.
-  // ButtonPayload is set by Twilio when the user taps an interactive button.
+  // ── Button flow: handle "test" keyword and button navigation replies ─────────
+  // Runs before session loading — uses activeButtonNode from session if available.
   const rawPayload = (inboundMessage.content.type === 'interactive'
-    ? inboundMessage.content.selectedId   // button tap
-    : userText                             // typed text
+    ? inboundMessage.content.selectedId
+    : userText
   );
 
   const handledByButtons = await handleButtonFlow(
     twilioClient,
     inboundMessage.from,
     rawPayload,
-    correlationId
+    correlationId,
+    undefined,          // activeButtonNode — loaded below after session is ready
+    null,               // sessionId — not yet loaded
+    sessionManager
   );
 
   if (handledByButtons) {
-    logger.debug('Webhook', 'Message handled by button flow, skipping LLM pipeline', {
+    logger.debug('Webhook', 'Message handled by button flow (pre-session), skipping LLM pipeline', {
       correlationId,
       payload: rawPayload.substring(0, 30),
     });
@@ -278,6 +354,28 @@ async function processAndReply(
       error: dbErr?.message || String(dbErr),
       code: dbErr?.code,
     });
+  }
+
+  // ── Button flow (with session): handle numbered navigation replies ─────────
+  // Now that we have session state, check if user is navigating the button tree.
+  const activeButtonNode = contextPackage?.activeFlowState?.collectedFields?.['activeButtonNode'] as string | undefined;
+  if (activeButtonNode || rawPayload.trim().toLowerCase() === 'test') {
+    const handledWithSession = await handleButtonFlow(
+      twilioClient,
+      inboundMessage.from,
+      rawPayload,
+      correlationId,
+      activeButtonNode,
+      sessionId,
+      sessionManager
+    );
+    if (handledWithSession) {
+      logger.debug('Webhook', 'Message handled by button flow (with session), skipping LLM pipeline', {
+        correlationId,
+        payload: rawPayload.substring(0, 30),
+      });
+      return;
+    }
   }
 
   // ── 2. Load conversation history (best-effort) ────────────────────────────
