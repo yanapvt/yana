@@ -39,9 +39,10 @@ const EnvironmentSchema = z.object({
     password: isNonProductionMode ? z.string().default('dev_password') : z.string().min(1),
   }),
 
-  // Redis
+  // Redis (optional in development/test)
   redis: z.object({
-    host: z.string().min(1),
+    enabled: z.boolean().default(true),
+    host: isNonProductionMode ? z.string().default('localhost') : z.string().min(1),
     port: z.number().int().positive(),
     password: z.string().optional(),
     db: z.number().int().nonnegative().default(0),
@@ -119,6 +120,7 @@ function loadEnvironmentConfig(): EnvironmentConfig {
     },
 
     redis: {
+      enabled: process.env.REDIS_ENABLED !== 'false',
       host: process.env.REDIS_HOST || 'localhost',
       port: parseInt(process.env.REDIS_PORT || '6379', 10),
       password: process.env.REDIS_PASSWORD,

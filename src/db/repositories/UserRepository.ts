@@ -89,31 +89,31 @@ export class UserRepository {
         [phoneNumber, phoneHash]
       );
 
-      const user = userResult.rows[0];
+      const user = this.mapUser(userResult.rows[0]);
 
       // Create user profile
       await client.query(
         `INSERT INTO user_profiles (user_id, preferred_language, preferred_currency, created_at, updated_at)
          VALUES ($1, $2, $3, NOW(), NOW())`,
-        [user.user_id, preferredLanguage, preferredCurrency]
+        [user.userId, preferredLanguage, preferredCurrency]
       );
 
       // Create user preferences
       await client.query(
         `INSERT INTO user_preferences (user_id, tts_enabled, proactive_messaging_enabled, notification_preferences, created_at, updated_at)
          VALUES ($1, false, false, '{}', NOW(), NOW())`,
-        [user.user_id]
+        [user.userId]
       );
 
       // Create user language settings
       await client.query(
         `INSERT INTO user_language_settings (user_id, recent_actions, frequent_services, common_destinations, preferred_vendors, past_bookings, timing_patterns, created_at, updated_at)
          VALUES ($1, '[]', '[]', '[]', '[]', '[]', '{}', NOW(), NOW())`,
-        [user.user_id]
+        [user.userId]
       );
 
       await client.query('COMMIT');
-      return this.mapUser(user);
+      return user;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;

@@ -5,6 +5,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { logger } from '../config/logger.js';
 
 /**
  * Assigns a unique Correlation_ID to each request
@@ -24,7 +25,12 @@ export function assignCorrelationId(
   // Also add to response headers for client visibility
   res.setHeader('X-Correlation-ID', correlationId);
 
-  console.log(`[${correlationId}] New request: ${req.method} ${req.path}`);
+  logger.debug('Middleware', 'New request', {
+    correlationId,
+    method: req.method,
+    path: req.path,
+    ip: req.ip,
+  });
 
   next();
 }

@@ -4,6 +4,7 @@
  */
 
 import rateLimit from 'express-rate-limit';
+import { logger } from '../config/logger.js';
 
 /**
  * Rate limiter for webhook endpoints
@@ -26,9 +27,13 @@ export const webhookRateLimiter = rateLimit({
   skipFailedRequests: false,
   handler: (req, res) => {
     const correlationId = req.headers['x-correlation-id'] as string;
-    console.warn(
-      `[${correlationId}] Rate limit exceeded for ${req.body?.From || req.ip}`
-    );
+    const from = req.body?.From || req.ip;
+    logger.warn('RateLimiter', 'Rate limit exceeded', {
+      correlationId,
+      from,
+      windowMs: 60,
+      maxRequests: 30,
+    });
     res.status(429).json({ error: 'Too many requests, please try again later' });
   },
 });

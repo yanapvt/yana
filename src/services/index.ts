@@ -5,7 +5,7 @@
 export { StateStore, getStateStore, initStateStore, closeStateStore } from './StateStore.js';
 export type { ToolCacheEntry } from './StateStore.js';
 
-export { SessionManager } from './SessionManager.js';
+export { SessionManager, getSessionManager } from './SessionManager.js';
 export type {
   ContextPackage,
   UserProfileSummary,

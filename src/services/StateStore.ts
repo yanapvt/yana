@@ -1,12 +1,14 @@
 /**
  * StateStore Service
  * Wraps Redis for hot session state management
+ * Optional in development - can run without Redis for local development
  * 
  * Validates: Requirements 16.1, 16.3
  */
 
 import { createClient, RedisClientType } from 'redis';
 import { env } from '../config/environment.js';
+import { logger } from '../config/logger.js';
 import { SessionState } from '../types/core.js';
 
 // ============================================================================
@@ -25,10 +27,16 @@ export interface ToolCacheEntry {
 // ============================================================================
 
 export class StateStore {
-  private client: RedisClientType;
+  private client: RedisClientType | null = null;
   private connected: boolean = false;
+  private enabled: boolean = env.redis.enabled;
 
   constructor() {
+    if (!this.enabled) {
+      logger.warn('StateStore', 'Redis is disabled - session state will not be cached');
+      return;
+    }
+
     this.client = createClient({
       socket: {
         host: env.redis.host,
@@ -40,16 +48,23 @@ export class StateStore {
 
     // Error handling
     this.client.on('error', (err) => {
-      console.error('Redis Client Error:', err);
+      logger.error('StateStore', 'Redis client error', {
+        error: err instanceof Error ? err.message : String(err),
+        host: env.redis.host,
+        port: env.redis.port,
+      });
     });
 
     this.client.on('connect', () => {
-      console.log('Redis Client Connected');
+      logger.info('StateStore', 'Redis client connected', {
+        host: env.redis.host,
+        port: env.redis.port,
+      });
       this.connected = true;
     });
 
     this.client.on('disconnect', () => {
-      console.log('Redis Client Disconnected');
+      logger.debug('StateStore', 'Redis client disconnected');
       this.connected = false;
     });
   }
@@ -59,6 +74,9 @@ export class StateStore {
    * Use with caution - prefer using the provided methods when possible
    */
   getClient(): RedisClientType {
+    if (!this.client) {
+      throw new Error('Redis is disabled or not initialized');
+    }
     return this.client;
   }
 
@@ -66,8 +84,21 @@ export class StateStore {
    * Connect to Redis
    */
   async connect(): Promise<void> {
-    if (!this.connected) {
-      await this.client.connect();
+    if (!this.enabled) {
+      logger.debug('StateStore', 'Skipping Redis connection (disabled)');
+      return;
+    }
+
+    if (!this.connected && this.client) {
+      try {
+        logger.debug('StateStore', 'Connecting to Redis');
+        await this.client.connect();
+      } catch (error) {
+        logger.error('StateStore', 'Failed to connect to Redis', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     }
   }
 
@@ -75,9 +106,20 @@ export class StateStore {
    * Disconnect from Redis
    */
   async disconnect(): Promise<void> {
-    if (this.connected) {
-      await this.client.quit();
-      this.connected = false;
+    if (!this.enabled) {
+      return;
+    }
+
+    if (this.connected && this.client) {
+      try {
+        await this.client.quit();
+        this.connected = false;
+        logger.info('StateStore', 'Redis client disconnected');
+      } catch (error) {
+        logger.error('StateStore', 'Error disconnecting from Redis', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -85,7 +127,14 @@ export class StateStore {
    * Check if connected
    */
   isConnected(): boolean {
-    return this.connected;
+    return this.connected && this.enabled;
+  }
+
+  /**
+   * Check if Redis is enabled
+   */
+  isEnabled(): boolean {
+    return this.enabled;
   }
 
   // ==========================================================================
@@ -103,11 +152,26 @@ export class StateStore {
     state: SessionState,
     ttlSeconds?: number
   ): Promise<void> {
+    if (!this.enabled || !this.client || !this.connected) {
+      logger.debug('StateStore', 'Skipping session state set (Redis disabled or disconnected)', {
+        sessionId,
+      });
+      return;
+    }
+
     const key = this.getSessionKey(sessionId);
     const ttl = ttlSeconds ?? env.operational.sessionTtlSeconds;
     const serialized = JSON.stringify(state);
 
-    await this.client.setEx(key, ttl, serialized);
+    try {
+      await this.client.setEx(key, ttl, serialized);
+      logger.debug('StateStore', 'Session state set', { sessionId, ttl });
+    } catch (error) {
+      logger.error('StateStore', 'Failed to set session state', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -116,17 +180,28 @@ export class StateStore {
    * @returns Session state or null if not found or expired
    */
   async getSessionState(sessionId: string): Promise<SessionState | null> {
-    const key = this.getSessionKey(sessionId);
-    const data = await this.client.get(key);
-
-    if (!data) {
+    if (!this.enabled || !this.client || !this.connected) {
+      logger.debug('StateStore', 'Skipping session state get (Redis disabled or disconnected)', {
+        sessionId,
+      });
       return null;
     }
 
+    const key = this.getSessionKey(sessionId);
+
     try {
+      const data = await this.client.get(key);
+
+      if (!data) {
+        return null;
+      }
+
       return JSON.parse(data) as SessionState;
     } catch (error) {
-      console.error(`Failed to parse session state for ${sessionId}:`, error);
+      logger.error('StateStore', 'Failed to get session state', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -137,9 +212,24 @@ export class StateStore {
    * @returns True if deleted, false if not found
    */
   async deleteSessionState(sessionId: string): Promise<boolean> {
-    const key = this.getSessionKey(sessionId);
-    const result = await this.client.del(key);
-    return result > 0;
+    if (!this.enabled || !this.client || !this.connected) {
+      logger.debug('StateStore', 'Skipping session state delete (Redis disabled or disconnected)', {
+        sessionId,
+      });
+      return false;
+    }
+
+    try {
+      const key = this.getSessionKey(sessionId);
+      const result = await this.client.del(key);
+      return result > 0;
+    } catch (error) {
+      logger.error('StateStore', 'Failed to delete session state', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
   }
 
   // ==========================================================================
@@ -157,13 +247,28 @@ export class StateStore {
     entry: ToolCacheEntry,
     ttlSeconds: number = 300
   ): Promise<void> {
-    const key = this.getToolCacheKey(cacheKey);
-    const serialized = JSON.stringify({
-      ...entry,
-      timestamp: entry.timestamp.toISOString(),
-    });
+    if (!this.enabled || !this.client || !this.connected) {
+      logger.debug('StateStore', 'Skipping tool cache set (Redis disabled or disconnected)', {
+        cacheKey,
+      });
+      return;
+    }
 
-    await this.client.setEx(key, ttlSeconds, serialized);
+    try {
+      const key = this.getToolCacheKey(cacheKey);
+      const serialized = JSON.stringify({
+        ...entry,
+        timestamp: entry.timestamp.toISOString(),
+      });
+
+      await this.client.setEx(key, ttlSeconds, serialized);
+      logger.debug('StateStore', 'Tool cache set', { cacheKey, ttlSeconds });
+    } catch (error) {
+      logger.error('StateStore', 'Failed to set tool cache', {
+        cacheKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -172,21 +277,31 @@ export class StateStore {
    * @returns Tool cache entry or null if not found or expired
    */
   async getToolCache(cacheKey: string): Promise<ToolCacheEntry | null> {
-    const key = this.getToolCacheKey(cacheKey);
-    const data = await this.client.get(key);
-
-    if (!data) {
+    if (!this.enabled || !this.client || !this.connected) {
+      logger.debug('StateStore', 'Skipping tool cache get (Redis disabled or disconnected)', {
+        cacheKey,
+      });
       return null;
     }
 
     try {
+      const key = this.getToolCacheKey(cacheKey);
+      const data = await this.client.get(key);
+
+      if (!data) {
+        return null;
+      }
+
       const parsed = JSON.parse(data);
       return {
         ...parsed,
         timestamp: new Date(parsed.timestamp),
       } as ToolCacheEntry;
     } catch (error) {
-      console.error(`Failed to parse tool cache for ${cacheKey}:`, error);
+      logger.error('StateStore', 'Failed to get tool cache', {
+        cacheKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -213,7 +328,19 @@ export class StateStore {
    * Flush all data (use with caution, primarily for testing)
    */
   async flushAll(): Promise<void> {
-    await this.client.flushDb();
+    if (!this.enabled || !this.client || !this.connected) {
+      logger.debug('StateStore', 'Skipping flush (Redis disabled or disconnected)');
+      return;
+    }
+
+    try {
+      await this.client.flushDb();
+      logger.info('StateStore', 'Redis database flushed');
+    } catch (error) {
+      logger.error('StateStore', 'Failed to flush Redis database', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 

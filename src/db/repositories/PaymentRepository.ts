@@ -95,13 +95,13 @@ export class PaymentRepository {
         ]
       );
 
-      const payment = result.rows[0];
+      const payment = this.mapPayment(result.rows[0]);
 
       // Create initial payment event
       await client.query(
         `INSERT INTO payment_events (payment_id, new_state, triggering_action, created_at)
          VALUES ($1, $2, $3, NOW())`,
-        [payment.payment_id, data.state, 'payment_created']
+        [payment.paymentId, data.state, 'payment_created']
       );
 
       await client.query('COMMIT');

@@ -6,6 +6,7 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { env } from '../config/environment.js';
+import { logger } from '../config/logger.js';
 
 /**
  * Validates Twilio webhook signature
@@ -19,11 +20,31 @@ export function validateTwilioSignature(
   const signature = req.headers['x-twilio-signature'] as string;
   const correlationId = req.headers['x-correlation-id'] as string;
 
+  /**
+   * ✅ DEV MODE BYPASS (ADDED)
+   * Skip Twilio validation in development environment
+   */
+  if (env.nodeEnv === 'development') {
+    logger.warn('TwilioSignature', 'Skipping Twilio signature validation in development', {
+      correlationId,
+      nodeEnv: env.nodeEnv,
+    });
+    next();
+    return;
+  }
+
   if (!signature) {
-    console.error(`[${correlationId}] Missing Twilio signature header`);
+    logger.error('TwilioSignature', 'Missing Twilio signature header', {
+      correlationId,
+    });
     res.status(403).json({ error: 'Missing signature' });
     return;
   }
+
+  logger.debug('TwilioSignature', 'Validating Twilio signature', {
+    correlationId,
+    signatureLength: signature.length,
+  });
 
   // Construct the full URL (Twilio uses the full URL for signature validation)
   const protocol = req.protocol;
@@ -38,46 +59,43 @@ export function validateTwilioSignature(
   );
 
   // Compare signatures using timing-safe comparison
-  // Note: timingSafeEqual requires buffers of equal length
   let isValid = false;
   try {
     const signatureBuffer = Buffer.from(signature);
     const expectedBuffer = Buffer.from(expectedSignature);
-    
-    // Only compare if lengths match (otherwise definitely invalid)
+
     if (signatureBuffer.length === expectedBuffer.length) {
       isValid = crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
     }
   } catch (error) {
-    // If comparison fails for any reason, signature is invalid
     isValid = false;
   }
 
   if (!isValid) {
-    console.error(
-      `[${correlationId}] Invalid Twilio signature. Expected: ${expectedSignature}, Got: ${signature}`
-    );
+    logger.error('TwilioSignature', 'Invalid Twilio signature', {
+      correlationId,
+      expectedSignature,
+      providedSignature: signature,
+    });
     res.status(403).json({ error: 'Invalid signature' });
     return;
   }
 
-  // Signature is valid, proceed to next middleware
+  logger.debug('TwilioSignature', 'Twilio signature validation successful', {
+    correlationId,
+  });
+
   next();
 }
 
 /**
  * Computes the expected Twilio signature using HMAC-SHA1
- * @param authToken - Twilio auth token
- * @param url - Full URL of the webhook endpoint
- * @param params - Request body parameters
- * @returns Base64-encoded HMAC-SHA1 signature
  */
 function computeTwilioSignature(
   authToken: string,
   url: string,
   params: Record<string, unknown>
 ): string {
-  // Sort parameters alphabetically and concatenate
   const data =
     url +
     Object.keys(params)
@@ -85,7 +103,6 @@ function computeTwilioSignature(
       .map((key) => `${key}${params[key]}`)
       .join('');
 
-  // Compute HMAC-SHA1 signature
   const hmac = crypto.createHmac('sha1', authToken);
   hmac.update(data);
   return hmac.digest('base64');

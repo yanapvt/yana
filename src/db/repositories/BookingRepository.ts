@@ -95,13 +95,13 @@ export class BookingRepository {
         ]
       );
 
-      const booking = result.rows[0];
+      const booking = this.mapBooking(result.rows[0]);
 
       // Create initial booking event
       await client.query(
         `INSERT INTO booking_events (booking_id, new_state, triggering_action, created_at)
          VALUES ($1, $2, $3, NOW())`,
-        [booking.booking_id, data.state, 'booking_created']
+        [booking.bookingId, data.state, 'booking_created']
       );
 
       await client.query('COMMIT');

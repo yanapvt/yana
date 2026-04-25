@@ -13,6 +13,7 @@
 
 import { LLMDecisionOutput } from '../types/core.js';
 import { env } from '../config/environment.js';
+import { logger } from '../config/logger.js';
 
 // ============================================================================
 // Types
@@ -77,13 +78,22 @@ export class LLMService {
       confidenceThreshold: config?.confidenceThreshold ?? env.llm.confidenceThreshold,
     };
 
+    logger.debug('LLMService', 'Initializing LLM Service', {
+      provider: this.config.provider,
+      model: this.config.model,
+      confidenceThreshold: this.config.confidenceThreshold,
+    });
+
     if (!this.config.apiKey) {
+      logger.error('LLMService', 'LLM API key is required');
       throw new LLMServiceError(
         'LLM API key is required',
         'MISSING_API_KEY',
         false
       );
     }
+
+    logger.info('LLMService', 'LLM Service initialized successfully');
   }
 
   /**
@@ -105,6 +115,12 @@ export class LLMService {
    * @throws LLMServiceError if the LLM call fails
    */
   async decide(contextPackage: ContextPackage): Promise<LLMDecisionOutput> {
+    logger.debug('LLMService', 'Making LLM decision', {
+      userMessage: contextPackage.userMessage.substring(0, 50),
+      hasConversationHistory: !!contextPackage.conversationHistory?.length,
+      hasSessionState: !!contextPackage.sessionState,
+    });
+
     try {
       // Build the decision prompt
       const prompt = this.buildDecisionPrompt(contextPackage);
@@ -115,14 +131,27 @@ export class LLMService {
       // Parse and validate the structured output
       const decision = this.parseDecisionOutput(response);
 
-      // Log the decision for observability
-      this.logDecision(contextPackage, decision);
+      logger.info('LLMService', 'LLM decision made successfully', {
+        intent: decision.intent,
+        suggestedAction: decision.suggestedAction,
+        confidence: decision.confidence,
+        missingFieldsCount: decision.missingFields.length,
+      });
 
       return decision;
     } catch (error) {
       if (error instanceof LLMServiceError) {
+        logger.error('LLMService', 'LLM decision error', {
+          code: error.code,
+          message: error.message,
+          retryable: error.retryable,
+        });
         throw error;
       }
+
+      logger.error('LLMService', 'Failed to get LLM decision', {
+        error: error instanceof Error ? error.message : String(error),
+      });
 
       throw new LLMServiceError(
         `Failed to get LLM decision: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -151,6 +180,11 @@ export class LLMService {
    * @throws LLMServiceError if the LLM call fails
    */
   async generateUIContent(prompt: string, userLanguage: string = 'en'): Promise<string> {
+    logger.debug('LLMService', 'Generating UI content', {
+      promptLength: prompt.length,
+      userLanguage,
+    });
+
     try {
       // Build the UI content generation prompt
       const fullPrompt = this.buildUIContentPrompt(prompt, userLanguage);
@@ -161,11 +195,23 @@ export class LLMService {
       // Extract and validate the content
       const content = this.parseUIContentOutput(response);
 
+      logger.debug('LLMService', 'UI content generated successfully', {
+        contentLength: content.length,
+      });
+
       return content;
     } catch (error) {
       if (error instanceof LLMServiceError) {
+        logger.error('LLMService', 'UI content generation error', {
+          code: error.code,
+          message: error.message,
+        });
         throw error;
       }
+
+      logger.error('LLMService', 'Failed to generate UI content', {
+        error: error instanceof Error ? error.message : String(error),
+      });
 
       throw new LLMServiceError(
         `Failed to generate UI content: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -252,17 +298,28 @@ export class LLMService {
 
   /**
    * Calls the LLM API (provider-specific implementation)
-   * 
-   * NOTE: This is a placeholder implementation. In production, this would
-   * integrate with the actual LLM provider (OpenAI, Anthropic, etc.)
    */
   private async callLLM(prompt: string, mode: 'decision' | 'ui-support'): Promise<string> {
-    // TODO: Implement actual LLM API call based on provider
-    // For now, return a mock response for testing
-    
+    logger.debug('LLMService', 'Calling LLM API', {
+      provider: this.config.provider,
+      model: this.config.model,
+      mode,
+      promptLength: prompt.length,
+    });
+
     if (this.config.provider === 'mock') {
+      logger.debug('LLMService', 'Using mock LLM response');
       return this.getMockResponse(prompt, mode);
     }
+
+    // Groq and OpenAI-compatible providers
+    if (this.config.provider === 'groq' || this.config.provider === 'openai') {
+      return this.callOpenAICompatible(prompt, mode);
+    }
+
+    logger.error('LLMService', 'LLM provider not implemented', {
+      provider: this.config.provider,
+    });
 
     throw new LLMServiceError(
       `LLM provider '${this.config.provider}' not yet implemented`,
@@ -272,30 +329,96 @@ export class LLMService {
   }
 
   /**
+   * Calls an OpenAI-compatible API (works for Groq, OpenAI, etc.)
+   */
+  private async callOpenAICompatible(prompt: string, mode: 'decision' | 'ui-support'): Promise<string> {
+    const baseUrl = this.config.provider === 'groq'
+      ? 'https://api.groq.com/openai/v1'
+      : 'https://api.openai.com/v1';
+
+    const systemPrompt = mode === 'decision'
+      ? 'You are an intent detection assistant. Always respond with valid JSON only, no markdown, no extra text.'
+      : 'You are a helpful assistant generating user-facing content for a WhatsApp booking platform. Be concise and friendly.';
+
+    const body = JSON.stringify({
+      model: this.config.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt },
+      ],
+      temperature: mode === 'decision' ? 0.1 : 0.7,
+      max_tokens: mode === 'decision' ? 512 : 256,
+    });
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.config.apiKey}`,
+      },
+      body,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error('LLMService', 'LLM API request failed', {
+        status: response.status,
+        provider: this.config.provider,
+        error: errorText.substring(0, 200),
+      });
+      throw new LLMServiceError(
+        `LLM API request failed with status ${response.status}`,
+        'API_ERROR',
+        response.status >= 500 // Retryable for server errors
+      );
+    }
+
+    const data = await response.json() as {
+      choices: Array<{ message: { content: string } }>;
+    };
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new LLMServiceError('LLM returned empty response', 'EMPTY_RESPONSE', true);
+    }
+
+    return content.trim();
+  }
+
+  /**
    * Parses the LLM response into structured decision output
    */
   private parseDecisionOutput(response: string): LLMDecisionOutput {
+    logger.debug('LLMService', 'Parsing LLM decision output', {
+      responseLength: response.length,
+    });
+
     try {
       const parsed = JSON.parse(response);
 
       // Validate required fields
       if (!parsed.intent || typeof parsed.intent !== 'string') {
+        logger.warn('LLMService', 'Missing or invalid intent field in LLM response');
         throw new Error('Missing or invalid intent field');
       }
 
       if (!parsed.parameters || typeof parsed.parameters !== 'object') {
+        logger.warn('LLMService', 'Missing or invalid parameters field in LLM response');
         throw new Error('Missing or invalid parameters field');
       }
 
       if (!Array.isArray(parsed.missingFields)) {
+        logger.warn('LLMService', 'Missing or invalid missingFields field in LLM response');
         throw new Error('Missing or invalid missingFields field');
       }
 
       if (!parsed.suggestedAction || !['ask_missing', 'execute_tool', 'clarify', 'handoff'].includes(parsed.suggestedAction)) {
+        logger.warn('LLMService', 'Missing or invalid suggestedAction field in LLM response');
         throw new Error('Missing or invalid suggestedAction field');
       }
 
       if (typeof parsed.confidence !== 'number' || parsed.confidence < 0 || parsed.confidence > 1) {
+        logger.warn('LLMService', 'Missing or invalid confidence field in LLM response');
         throw new Error('Missing or invalid confidence field');
       }
 
@@ -308,6 +431,10 @@ export class LLMService {
         reasoning: parsed.reasoning,
       };
     } catch (error) {
+      logger.error('LLMService', 'Failed to parse LLM decision output', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
       throw new LLMServiceError(
         `Failed to parse LLM decision output: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'PARSE_ERROR',
@@ -324,6 +451,7 @@ export class LLMService {
     const trimmed = response.trim();
 
     if (!trimmed) {
+      logger.warn('LLMService', 'LLM returned empty UI content');
       throw new LLMServiceError(
         'LLM returned empty UI content',
         'EMPTY_RESPONSE',
@@ -332,19 +460,6 @@ export class LLMService {
     }
 
     return trimmed;
-  }
-
-  /**
-   * Logs the decision for observability
-   */
-  private logDecision(contextPackage: ContextPackage, decision: LLMDecisionOutput): void {
-    console.log('[LLMService] Decision made:', {
-      userMessage: contextPackage.userMessage.substring(0, 100),
-      intent: decision.intent,
-      suggestedAction: decision.suggestedAction,
-      confidence: decision.confidence,
-      missingFieldsCount: decision.missingFields.length,
-    });
   }
 
   /**
@@ -377,6 +492,7 @@ let llmServiceInstance: LLMService | null = null;
  */
 export function getLLMService(): LLMService {
   if (!llmServiceInstance) {
+    logger.debug('LLMService', 'Creating singleton LLMService instance');
     llmServiceInstance = new LLMService();
   }
   return llmServiceInstance;
@@ -386,6 +502,7 @@ export function getLLMService(): LLMService {
  * Initializes the LLMService with custom configuration
  */
 export function initLLMService(config?: Partial<LLMConfig>): LLMService {
+  logger.info('LLMService', 'Initializing LLMService with custom configuration');
   llmServiceInstance = new LLMService(config);
   return llmServiceInstance;
 }

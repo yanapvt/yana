@@ -158,7 +158,7 @@ export class ToolRegistry {
         toolName: definition.name,
         toolVersion: definition.version,
         contract,
-        executionPolicy: executionPolicy as Record<string, unknown>,
+        executionPolicy: executionPolicy as unknown as Record<string, unknown>,
         isEnabled: definition.isEnabled ?? true,
       });
 

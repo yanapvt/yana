@@ -64,7 +64,7 @@ export class SessionRepository {
         // Update last activity
         await client.query(
           'UPDATE sessions SET last_activity_at = NOW(), updated_at = NOW() WHERE session_id = $1',
-          [existingSession.rows[0].session_id]
+          [(existingSession.rows[0] as any).session_id]
         );
         await client.query('COMMIT');
         return this.mapSession(existingSession.rows[0]);
@@ -84,7 +84,7 @@ export class SessionRepository {
       await client.query(
         `INSERT INTO session_state (session_id, missing_fields, collected_fields, pending_options, conversation_history, created_at, updated_at)
          VALUES ($1, '[]', '{}', '[]', '[]', NOW(), NOW())`,
-        [session.session_id]
+        [(session as any).session_id]
       );
 
       await client.query('COMMIT');

@@ -4,14 +4,21 @@
  */
 
 import { Router, Request, Response } from 'express';
+import twilio from 'twilio';
+import crypto from 'crypto';
 import { assignCorrelationId } from '../middleware/correlationId.js';
 import { validateTwilioSignature } from '../middleware/twilioSignature.js';
 import { webhookRateLimiter } from '../middleware/rateLimiting.js';
 import { deduplicateWebhook } from '../middleware/deduplication.js';
+import { logger } from '../config/logger.js';
+import { env } from '../config/environment.js';
 import {
   normalizeInboundMessage,
   TwilioWebhookPayload,
 } from '../utils/messageNormalizer.js';
+import { getLLMService } from '../services/LLMService.js';
+import { getSessionManager } from '../services/SessionManager.js';
+import type { TextContent } from '../types/core.js';
 
 const router = Router();
 
@@ -41,37 +48,51 @@ router.post(
     const payload = req.body as TwilioWebhookPayload;
 
     try {
+      logger.debug('Webhook', 'Processing WhatsApp webhook', {
+        correlationId,
+        from: payload.From,
+        messageType: payload.Body ? 'text' : 'media',
+      });
+
       // Normalize the inbound message
       const inboundMessage = normalizeInboundMessage(payload);
 
-      console.log(
-        `[${correlationId}] Normalized message from ${inboundMessage.from}: type=${inboundMessage.type}`
-      );
+      logger.info('Webhook', 'Message normalized successfully', {
+        correlationId,
+        from: inboundMessage.from,
+        type: inboundMessage.type,
+        timestamp: inboundMessage.timestamp,
+      });
 
       // Emit immediate acknowledgement to Twilio (HTTP 200)
       // This prevents Twilio from retrying while we process the message
       res.status(200).send('');
 
-      // TODO: Queue message for async processing
-      // - Load or create session
-      // - Process through Orchestrator
-      // - Execute LLM decision
-      // - Execute tool calls if needed
-      // - Render and send WhatsApp response
-      
-      // For now, just log the message
-      console.log(
-        `[${correlationId}] Message queued for processing:`,
-        JSON.stringify(inboundMessage, null, 2)
-      );
+      // Process message asynchronously after acknowledging Twilio
+      setImmediate(async () => {
+        try {
+          await processAndReply(inboundMessage, correlationId);
+        } catch (err) {
+          // Capture full error details including pg error codes
+          const errObj = err as any;
+          logger.error('Webhook', 'Async processing failed', {
+            correlationId,
+            error: errObj?.message || String(err),
+            code: errObj?.code,
+            detail: errObj?.detail,
+            stack: errObj?.stack,
+          });
+        }
+      });
     } catch (error) {
       // Log the error but still return 200 to Twilio
       // We don't want Twilio to retry on our internal errors
-      console.error(
-        `[${correlationId}] Error processing webhook:`,
-        error
-      );
-      
+      logger.error('Webhook', 'Error processing webhook', {
+        correlationId,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+
       // If we haven't sent a response yet, send 200
       if (!res.headersSent) {
         res.status(200).send('');
@@ -81,3 +102,236 @@ router.post(
 );
 
 export default router;
+
+/**
+ * Processes an inbound message and sends a reply via Twilio.
+ * Loads or creates a session, passes conversation history to the LLM,
+ * persists both the user message and the bot reply to the session.
+ * Gracefully degrades if the database is unavailable.
+ */
+async function processAndReply(
+  inboundMessage: ReturnType<typeof normalizeInboundMessage>,
+  correlationId: string
+): Promise<void> {
+  const twilioClient = twilio(env.twilio.accountSid, env.twilio.authToken);
+  const sessionManager = getSessionManager();
+  const llmService = getLLMService();
+
+  // Strip the "whatsapp:" prefix to get the plain phone number
+  const phoneNumber = inboundMessage.from.replace(/^whatsapp:/, '');
+
+  // Extract user text from the message content
+  let userText = '';
+  if (inboundMessage.content.type === 'text') {
+    userText = (inboundMessage.content as TextContent).body;
+  } else if (inboundMessage.content.type === 'interactive') {
+    userText = inboundMessage.content.selectedTitle || inboundMessage.content.selectedId;
+  } else {
+    userText = `[${inboundMessage.content.type} message]`;
+  }
+
+  // ── 1. Load or create session (best-effort — DB may be unavailable) ────────
+  let sessionId: string | null = null;
+  let contextPackage: Awaited<ReturnType<typeof sessionManager.resumeSession>> = null;
+
+  try {
+    contextPackage = await sessionManager.resumeSession(inboundMessage.from);
+
+    if (!contextPackage) {
+      logger.info('Webhook', 'No active session found, creating new session', {
+        correlationId,
+        phoneNumber,
+      });
+      const phoneHash = crypto.createHash('sha256').update(phoneNumber).digest('hex');
+      const created = await sessionManager.createSession({
+        phoneNumber: inboundMessage.from,
+        phoneHash,
+      });
+      contextPackage = await sessionManager.assembleContextPackage(created.sessionId);
+    }
+
+    sessionId = contextPackage.sessionId;
+    logger.debug('Webhook', 'Session loaded', { correlationId, sessionId });
+  } catch (dbErr: any) {
+    logger.warn('Webhook', 'Database unavailable — proceeding without session context', {
+      correlationId,
+      error: dbErr?.message || String(dbErr),
+      code: dbErr?.code,
+    });
+  }
+
+  // ── 2. Load conversation history (best-effort) ────────────────────────────
+  let conversationHistory: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
+
+  if (sessionId) {
+    try {
+      const { SessionRepository } = await import('../db/repositories/SessionRepository.js');
+      const sessionRepo = new SessionRepository();
+      const stateData = await sessionRepo.getState(sessionId);
+
+      const rawHistory = (stateData?.conversationHistory ?? []) as Array<{
+        role: 'user' | 'assistant' | 'system';
+        content: unknown;
+      }>;
+
+      conversationHistory = rawHistory.slice(-20).map((entry) => ({
+        role: entry.role,
+        content: typeof entry.content === 'string'
+          ? entry.content
+          : typeof entry.content === 'object' && entry.content !== null && 'body' in entry.content
+            ? String((entry.content as { body: unknown }).body)
+            : JSON.stringify(entry.content),
+      }));
+
+      logger.debug('Webhook', 'Conversation history loaded', {
+        correlationId,
+        sessionId,
+        historyLength: conversationHistory.length,
+      });
+    } catch (histErr: any) {
+      logger.warn('Webhook', 'Could not load conversation history', {
+        correlationId,
+        error: histErr?.message || String(histErr),
+      });
+    }
+  }
+
+  // ── 3. Persist the inbound user message (best-effort) ─────────────────────
+  if (sessionId) {
+    try {
+      await sessionManager.appendMessage(sessionId, {
+        correlationId,
+        fromNumber: inboundMessage.from,
+        toNumber: inboundMessage.to,
+        messageType: inboundMessage.type,
+        role: 'user',
+        content: inboundMessage.content as Record<string, unknown>,
+      });
+    } catch (persistErr: any) {
+      logger.warn('Webhook', 'Could not persist inbound message', {
+        correlationId,
+        error: persistErr?.message || String(persistErr),
+      });
+    }
+  }
+
+  // ── 4. Call LLM with whatever context we have ─────────────────────────────
+  const userProfile = contextPackage?.userProfile;
+  const activeFlowState = contextPackage?.activeFlowState;
+  const schemaProgress = contextPackage?.schemaProgress;
+
+  logger.debug('Webhook', 'Calling LLM', {
+    correlationId,
+    sessionId,
+    historyLength: conversationHistory.length,
+    userText: userText.substring(0, 100),
+  });
+
+  const decision = await llmService.decide({
+    userMessage: userText,
+    conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+    userProfile: userProfile ? {
+      preferredLanguage: userProfile.preferredLanguage,
+      nationality: userProfile.nationality,
+      recentActions: contextPackage?.behavioralSummary.recentActions,
+    } : undefined,
+    sessionState: activeFlowState ? {
+      currentIntent: activeFlowState.currentIntent,
+      activeSchema: activeFlowState.activeSchema,
+      collectedFields: schemaProgress?.collectedFields,
+      missingFields: schemaProgress?.missingFields,
+    } : undefined,
+  });
+
+  logger.info('Webhook', 'LLM decision received', {
+    correlationId,
+    sessionId,
+    intent: decision.intent,
+    suggestedAction: decision.suggestedAction,
+    confidence: decision.confidence,
+    missingFields: decision.missingFields,
+  });
+
+  // ── 5. Update session state (best-effort) ─────────────────────────────────
+  if (sessionId) {
+    try {
+      await sessionManager.updateSessionState(sessionId, {
+        currentIntent: decision.intent,
+        missingFields: decision.missingFields,
+        collectedFields: {
+          ...(schemaProgress?.collectedFields ?? {}),
+          ...decision.parameters,
+        },
+      });
+    } catch (stateErr: any) {
+      logger.warn('Webhook', 'Could not update session state', {
+        correlationId,
+        error: stateErr?.message || String(stateErr),
+      });
+    }
+  }
+
+  // ── 6. Generate reply text ─────────────────────────────────────────────────
+  const lang = userProfile?.preferredLanguage || 'en';
+  let replyText: string;
+
+  if (decision.suggestedAction === 'ask_missing' && decision.missingFields.length > 0) {
+    const missingField = decision.missingFields[0];
+    replyText = await llmService.generateUIContent(
+      `The user wants to ${decision.intent}. Ask them for their ${missingField} in a friendly, conversational way. Keep it to one sentence.`,
+      lang
+    );
+  } else if (decision.suggestedAction === 'execute_tool') {
+    replyText = await llmService.generateUIContent(
+      `The user wants to ${decision.intent} with parameters: ${JSON.stringify(decision.parameters)}. Acknowledge their request and let them know you're processing it.`,
+      lang
+    );
+  } else if (decision.suggestedAction === 'clarify') {
+    replyText = await llmService.generateUIContent(
+      `The user said something unclear. Their detected intent was "${decision.intent}". Ask a clarifying question.`,
+      lang
+    );
+  } else {
+    replyText = await llmService.generateUIContent(
+      `Respond helpfully to a user who said: "${userText}". Keep it brief and friendly.`,
+      lang
+    );
+  }
+
+  // ── 7. Send reply via Twilio ───────────────────────────────────────────────
+  await twilioClient.messages.create({
+    from: `whatsapp:${env.twilio.whatsappNumber}`,
+    to: inboundMessage.from,
+    body: replyText,
+  });
+
+  logger.info('Webhook', 'Reply sent successfully', {
+    correlationId,
+    sessionId,
+    to: inboundMessage.from,
+    replyLength: replyText.length,
+  });
+
+  // ── 8. Persist the bot reply (best-effort) ────────────────────────────────
+  if (sessionId) {
+    try {
+      await sessionManager.appendMessage(sessionId, {
+        correlationId: `${correlationId}-reply`,
+        fromNumber: inboundMessage.to,
+        toNumber: inboundMessage.from,
+        messageType: 'text',
+        role: 'assistant',
+        content: { type: 'text', body: replyText },
+      });
+      logger.debug('Webhook', 'Bot reply persisted to session history', {
+        correlationId,
+        sessionId,
+      });
+    } catch (persistErr: any) {
+      logger.warn('Webhook', 'Could not persist bot reply', {
+        correlationId,
+        error: persistErr?.message || String(persistErr),
+      });
+    }
+  }
+}
