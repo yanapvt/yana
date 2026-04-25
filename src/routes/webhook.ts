@@ -19,7 +19,15 @@ import {
 import { getLLMService } from '../services/LLMService.js';
 import { getSessionManager } from '../services/SessionManager.js';
 import { getMenuService } from '../services/MenuService.js';
+import { BUTTON_TREE } from '../services/MenuService.js';
 import type { TextContent } from '../types/core.js';
+
+/** Short descriptions shown under each top-level tile image */
+const BUTTON_TREE_DESCRIPTIONS: Record<string, string> = {
+  get_around: 'Airport transfers, taxis, trains & travel planning',
+  explore:    'Food, activities, events & shopping',
+  stay:       'Hotels, essentials & emergency help',
+};
 
 const router = Router();
 
@@ -105,31 +113,90 @@ router.post(
 export default router;
 
 // ============================================================================
-// Interactive button helpers
+// Tile-style menu helpers
 // ============================================================================
 
 /**
- * Sends a WhatsApp interactive button message.
- *
- * Twilio SDK v5 requires pre-approved Content Templates (contentSid) for
- * true interactive buttons — inline JSON is not supported.
- *
- * For the Sandbox and non-approved numbers we fall back to a richly formatted
- * text message that mimics the button UX: bold labels, emoji, and a clear
- * instruction to reply with the option text or number.
- *
- * When you have a WhatsApp Business account and approved templates you can
- * replace this with:
- *   client.messages.create({ contentSid: 'HX...', contentVariables: '{}', from, to })
+ * Image URLs for each top-level menu category.
+ * These are publicly accessible images — replace with your own hosted assets.
+ * WhatsApp requires HTTPS URLs for media messages.
  */
-async function sendInteractiveButtons(
+const MENU_IMAGES: Record<string, string> = {
+  get_around:  'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=80', // tuk-tuk
+  explore:     'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=800&q=80', // food
+  stay:        'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800&q=80', // hotel
+  // Sub-categories
+  airport:         'https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=800&q=80',
+  local_transport: 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=80',
+  travel_planning: 'https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?w=800&q=80',
+  food:            'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=800&q=80',
+  activities:      'https://images.unsplash.com/photo-1530789253388-582c481c54b0?w=800&q=80',
+  events:          'https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=800&q=80',
+  accommodation:   'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800&q=80',
+  essentials:      'https://images.unsplash.com/photo-1553361371-9b22f78e8b1d?w=800&q=80',
+  help:            'https://images.unsplash.com/photo-1584515933487-779824d29309?w=800&q=80',
+};
+
+/** Default image used when no specific one is configured */
+const DEFAULT_MENU_IMAGE = 'https://images.unsplash.com/photo-1552465011-b4e21bf6e79a?w=800&q=80'; // Sri Lanka
+
+/**
+ * Sends a tile-style menu: each option is its own image + caption message,
+ * followed by a single selection prompt.
+ *
+ * This is the closest approximation to "image + text + button per tile"
+ * that works in the Twilio Sandbox without template approval.
+ *
+ * For true card/carousel templates (WhatsApp Business + approved templates),
+ * replace this with Twilio Content Template Builder contentSid calls.
+ */
+async function sendTileMenu(
+  twilioClient: ReturnType<typeof twilio>,
+  to: string,
+  headerText: string,
+  tiles: Array<{ id: string; title: string; description?: string }>
+): Promise<void> {
+  // Send each tile as image + caption
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
+    const imageUrl = MENU_IMAGES[tile.id] ?? DEFAULT_MENU_IMAGE;
+    const caption = `*${i + 1}. ${tile.title}*${tile.description ? `\n${tile.description}` : ''}`;
+
+    await twilioClient.messages.create({
+      from: `whatsapp:${env.twilio.whatsappNumber}`,
+      to,
+      body: caption,
+      mediaUrl: [imageUrl],
+    });
+  }
+
+  // Final selection prompt
+  const selectionLines = [
+    headerText,
+    '',
+    ...tiles.map((t, i) => `*${i + 1}.* ${t.title}`),
+    '',
+    '_Reply with a number to select._',
+  ];
+
+  await twilioClient.messages.create({
+    from: `whatsapp:${env.twilio.whatsappNumber}`,
+    to,
+    body: selectionLines.join('\n'),
+  });
+}
+
+/**
+ * Sends a plain numbered menu (no images) — used for deeper levels
+ * where sending multiple images would be too noisy.
+ */
+async function sendTextMenu(
   twilioClient: ReturnType<typeof twilio>,
   to: string,
   body: string,
   buttons: Array<{ id: string; title: string }>
 ): Promise<void> {
   if (buttons.length === 0) {
-    // Leaf node — send plain text only
     await twilioClient.messages.create({
       from: `whatsapp:${env.twilio.whatsappNumber}`,
       to,
@@ -138,14 +205,7 @@ async function sendInteractiveButtons(
     return;
   }
 
-  // Build a formatted text message that looks like a button menu
-  const lines: string[] = [body, ''];
-  buttons.forEach((btn, i) => {
-    lines.push(`*${i + 1}.* ${btn.title}`);
-  });
-  lines.push('');
-  lines.push('_Reply with a number to select._');
-
+  const lines = [body, '', ...buttons.map((btn, i) => `*${i + 1}.* ${btn.title}`), '', '_Reply with a number to select._'];
   await twilioClient.messages.create({
     from: `whatsapp:${env.twilio.whatsappNumber}`,
     to,
@@ -179,7 +239,13 @@ async function handleButtonFlow(
   if (trimmed === 'test') {
     logger.info('Webhook', 'Button menu triggered by "test" keyword', { correlationId, to });
     const mainMenu = menu.getMainButtonMenu();
-    await sendInteractiveButtons(twilioClient, to, mainMenu.body, mainMenu.buttons);
+
+    // Top level: send tile-style (image + text per option)
+    await sendTileMenu(twilioClient, to, mainMenu.body, mainMenu.buttons.map((btn) => ({
+      id: btn.id,
+      title: btn.title,
+      description: BUTTON_TREE_DESCRIPTIONS[btn.id],
+    })));
 
     // Store that we're at the root node
     if (sessionId) {
@@ -226,7 +292,7 @@ async function handleButtonFlow(
           }
         } else {
           logger.debug('Webhook', 'Button navigation', { correlationId, to, selectedId });
-          await sendInteractiveButtons(twilioClient, to, message.body, message.buttons);
+          await sendTextMenu(twilioClient, to, message.body, message.buttons);
           if (sessionId) {
             try {
               await sessionManager.updateSessionState(sessionId, {
@@ -259,7 +325,7 @@ async function handleButtonFlow(
         body: message.body,
       });
     } else {
-      await sendInteractiveButtons(twilioClient, to, message.body, message.buttons);
+      await sendTextMenu(twilioClient, to, message.body, message.buttons);
       if (sessionId) {
         try {
           await sessionManager.updateSessionState(sessionId, {
