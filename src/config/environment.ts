@@ -78,11 +78,42 @@ const EnvironmentSchema = z.object({
     host: z.string().url().default('https://api.nango.dev'),
   }),
 
+  // ── External Provider API Keys ──────────────────────────────────────────
+  providers: z.object({
+    // Google — free tier, used across hotels, restaurants, excursions, logistics
+    googlePlacesApiKey: z.string().optional(),
+
+    // Hotels
+    literapiKey: z.string().optional(),       // liteapi.travel — hotel rates + inventory
+    cloudbedsKey: z.string().optional(),      // cloudbeds.com  — PMS / boutique hotels
+    bookingAffiliateToken: z.string().optional(), // Booking.com affiliate
+    expediaApiKey: z.string().optional(),     // Expedia affiliate
+
+    // Excursions
+    viatorApiKey: z.string().optional(),      // viator.com — tours & activities
+    guidegeekApiKey: z.string().optional(),   // guidegeek.com — AI travel guide
+
+    // Logistics — deeplinks only, no key needed; kept for future direct API
+    uberClientId: z.string().optional(),
+    pickmeApiKey: z.string().optional(),
+
+    // Restaurants — internal merchant onboarding + Genie
+    genieMerchantApiKey: z.string().optional(),
+    genieMerchantBaseUrl: z.string().optional(),
+
+    // Margin config (percentage added on top of provider price)
+    hotelMarginPercent: z.number().min(0).max(100).default(10),
+  }),
+
   // Feature Flags
   features: z.object({
     ttsEnabled: z.boolean().default(false),
     proactiveMessagingEnabled: z.boolean().default(false),
     vendorCmsEnabled: z.boolean().default(false),
+    /** When false, short-circuit rules (greetings, thanks, bye, etc.) are disabled and all messages go to the LLM */
+    shortCircuitEnabled: z.boolean().default(true),
+    /** When false, pre-defined welcome/greeting messages are disabled */
+    predefinedMessagesEnabled: z.boolean().default(true),
   }),
 
   // Operational Settings
@@ -153,10 +184,27 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       host: process.env.NANGO_HOST || 'https://api.nango.dev',
     },
 
+    providers: {
+      googlePlacesApiKey: process.env.GOOGLE_PLACES_API_KEY,
+      literapiKey: process.env.LITEAPI_KEY,
+      cloudbedsKey: process.env.CLOUDBEDS_KEY,
+      bookingAffiliateToken: process.env.BOOKING_AFFILIATE_TOKEN,
+      expediaApiKey: process.env.EXPEDIA_API_KEY,
+      viatorApiKey: process.env.VIATOR_API_KEY,
+      guidegeekApiKey: process.env.GUIDEGEEK_API_KEY,
+      uberClientId: process.env.UBER_CLIENT_ID,
+      pickmeApiKey: process.env.PICKME_API_KEY,
+      genieMerchantApiKey: process.env.GENIE_MERCHANT_API_KEY,
+      genieMerchantBaseUrl: process.env.GENIE_MERCHANT_BASE_URL,
+      hotelMarginPercent: parseFloat(process.env.HOTEL_MARGIN_PERCENT || '10'),
+    },
+
     features: {
       ttsEnabled: process.env.FEATURE_TTS_ENABLED === 'true',
       proactiveMessagingEnabled: process.env.FEATURE_PROACTIVE_MESSAGING_ENABLED === 'true',
       vendorCmsEnabled: process.env.FEATURE_VENDOR_CMS_ENABLED === 'true',
+      shortCircuitEnabled: process.env.FEATURE_SHORT_CIRCUIT_ENABLED !== 'false',
+      predefinedMessagesEnabled: process.env.FEATURE_PREDEFINED_MESSAGES_ENABLED !== 'false',
     },
 
     operational: {

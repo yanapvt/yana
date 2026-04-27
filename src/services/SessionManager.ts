@@ -436,6 +436,20 @@ export class SessionManager {
   }
 
   /**
+   * Save or update the user's display name (sourced from WhatsApp ProfileName).
+   * Called on every inbound message so the name stays current if the user
+   * changes their WhatsApp display name.
+   *
+   * @param userId - User ID
+   * @param name   - WhatsApp display name from Twilio's ProfileName field
+   */
+  async updateUserName(userId: string, name: string): Promise<void> {
+    logger.debug('SessionManager', 'Updating user display name', { userId, name });
+    await this.userRepository.updateProfile(userId, { name });
+    logger.info('SessionManager', 'User display name updated', { userId, name });
+  }
+
+  /**
    * Get user's preferred language from profile
    * 
    * @param userId - User ID

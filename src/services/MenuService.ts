@@ -545,12 +545,12 @@ export class MenuService {
 
   private getKeywordsForItem(item: MenuItem): string[] {
     const map: Record<string, string[]> = {
-      places:    ['place', 'visit', 'see', 'attraction', 'beach', 'temple', 'park', 'sightseeing', 'tour'],
+      places:    ['place', 'visit', 'see', 'attraction', 'beach', 'temple', 'park', 'sightseeing'],
       food:      ['food', 'eat', 'restaurant', 'cuisine', 'meal', 'lunch', 'dinner', 'breakfast', 'snack', 'drink'],
-      transport: ['transport', 'travel', 'get to', 'tuk', 'taxi', 'train', 'bus', 'car', 'ride', 'driver', 'uber'],
-      hotels:    ['hotel', 'stay', 'accommodation', 'room', 'hostel', 'guesthouse', 'villa', 'resort', 'book'],
-      culture:   ['culture', 'custom', 'festival', 'tip', 'etiquette', 'dress', 'currency', 'money', 'safety'],
-      emergency: ['emergency', 'help', 'hospital', 'police', 'embassy', 'lost', 'stolen', 'sick', 'danger'],
+      transport: ['transport', 'tuk', 'taxi', 'train', 'bus', 'ride', 'driver', 'uber', 'pickme', 'pickup', 'dropoff'],
+      hotels:    ['hotel', 'accommodation', 'room', 'hostel', 'guesthouse', 'villa', 'resort', 'check in', 'check-in'],
+      culture:   ['culture', 'custom', 'festival', 'etiquette', 'dress code', 'currency exchange', 'safety'],
+      emergency: ['emergency', 'hospital', 'police', 'embassy', 'lost', 'stolen', 'sick', 'danger'],
     };
     return map[item.id] ?? [item.id, item.label.toLowerCase()];
   }

@@ -70,7 +70,6 @@ export class UserRepository {
     try {
       await client.query('BEGIN');
 
-      // Check if user exists (idempotency)
       const existingUser = await client.query<User>(
         'SELECT user_id, phone_number, phone_hash, created_at, updated_at FROM users WHERE phone_number = $1',
         [phoneNumber]
@@ -81,7 +80,6 @@ export class UserRepository {
         return this.mapUser(existingUser.rows[0]);
       }
 
-      // Create user
       const userResult = await client.query<User>(
         `INSERT INTO users (phone_number, phone_hash, created_at, updated_at)
          VALUES ($1, $2, NOW(), NOW())
@@ -91,21 +89,18 @@ export class UserRepository {
 
       const user = this.mapUser(userResult.rows[0]);
 
-      // Create user profile
       await client.query(
         `INSERT INTO user_profiles (user_id, preferred_language, preferred_currency, created_at, updated_at)
          VALUES ($1, $2, $3, NOW(), NOW())`,
         [user.userId, preferredLanguage, preferredCurrency]
       );
 
-      // Create user preferences
       await client.query(
         `INSERT INTO user_preferences (user_id, tts_enabled, proactive_messaging_enabled, notification_preferences, created_at, updated_at)
          VALUES ($1, false, false, '{}', NOW(), NOW())`,
         [user.userId]
       );
 
-      // Create user language settings
       await client.query(
         `INSERT INTO user_language_settings (user_id, recent_actions, frequent_services, common_destinations, preferred_vendors, past_bookings, timing_patterns, created_at, updated_at)
          VALUES ($1, '[]', '[]', '[]', '[]', '[]', '{}', NOW(), NOW())`,
@@ -122,82 +117,54 @@ export class UserRepository {
     }
   }
 
-  /**
-   * Find user by phone number
-   */
   async findByPhoneNumber(phoneNumber: string): Promise<User | null> {
     const result = await pool.query<User>(
       'SELECT user_id, phone_number, phone_hash, created_at, updated_at FROM users WHERE phone_number = $1',
       [phoneNumber]
     );
-
     return result.rows.length > 0 ? this.mapUser(result.rows[0]) : null;
   }
 
-  /**
-   * Find user by user ID
-   */
   async findById(userId: string): Promise<User | null> {
     const result = await pool.query<User>(
       'SELECT user_id, phone_number, phone_hash, created_at, updated_at FROM users WHERE user_id = $1',
       [userId]
     );
-
     return result.rows.length > 0 ? this.mapUser(result.rows[0]) : null;
   }
 
-  /**
-   * Get user profile
-   */
   async getProfile(userId: string): Promise<UserProfileData | null> {
     const result = await pool.query<UserProfileData>(
       `SELECT user_id, name, nationality, preferred_language, home_location, preferred_currency, created_at, updated_at
        FROM user_profiles WHERE user_id = $1`,
       [userId]
     );
-
     return result.rows.length > 0 ? this.mapUserProfile(result.rows[0]) : null;
   }
 
   /**
-   * Update user profile
-   * Idempotent: Updates only provided fields
+   * Update user profile — fixed parameterized SQL ($N placeholders)
    */
   async updateProfile(
     userId: string,
     updates: Partial<Omit<UserProfileData, 'userId' | 'createdAt' | 'updatedAt'>>
   ): Promise<UserProfileData> {
-    const fields: string[] = [];
+    const setClauses: string[] = [];
     const values: unknown[] = [];
-    let paramIndex = 1;
+    let n = 1;
 
-    if (updates.name !== undefined) {
-      fields.push(`name = $${paramIndex++}`);
-      values.push(updates.name);
-    }
-    if (updates.nationality !== undefined) {
-      fields.push(`nationality = $${paramIndex++}`);
-      values.push(updates.nationality);
-    }
-    if (updates.preferredLanguage !== undefined) {
-      fields.push(`preferred_language = $${paramIndex++}`);
-      values.push(updates.preferredLanguage);
-    }
-    if (updates.homeLocation !== undefined) {
-      fields.push(`home_location = $${paramIndex++}`);
-      values.push(updates.homeLocation);
-    }
-    if (updates.preferredCurrency !== undefined) {
-      fields.push(`preferred_currency = $${paramIndex++}`);
-      values.push(updates.preferredCurrency);
-    }
+    if (updates.name !== undefined)              { setClauses.push(`name = $${n++}`);              values.push(updates.name); }
+    if (updates.nationality !== undefined)        { setClauses.push(`nationality = $${n++}`);        values.push(updates.nationality); }
+    if (updates.preferredLanguage !== undefined)  { setClauses.push(`preferred_language = $${n++}`); values.push(updates.preferredLanguage); }
+    if (updates.homeLocation !== undefined)       { setClauses.push(`home_location = $${n++}`);      values.push(updates.homeLocation); }
+    if (updates.preferredCurrency !== undefined)  { setClauses.push(`preferred_currency = $${n++}`); values.push(updates.preferredCurrency); }
 
-    fields.push(`updated_at = NOW()`);
+    setClauses.push(`updated_at = NOW()`);
     values.push(userId);
 
     const result = await pool.query<UserProfileData>(
-      `UPDATE user_profiles SET ${fields.join(', ')}
-       WHERE user_id = $${paramIndex}
+      `UPDATE user_profiles SET ${setClauses.join(', ')}
+       WHERE user_id = $${n}
        RETURNING user_id, name, nationality, preferred_language, home_location, preferred_currency, created_at, updated_at`,
       values
     );
@@ -205,50 +172,36 @@ export class UserRepository {
     return this.mapUserProfile(result.rows[0]);
   }
 
-  /**
-   * Get user preferences
-   */
   async getPreferences(userId: string): Promise<UserPreferences | null> {
     const result = await pool.query<UserPreferences>(
       `SELECT user_id, tts_enabled, proactive_messaging_enabled, notification_preferences, created_at, updated_at
        FROM user_preferences WHERE user_id = $1`,
       [userId]
     );
-
     return result.rows.length > 0 ? this.mapUserPreferences(result.rows[0]) : null;
   }
 
   /**
-   * Update user preferences
-   * Idempotent: Updates only provided fields
+   * Update user preferences — fixed parameterized SQL
    */
   async updatePreferences(
     userId: string,
     updates: Partial<Omit<UserPreferences, 'userId' | 'createdAt' | 'updatedAt'>>
   ): Promise<UserPreferences> {
-    const fields: string[] = [];
+    const setClauses: string[] = [];
     const values: unknown[] = [];
-    let paramIndex = 1;
+    let n = 1;
 
-    if (updates.ttsEnabled !== undefined) {
-      fields.push(`tts_enabled = $${paramIndex++}`);
-      values.push(updates.ttsEnabled);
-    }
-    if (updates.proactiveMessagingEnabled !== undefined) {
-      fields.push(`proactive_messaging_enabled = $${paramIndex++}`);
-      values.push(updates.proactiveMessagingEnabled);
-    }
-    if (updates.notificationPreferences !== undefined) {
-      fields.push(`notification_preferences = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.notificationPreferences));
-    }
+    if (updates.ttsEnabled !== undefined)               { setClauses.push(`tts_enabled = $${n++}`);               values.push(updates.ttsEnabled); }
+    if (updates.proactiveMessagingEnabled !== undefined) { setClauses.push(`proactive_messaging_enabled = $${n++}`); values.push(updates.proactiveMessagingEnabled); }
+    if (updates.notificationPreferences !== undefined)   { setClauses.push(`notification_preferences = $${n++}`);   values.push(JSON.stringify(updates.notificationPreferences)); }
 
-    fields.push(`updated_at = NOW()`);
+    setClauses.push(`updated_at = NOW()`);
     values.push(userId);
 
     const result = await pool.query<UserPreferences>(
-      `UPDATE user_preferences SET ${fields.join(', ')}
-       WHERE user_id = $${paramIndex}
+      `UPDATE user_preferences SET ${setClauses.join(', ')}
+       WHERE user_id = $${n}
        RETURNING user_id, tts_enabled, proactive_messaging_enabled, notification_preferences, created_at, updated_at`,
       values
     );
@@ -256,67 +209,107 @@ export class UserRepository {
     return this.mapUserPreferences(result.rows[0]);
   }
 
-  /**
-   * Get user language settings (behavioral memory)
-   */
   async getLanguageSettings(userId: string): Promise<UserLanguageSettings | null> {
     const result = await pool.query<UserLanguageSettings>(
       `SELECT user_id, recent_actions, frequent_services, common_destinations, preferred_vendors, past_bookings, timing_patterns, created_at, updated_at
        FROM user_language_settings WHERE user_id = $1`,
       [userId]
     );
-
     return result.rows.length > 0 ? this.mapUserLanguageSettings(result.rows[0]) : null;
   }
 
   /**
-   * Update user language settings (behavioral memory)
-   * Idempotent: Updates only provided fields
+   * Update user language settings (behavioral memory) — fixed parameterized SQL
    */
   async updateLanguageSettings(
     userId: string,
     updates: Partial<Omit<UserLanguageSettings, 'userId' | 'createdAt' | 'updatedAt'>>
   ): Promise<UserLanguageSettings> {
-    const fields: string[] = [];
+    const setClauses: string[] = [];
     const values: unknown[] = [];
-    let paramIndex = 1;
+    let n = 1;
 
-    if (updates.recentActions !== undefined) {
-      fields.push(`recent_actions = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.recentActions));
-    }
-    if (updates.frequentServices !== undefined) {
-      fields.push(`frequent_services = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.frequentServices));
-    }
-    if (updates.commonDestinations !== undefined) {
-      fields.push(`common_destinations = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.commonDestinations));
-    }
-    if (updates.preferredVendors !== undefined) {
-      fields.push(`preferred_vendors = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.preferredVendors));
-    }
-    if (updates.pastBookings !== undefined) {
-      fields.push(`past_bookings = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.pastBookings));
-    }
-    if (updates.timingPatterns !== undefined) {
-      fields.push(`timing_patterns = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.timingPatterns));
-    }
+    if (updates.recentActions !== undefined)      { setClauses.push(`recent_actions = $${n++}`);       values.push(JSON.stringify(updates.recentActions)); }
+    if (updates.frequentServices !== undefined)   { setClauses.push(`frequent_services = $${n++}`);    values.push(JSON.stringify(updates.frequentServices)); }
+    if (updates.commonDestinations !== undefined) { setClauses.push(`common_destinations = $${n++}`);  values.push(JSON.stringify(updates.commonDestinations)); }
+    if (updates.preferredVendors !== undefined)   { setClauses.push(`preferred_vendors = $${n++}`);    values.push(JSON.stringify(updates.preferredVendors)); }
+    if (updates.pastBookings !== undefined)       { setClauses.push(`past_bookings = $${n++}`);        values.push(JSON.stringify(updates.pastBookings)); }
+    if (updates.timingPatterns !== undefined)     { setClauses.push(`timing_patterns = $${n++}`);      values.push(JSON.stringify(updates.timingPatterns)); }
 
-    fields.push(`updated_at = NOW()`);
+    setClauses.push(`updated_at = NOW()`);
     values.push(userId);
 
     const result = await pool.query<UserLanguageSettings>(
-      `UPDATE user_language_settings SET ${fields.join(', ')}
-       WHERE user_id = $${paramIndex}
+      `UPDATE user_language_settings SET ${setClauses.join(', ')}
+       WHERE user_id = $${n}
        RETURNING user_id, recent_actions, frequent_services, common_destinations, preferred_vendors, past_bookings, timing_patterns, created_at, updated_at`,
       values
     );
 
     return this.mapUserLanguageSettings(result.rows[0]);
+  }
+
+  /**
+   * Append a destination to common_destinations (deduped, max 20).
+   * Called whenever the user searches for hotels/transport/excursions in a location.
+   */
+  async appendDestination(userId: string, destination: string): Promise<void> {
+    await pool.query(
+      `UPDATE user_language_settings
+       SET common_destinations = (
+         SELECT jsonb_agg(DISTINCT val) FROM (
+           SELECT jsonb_array_elements_text(common_destinations) AS val
+           UNION SELECT $1::text
+         ) sub
+         LIMIT 20
+       ),
+       updated_at = NOW()
+       WHERE user_id = $2`,
+      [destination, userId]
+    );
+  }
+
+  /**
+   * Append a service to frequent_services (deduped, max 20).
+   * Called whenever the user uses a service vertical (hotels, transport, etc.).
+   */
+  async appendFrequentService(userId: string, service: string): Promise<void> {
+    await pool.query(
+      `UPDATE user_language_settings
+       SET frequent_services = (
+         SELECT jsonb_agg(DISTINCT val) FROM (
+           SELECT jsonb_array_elements_text(frequent_services) AS val
+           UNION SELECT $1::text
+         ) sub
+         LIMIT 20
+       ),
+       updated_at = NOW()
+       WHERE user_id = $2`,
+      [service, userId]
+    );
+  }
+
+  /**
+   * Prepend an action to recent_actions (max 10, newest first).
+   */
+  async appendRecentAction(userId: string, action: string): Promise<void> {
+    await pool.query(
+      `UPDATE user_language_settings
+       SET recent_actions = (
+         SELECT jsonb_agg(val ORDER BY idx) FROM (
+           SELECT val, row_number() OVER () AS idx
+           FROM (
+             SELECT $1::text AS val
+             UNION ALL
+             SELECT jsonb_array_elements_text(recent_actions)
+           ) sub
+           LIMIT 10
+         ) ordered
+       ),
+       updated_at = NOW()
+       WHERE user_id = $2`,
+      [action, userId]
+    );
   }
 
   // ============================================================================

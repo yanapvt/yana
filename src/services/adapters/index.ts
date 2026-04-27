@@ -30,6 +30,39 @@ export {
 export {
   HotelSearchAdapter,
   type HotelResult,
-  type HotelSearchParams,
+  type HotelSearchParams as LegacyHotelSearchParams,
   type HotelSearchResponse,
 } from './HotelSearchAdapter.js';
+
+// ── New multi-vertical provider system ──────────────────────────────────────
+
+// Shared normalised types
+export type {
+  ProviderImage,
+  GeoLocation,
+  NormalisedHotel,
+  HotelSearchParams,
+  HotelSearchResult,
+  NormalisedTransportOption,
+  TransportMode,
+  TransportSearchParams,
+  TransportSearchResult,
+  NormalisedExcursion,
+  ExcursionSearchParams,
+  ExcursionSearchResult,
+  NormalisedRestaurant,
+  RestaurantSource,
+  RestaurantSearchParams,
+  RestaurantSearchResult,
+} from './types.js';
+
+// Individual adapters
+export { GooglePlacesAdapter } from './GooglePlacesAdapter.js';
+export { LiteapiAdapter } from './LiteapiAdapter.js';
+export { BookingAffiliateAdapter } from './BookingAffiliateAdapter.js';
+export { LogisticsAdapter } from './LogisticsAdapter.js';
+export { ViatorAdapter } from './ViatorAdapter.js';
+export { RestaurantAdapter } from './RestaurantAdapter.js';
+
+// Router — use this in the webhook / tool handlers
+export { ProviderRouter, getProviderRouter } from './ProviderRouter.js';

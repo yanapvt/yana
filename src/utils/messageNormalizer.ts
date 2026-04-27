@@ -20,6 +20,8 @@ export interface TwilioWebhookPayload {
   ButtonPayload?: string;
   ListId?: string;
   ListTitle?: string;
+  /** WhatsApp display name from the sender's profile — present on most messages */
+  ProfileName?: string;
   [key: string]: string | undefined;
 }
 
@@ -49,6 +51,8 @@ export function normalizeInboundMessage(
     content,
     metadata: {
       rawPayload: payload,
+      /** WhatsApp display name — populated by Twilio when available */
+      profileName: payload.ProfileName ?? null,
     },
   };
 }

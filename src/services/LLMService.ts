@@ -34,6 +34,7 @@ export interface ContextPackage {
   userMessage: string;
   conversationHistory?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   userProfile?: {
+    name?: string;
     preferredLanguage?: string;
     nationality?: string;
     recentActions?: string[];
@@ -113,6 +114,40 @@ CRITICAL BEHAVIOUR RULES:
 - If the user has already answered a question in the conversation history, do not ask it again.`;
 
 // ============================================================================
+// Pre-defined messages — welcome messages for new and returning users
+// ============================================================================
+
+/**
+ * Sent once when a brand-new user starts their first session.
+ * Introduces Yaana and explains what she can help with.
+ */
+export const WELCOME_NEW_USER_MESSAGE =
+  `👋 Welcome to *Yaana* — your personal Sri Lanka concierge!\n\n` +
+  `I'm here to help you with:\n` +
+  `🚗 *Getting around* — transfers, taxis, trains & travel planning\n` +
+  `🍜 *Exploring* — food, activities, events & shopping\n` +
+  `🏨 *Staying* — hotels, essentials & emergency help\n\n` +
+  `Just tell me what you need, or reply *menu* to browse all options. Let's make your trip amazing! 🌴`;
+
+/**
+ * Sent when a returning user starts a new session.
+ * Personalised with their name if we have it.
+ */
+export function buildReturningUserWelcome(name?: string): string {
+  const greeting = name ? `Welcome back, *${name}*! 👋` : `Welcome back! 👋`;
+  return `${greeting} Great to see you again.\n\nWhat can I help you with today? Reply *menu* to see all options, or just ask away! 😊`;
+}
+
+/**
+ * Shown when a user says hi/hello/hey mid-session.
+ * Warm and brief — not the full menu, just an invitation to explore.
+ */
+export const GREETING_REPLY =
+  `👋 Hey there! I'm *Yaana*, your Sri Lanka concierge.\n\n` +
+  `I can help you with transport, hotels, restaurants, tours, and more.\n\n` +
+  `Reply *menu* to see all options, or just tell me what you need! 😊`;
+
+// ============================================================================
 // Short-circuit rules — handled without any LLM call
 // ============================================================================
 
@@ -125,9 +160,10 @@ interface ShortCircuitRule {
 
 const SHORT_CIRCUIT_RULES: ShortCircuitRule[] = [
   {
-    pattern: /^(hi|hello|hey|hiya|howdy|good\s*(morning|afternoon|evening|day)|start|menu)[!.,\s]*$/i,
+    // Greetings — show the intro message, NOT the full menu
+    pattern: /^(hi|hello|hey|hiya|howdy|good\s*(morning|afternoon|evening|day)|start)[!.,\s]*$/i,
     intent: 'greeting',
-    reply: null, // replaced with main menu at runtime
+    reply: GREETING_REPLY,
   },
   {
     pattern: /^(thanks?|thank\s*you|thx|ty|cheers)[!.,\s]*$/i,
@@ -145,9 +181,10 @@ const SHORT_CIRCUIT_RULES: ShortCircuitRule[] = [
     reply: "Goodbye! 🌴 Have a wonderful time in Sri Lanka. Message me anytime!",
   },
   {
+    // Help/menu — show the full numbered menu
     pattern: /^(help|\?|what can you do|what do you do|how does this work|menu|options)[?!.,\s]*$/i,
     intent: 'help',
-    reply: null, // replaced with main menu at runtime
+    reply: null, // replaced with full menu at runtime
   },
 ];
 
@@ -206,7 +243,44 @@ export class LLMService {
     const menu = getMenuService();
 
     // ── Optimisation 1: menu selection (number or item name) ─────────────────
-    const menuSelection = menu.resolveMenuSelection(userText, activeSubMenu);
+    // Skip numeric menu selection when the user is mid-flow on a transactional
+    // intent (hotel booking, transport, etc.) — "1" in that context is a
+    // conversation reply, not a menu pick.
+    const hasActiveTransactionalIntent = [
+      'hotel_booking', 'book_hotel', 'book_taxi', 'book_transport',
+      'book_airport_pickup', 'book_airport_dropoff', 'book_private_driver',
+      'book_car_hire', 'search_hotels', 'find_accommodation',
+      'multi_intent',  // user is picking from a numbered list of their own intents
+    ].includes(contextPackage.sessionState?.currentIntent ?? '');
+
+    // ── Multi-intent number resolution ───────────────────────────────────────
+    // If the user has pending intents and replies with a number, resolve it
+    // directly to the chosen intent without an LLM call.
+    const pendingIntents = contextPackage.sessionState?.collectedFields?.['pendingIntents'] as string[] | undefined;
+    if (pendingIntents?.length && /^\d+$/.test(userText.trim())) {
+      const idx = parseInt(userText.trim(), 10) - 1;
+      if (idx >= 0 && idx < pendingIntents.length) {
+        const chosenIntent = pendingIntents[idx];
+        const menuItem = menu.getItemByIntent(chosenIntent);
+        logger.debug('LLMService', 'Multi-intent selection resolved — no LLM call', {
+          chosenIntent,
+          idx,
+        });
+        return {
+          decision: this.buildMinimalDecision(chosenIntent),
+          replyText: menuItem
+            ? `Got it! Let me help you with *${menuItem.label}*. What details can you share? 😊`
+            : `Got it! Let me help you with that. What details can you share? 😊`,
+          fromCache: false,
+          shortCircuited: true,
+        };
+      }
+    }
+
+    const menuSelection = !hasActiveTransactionalIntent
+      ? menu.resolveMenuSelection(userText, activeSubMenu)
+      : null;
+
     if (menuSelection) {
       logger.debug('LLMService', 'Menu selection matched — no LLM call', {
         itemId: menuSelection.itemId,
@@ -233,34 +307,55 @@ export class LLMService {
     }
 
     // ── Optimisation 2: short-circuit for simple inputs ──────────────────────
-    // Only fire when there is NO active conversation — if the user has history,
-    // short words like "yes", "ok", "great" are continuations, not commands.
-    const hasActiveConversation = (contextPackage.conversationHistory?.length ?? 0) > 0
-      || !!contextPackage.sessionState?.currentIntent;
+    // "menu" and "help" ALWAYS show the menu — regardless of the short-circuit flag.
+    // The flag only controls whether greetings/thanks/bye bypass the LLM.
+    const shortCircuitCandidate = this.tryShortCircuit(userText);
 
-    if (!hasActiveConversation) {
-      const shortCircuit = this.tryShortCircuit(userText);
-      if (shortCircuit) {
+    // Always handle explicit menu/help requests, even with short-circuit disabled
+    if (shortCircuitCandidate && ['help', 'greeting'].includes(shortCircuitCandidate.intent)) {
+      const hasActiveConversation = (contextPackage.conversationHistory?.length ?? 0) > 0
+        || !!contextPackage.sessionState?.currentIntent;
+
+      // help intent = user explicitly asked for the menu — always show it
+      // greeting intent = only short-circuit when no active conversation
+      const shouldShortCircuit = shortCircuitCandidate.intent === 'help' || !hasActiveConversation;
+
+      if (shouldShortCircuit) {
         logger.debug('LLMService', 'Short-circuit matched — no LLM call', {
-          intent: shortCircuit.intent,
+          intent: shortCircuitCandidate.intent,
         });
         return {
-          decision: this.buildMinimalDecision(shortCircuit.intent),
-          replyText: shortCircuit.reply,
+          decision: this.buildMinimalDecision(shortCircuitCandidate.intent),
+          replyText: shortCircuitCandidate.reply,
           fromCache: false,
           shortCircuited: true,
         };
       }
-    } else {
-      // Even with active conversation, still short-circuit pure greetings/farewells
-      const shortCircuit = this.tryShortCircuit(userText);
-      if (shortCircuit && ['greeting', 'farewell', 'help'].includes(shortCircuit.intent)) {
-        logger.debug('LLMService', 'Short-circuit matched (greeting/farewell) — no LLM call', {
-          intent: shortCircuit.intent,
+    }
+
+    // For other short-circuit rules (thanks, bye, cancel) — only fire when flag is on
+    if (env.features.shortCircuitEnabled && shortCircuitCandidate) {
+      const hasActiveConversation = (contextPackage.conversationHistory?.length ?? 0) > 0
+        || !!contextPackage.sessionState?.currentIntent;
+
+      if (!hasActiveConversation) {
+        logger.debug('LLMService', 'Short-circuit matched — no LLM call', {
+          intent: shortCircuitCandidate.intent,
         });
         return {
-          decision: this.buildMinimalDecision(shortCircuit.intent),
-          replyText: shortCircuit.reply,
+          decision: this.buildMinimalDecision(shortCircuitCandidate.intent),
+          replyText: shortCircuitCandidate.reply,
+          fromCache: false,
+          shortCircuited: true,
+        };
+      } else if (['farewell', 'acknowledgement'].includes(shortCircuitCandidate.intent)) {
+        // Farewells and thanks always short-circuit even mid-conversation
+        logger.debug('LLMService', 'Short-circuit matched (farewell/ack) — no LLM call', {
+          intent: shortCircuitCandidate.intent,
+        });
+        return {
+          decision: this.buildMinimalDecision(shortCircuitCandidate.intent),
+          replyText: shortCircuitCandidate.reply,
           fromCache: false,
           shortCircuited: true,
         };
@@ -397,9 +492,10 @@ export class LLMService {
   // ==========================================================================
 
   /**
-   * Cache key: hash of (intent-relevant words + session state).
+   * Cache key: hash of (intent-relevant words + session state + user identity).
    * Excludes filler words so "best beach near Colombo?" and
    * "what's the best beach near Colombo" hit the same cache entry.
+   * Includes user name so personalised replies are never shared across users.
    */
   private buildCacheKey(ctx: ContextPackage): string {
     const normalized = ctx.userMessage
@@ -410,7 +506,9 @@ export class LLMService {
       .trim();
 
     const stateKey = ctx.sessionState?.currentIntent ?? '';
-    return `llm:reply:${Buffer.from(normalized + stateKey).toString('base64').substring(0, 40)}`;
+    // Include name so two different users never share a cached reply
+    const userKey = ctx.userProfile?.name ?? '';
+    return `llm:reply:${Buffer.from(normalized + stateKey + userKey).toString('base64').substring(0, 40)}`;
   }
 
   private async getCachedResponse(key: string): Promise<Omit<DecisionWithReply, 'fromCache' | 'shortCircuited'> | null> {
@@ -443,9 +541,13 @@ export class LLMService {
   /**
    * Only cache informational/general intents.
    * Never cache transactional intents (booking, payment, personal data).
+   * Never cache greetings/farewells — they are personalised per user.
    */
   private isCacheable(decision: LLMDecisionOutput): boolean {
-    const nonCacheable = ['book_hotel', 'make_payment', 'cancel_booking', 'handoff', 'clarify'];
+    const nonCacheable = [
+      'book_hotel', 'make_payment', 'cancel_booking', 'handoff', 'clarify',
+      'greeting', 'farewell', 'acknowledgement',
+    ];
     return !nonCacheable.includes(decision.intent) && decision.suggestedAction !== 'execute_tool';
   }
 
@@ -485,10 +587,20 @@ export class LLMService {
       '- confidence: score 0–1 (number)',
       '- reply: your actual WhatsApp reply to the user (string, 2–4 sentences max)',
       '',
+      'PARAMETER EXTRACTION RULES:',
+      'For transport/taxi/ride intents — extract: origin, destination, guests (passenger count)',
+      'For hotel intents — extract: location, checkin_date, checkout_date, guests, budget, currency, property_type',
+      'For restaurant intents — extract: location, cuisine, tags (array), open_now (boolean)',
+      'For excursion/tour/activity intents — extract: location, category, date, budget, currency',
+      '',
+      'DATE RULES: Extract dates EXACTLY as the user said them (e.g. "tomorrow", "30th April", "next Friday").',
+      'Do NOT compute or modify dates. Do NOT add days to dates. Just extract the raw value.',
+      'If the user says "2 nights from tomorrow", set checkin_date="tomorrow" and checkout_date="day after tomorrow".',
+      '',
       'IMPORTANT: For recommendation requests (hotels, restaurants, places, transport),',
-      'set suggestedAction to "clarify" and put the actual recommendations in "reply".',
-      'Do NOT set suggestedAction to "ask_missing" unless you truly cannot answer at all.',
-      'If the user asked for top hotels/restaurants/places — list them directly in "reply".',
+      'set suggestedAction to "execute_tool" when you have enough parameters to search.',
+      'Set suggestedAction to "clarify" and put recommendations in "reply" only when no tool applies.',
+      'Do NOT set suggestedAction to "ask_missing" unless a truly required field is missing.',
       '',
       'User message:',
       ctx.userMessage,
@@ -501,15 +613,35 @@ export class LLMService {
       });
     }
 
+    if (ctx.userProfile) {
+      const profileLines: string[] = [];
+      if (ctx.userProfile.name) profileLines.push(`name: ${ctx.userProfile.name}`);
+      if (ctx.userProfile.nationality) profileLines.push(`nationality: ${ctx.userProfile.nationality}`);
+      if (ctx.userProfile.preferredLanguage) profileLines.push(`language: ${ctx.userProfile.preferredLanguage}`);
+      if (profileLines.length > 0) {
+        parts.push('', `User profile: ${profileLines.join(' | ')}`);
+        if (ctx.userProfile.name) {
+          parts.push(`Address the user by their name (${ctx.userProfile.name}) when greeting them.`);
+        }
+      }
+    }
+
     if (ctx.sessionState) {
       const s = ctx.sessionState;
       const stateLines: string[] = [];
       if (s.currentIntent) stateLines.push(`intent: ${s.currentIntent}`);
       if (s.collectedFields && Object.keys(s.collectedFields).length > 0) {
-        stateLines.push(`collected: ${JSON.stringify(s.collectedFields)}`);
+        // Filter out internal navigation fields before showing to LLM
+        const displayFields = Object.fromEntries(
+          Object.entries(s.collectedFields).filter(([k]) => !['activeSubMenu', 'activeButtonNode', 'pendingIntents'].includes(k))
+        );
+        if (Object.keys(displayFields).length > 0) {
+          stateLines.push(`collected: ${JSON.stringify(displayFields)}`);
+        }
       }
       if (s.missingFields && s.missingFields.length > 0) {
         stateLines.push(`still needed: ${s.missingFields.join(', ')}`);
+        stateLines.push(`IMPORTANT: The user's current message is likely answering one of the missing fields above. Extract the value and add it to parameters.`);
       }
       if (stateLines.length > 0) {
         parts.push('', `Session: ${stateLines.join(' | ')}`);

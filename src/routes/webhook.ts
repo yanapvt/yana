@@ -17,9 +17,11 @@ import {
   TwilioWebhookPayload,
 } from '../utils/messageNormalizer.js';
 import { getLLMService } from '../services/LLMService.js';
+import { WELCOME_NEW_USER_MESSAGE, buildReturningUserWelcome } from '../services/LLMService.js';
 import { getSessionManager } from '../services/SessionManager.js';
 import { getMenuService } from '../services/MenuService.js';
 import { BUTTON_TREE } from '../services/MenuService.js';
+import { getToolExecutor } from '../services/ToolExecutor.js';
 import type { TextContent } from '../types/core.js';
 
 /** Short descriptions shown under each top-level tile image */
@@ -395,6 +397,16 @@ async function processAndReply(
   // ── 1. Load or create session (best-effort — DB may be unavailable) ────────
   let sessionId: string | null = null;
   let contextPackage: Awaited<ReturnType<typeof sessionManager.resumeSession>> = null;
+  /** True when this is the very first message from this user (no prior history) */
+  let isNewUser = false;
+  /** True when this is the first message of a new session for a returning user */
+  let isNewSession = false;
+  /** True when the DB was completely unreachable — we treat this as a fresh session */
+  let dbUnavailable = false;
+
+  // WhatsApp display name sent by Twilio — use to populate/update user_profiles.name
+  const whatsappProfileName: string | null =
+    (inboundMessage.metadata?.profileName as string | null) ?? null;
 
   try {
     contextPackage = await sessionManager.resumeSession(inboundMessage.from);
@@ -409,17 +421,127 @@ async function processAndReply(
         phoneNumber: inboundMessage.from,
         phoneHash,
       });
+      isNewUser = created.isNewUser;
+      isNewSession = created.isNewSession;
       contextPackage = await sessionManager.assembleContextPackage(created.sessionId);
     }
 
     sessionId = contextPackage.sessionId;
+
+    // ── Save / update the WhatsApp display name whenever Twilio provides it ──
+    // This ensures the name is available for the returning-user greeting on the
+    // very next session, even if it wasn't stored on first contact.
+    if (whatsappProfileName && contextPackage.userId) {
+      const currentName = contextPackage.userProfile?.name;
+      if (!currentName || currentName !== whatsappProfileName) {
+        sessionManager.updateUserName(contextPackage.userId, whatsappProfileName).catch((err: any) => {
+          logger.warn('Webhook', 'Could not save WhatsApp profile name', {
+            correlationId,
+            error: err?.message || String(err),
+          });
+        });
+        // Reflect the name immediately in the in-memory context package
+        if (contextPackage.userProfile) {
+          contextPackage.userProfile.name = whatsappProfileName;
+        }
+      }
+    }
+
     logger.debug('Webhook', 'Session loaded', { correlationId, sessionId });
   } catch (dbErr: any) {
+    dbUnavailable = true;
     logger.warn('Webhook', 'Database unavailable — proceeding without session context', {
       correlationId,
       error: dbErr?.message || String(dbErr),
       code: dbErr?.code,
     });
+  }
+
+  // ── 1a. Send welcome message for new/returning users (best-effort) ─────────
+  // Fires when FEATURE_PREDEFINED_MESSAGES_ENABLED=true (default: true).
+  //
+  // Trigger conditions:
+  //   • isNewUser    — brand-new user, DB confirmed no prior record
+  //   • isNewSession — returning user starting a fresh session
+  //   • dbUnavailable — DB is down; we have no history so treat as first contact
+  //                     and send the new-user welcome (safe fallback)
+  //
+  // When a welcome message is sent it IS the reply for this turn — we return
+  // early so the LLM pipeline does not fire a second response.
+  const shouldSendWelcome = env.features.predefinedMessagesEnabled &&
+    (isNewUser || isNewSession || dbUnavailable);
+
+  if (shouldSendWelcome) {
+    try {
+      let welcomeText: string;
+
+      if (isNewUser || dbUnavailable) {
+        // New user or no DB context — send the full Yaana introduction.
+        // If Twilio gave us a name, personalise it even on first contact.
+        welcomeText = whatsappProfileName
+          ? `👋 Hi *${whatsappProfileName}*! ${WELCOME_NEW_USER_MESSAGE}`
+          : WELCOME_NEW_USER_MESSAGE;
+        logger.info('Webhook', 'Sending new-user welcome message', {
+          correlationId,
+          phoneNumber,
+          hasName: !!whatsappProfileName,
+          dbUnavailable,
+        });
+      } else {
+        // Returning user — greet by name from profile (already updated above if Twilio sent it)
+        const userName = contextPackage?.userProfile?.name ?? whatsappProfileName ?? undefined;
+        welcomeText = buildReturningUserWelcome(userName);
+        logger.info('Webhook', 'Sending returning-user welcome message', {
+          correlationId,
+          phoneNumber,
+          hasName: !!userName,
+        });
+      }
+
+      // Persist the inbound message first so history is complete
+      if (sessionId) {
+        await sessionManager.appendMessage(sessionId, {
+          correlationId,
+          fromNumber: inboundMessage.from,
+          toNumber: inboundMessage.to,
+          messageType: inboundMessage.type,
+          role: 'user',
+          content: inboundMessage.content as Record<string, unknown>,
+        }).catch(() => { /* non-fatal */ });
+      }
+
+      await twilioClient.messages.create({
+        from: `whatsapp:${env.twilio.whatsappNumber}`,
+        to: inboundMessage.from,
+        body: welcomeText,
+      });
+
+      // Persist the welcome message to conversation history
+      if (sessionId) {
+        await sessionManager.appendMessage(sessionId, {
+          correlationId: crypto.randomUUID(),
+          fromNumber: inboundMessage.to,
+          toNumber: inboundMessage.from,
+          messageType: 'text',
+          role: 'assistant',
+          content: { type: 'text', body: welcomeText },
+        }).catch(() => { /* non-fatal */ });
+      }
+
+      logger.info('Webhook', 'Welcome message sent — skipping LLM pipeline for this turn', {
+        correlationId,
+        sessionId,
+        isNewUser,
+      });
+      // The welcome message is the full reply for this turn — stop here.
+      return;
+    } catch (welcomeErr: any) {
+      logger.warn('Webhook', 'Could not send welcome message — falling through to LLM', {
+        correlationId,
+        error: welcomeErr?.message || String(welcomeErr),
+      });
+      // Fall through to LLM pipeline if welcome message fails
+    }
   }
 
   // ── Button flow (with session): handle numbered navigation replies ─────────
@@ -517,6 +639,7 @@ async function processAndReply(
         userMessage: userText,
         conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
         userProfile: userProfile ? {
+          name: userProfile.name ?? whatsappProfileName ?? undefined,
           preferredLanguage: userProfile.preferredLanguage,
           nationality: userProfile.nationality,
           recentActions: contextPackage?.behavioralSummary.recentActions,
@@ -576,21 +699,60 @@ async function processAndReply(
     }
   }
 
-  // ── 6. Send reply via Twilio ───────────────────────────────────────────────
+  // ── 6. Execute tool if LLM requested it ──────────────────────────────────
+  // When suggestedAction === 'execute_tool', run the ProviderRouter and replace
+  // the LLM's generic reply with real provider data (deeplinks, prices, etc.).
+  let finalReplyText = replyText;
+
+  if (decision.suggestedAction === 'execute_tool') {
+    logger.debug('Webhook', 'Executing tool for intent', {
+      correlationId,
+      intent: decision.intent,
+    });
+
+    const toolResult = await getToolExecutor().run({
+      intent: decision.intent,
+      parameters: decision.parameters,
+      collectedFields: schemaProgress?.collectedFields ?? {},
+      userId: contextPackage?.userId,
+      correlationContext: {
+        correlationId,
+        sessionId: sessionId ?? undefined,
+        userId: contextPackage?.userId,
+        requestTimestamp: new Date(),
+      },
+    });
+
+    if (toolResult) {
+      finalReplyText = toolResult;
+      logger.info('Webhook', 'Tool execution succeeded — using provider result', {
+        correlationId,
+        intent: decision.intent,
+        replyLength: finalReplyText.length,
+      });
+    } else {
+      logger.debug('Webhook', 'Tool returned null — falling back to LLM reply', {
+        correlationId,
+        intent: decision.intent,
+      });
+    }
+  }
+
+  // ── 7. Send reply via Twilio ───────────────────────────────────────────────
   await twilioClient.messages.create({
     from: `whatsapp:${env.twilio.whatsappNumber}`,
     to: inboundMessage.from,
-    body: replyText,
+    body: finalReplyText,
   });
 
   logger.info('Webhook', 'Reply sent successfully', {
     correlationId,
     sessionId,
     to: inboundMessage.from,
-    replyLength: replyText.length,
+    replyLength: finalReplyText.length,
   });
 
-  // ── 7. Persist the bot reply (best-effort) ────────────────────────────────
+  // ── 8. Persist the bot reply (best-effort) ────────────────────────────────
   if (sessionId) {
     try {
       await sessionManager.appendMessage(sessionId, {
@@ -599,7 +761,7 @@ async function processAndReply(
         toNumber: inboundMessage.from,
         messageType: 'text',
         role: 'assistant',
-        content: { type: 'text', body: replyText },
+        content: { type: 'text', body: finalReplyText },
       });
       logger.debug('Webhook', 'Bot reply persisted to session history', {
         correlationId,
