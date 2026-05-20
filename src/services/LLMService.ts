@@ -45,6 +45,7 @@ export interface LLMConfig {
   provider: string;
   apiKey: string;
   model: string;
+  baseUrl?: string;
   confidenceThreshold: number;
 }
 
@@ -74,6 +75,7 @@ export class LLMService {
       provider: config?.provider ?? env.llm.provider,
       apiKey: config?.apiKey ?? env.llm.apiKey,
       model: config?.model ?? env.llm.model,
+      baseUrl: config?.baseUrl ?? env.llm.baseUrl,
       confidenceThreshold: config?.confidenceThreshold ?? env.llm.confidenceThreshold,
     };
 
@@ -257,11 +259,16 @@ export class LLMService {
    * integrate with the actual LLM provider (OpenAI, Anthropic, etc.)
    */
   private async callLLM(prompt: string, mode: 'decision' | 'ui-support'): Promise<string> {
-    // TODO: Implement actual LLM API call based on provider
-    // For now, return a mock response for testing
-    
     if (this.config.provider === 'mock') {
       return this.getMockResponse(prompt, mode);
+    }
+
+    if (this.config.provider === 'openai') {
+      return this.callOpenAICompatible(prompt, mode);
+    }
+
+    if (this.config.provider === 'openrouter' || this.config.provider === 'groq') {
+      return this.callOpenAICompatible(prompt, mode);
     }
 
     throw new LLMServiceError(
@@ -272,11 +279,66 @@ export class LLMService {
   }
 
   /**
+   * Calls OpenAI-compatible Chat Completions APIs.
+   */
+  private async callOpenAICompatible(prompt: string, mode: 'decision' | 'ui-support'): Promise<string> {
+    const baseUrl = this.config.baseUrl ?? 'https://api.openai.com/v1';
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        temperature: mode === 'decision' ? 0.1 : 0.4,
+        messages: [
+          {
+            role: 'system',
+            content:
+              mode === 'decision'
+                ? 'Return only valid JSON matching the requested schema.'
+                : 'Return concise WhatsApp-ready text only.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new LLMServiceError(
+        `OpenAI request failed with ${response.status}: ${errorBody}`,
+        'PROVIDER_REQUEST_FAILED',
+        response.status >= 500 || response.status === 429
+      );
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = data.choices?.[0]?.message?.content;
+
+    if (!content) {
+      throw new LLMServiceError(
+        'OpenAI returned an empty response',
+        'EMPTY_RESPONSE',
+        true
+      );
+    }
+
+    return content;
+  }
+
+  /**
    * Parses the LLM response into structured decision output
    */
   private parseDecisionOutput(response: string): LLMDecisionOutput {
     try {
-      const parsed = JSON.parse(response);
+      const parsed = JSON.parse(extractJsonResponse(response));
 
       // Validate required fields
       if (!parsed.intent || typeof parsed.intent !== 'string') {
@@ -321,7 +383,7 @@ export class LLMService {
    */
   private parseUIContentOutput(response: string): string {
     // For UI content, we expect plain text (not JSON)
-    const trimmed = response.trim();
+    const trimmed = stripSurroundingQuotes(response.trim());
 
     if (!trimmed) {
       throw new LLMServiceError(
@@ -364,6 +426,35 @@ export class LLMService {
       return 'Thank you for your message. How can I help you today?';
     }
   }
+}
+
+function extractJsonResponse(response: string): string {
+  const trimmed = response.trim();
+  const fencedJson = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+
+  if (fencedJson) {
+    return fencedJson[1].trim();
+  }
+
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
+  }
+
+  return trimmed;
+}
+
+function stripSurroundingQuotes(response: string): string {
+  if (
+    (response.startsWith('"') && response.endsWith('"')) ||
+    (response.startsWith("'") && response.endsWith("'"))
+  ) {
+    return response.slice(1, -1).trim();
+  }
+
+  return response;
 }
 
 // ============================================================================

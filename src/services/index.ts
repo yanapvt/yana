@@ -25,6 +25,9 @@ export type {
 export { LLMService, getLLMService, initLLMService, LLMServiceError } from './LLMService.js';
 export type { ContextPackage as LLMContextPackage, LLMConfig } from './LLMService.js';
 
+export { HotelIntakeService, getHotelIntakeService } from './HotelIntakeService.js';
+export type { HotelIntakeContext, HotelIntakeResult } from './HotelIntakeService.js';
+
 export { Orchestrator, getOrchestrator, initOrchestrator } from './Orchestrator.js';
 export type {
   ValidationResult as OrchestratorValidationResult,

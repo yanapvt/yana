@@ -46,7 +46,7 @@ class UpstashRedisClient {
       throw new Error(`Upstash Redis error: ${response.statusText}`);
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { result: any };
     return data.result;
   }
 
@@ -226,6 +226,42 @@ export class StateStore {
    */
   async deleteSessionState(sessionId: string): Promise<boolean> {
     const key = this.getSessionKey(sessionId);
+    const result = await this.client.del(key);
+    return result > 0;
+  }
+
+  // ==========================================================================
+  // Generic JSON State Methods
+  // ==========================================================================
+
+  async setJson<T>(
+    key: string,
+    value: T,
+    ttlSeconds?: number
+  ): Promise<void> {
+    const ttl = ttlSeconds ?? env.operational.sessionTtlSeconds;
+    await this.connect();
+    await this.client.setEx(key, ttl, JSON.stringify(value));
+  }
+
+  async getJson<T>(key: string): Promise<T | null> {
+    await this.connect();
+    const data = await this.client.get(key);
+
+    if (!data) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(data) as T;
+    } catch (error) {
+      console.error(`Failed to parse JSON state for ${key}:`, error);
+      return null;
+    }
+  }
+
+  async deleteKey(key: string): Promise<boolean> {
+    await this.connect();
     const result = await this.client.del(key);
     return result > 0;
   }
