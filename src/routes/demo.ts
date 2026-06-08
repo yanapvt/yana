@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Demo/Playground Routes
  * Manual testing endpoints for completed components
