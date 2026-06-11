@@ -146,7 +146,7 @@ export class HotelSearchAdapter extends NangoAdapter {
    * @returns Provider-specific request configuration
    */
   buildProviderRequest(params: Record<string, unknown>): ProviderRequest {
-    const searchParams = params as HotelSearchParams;
+    const searchParams = params as unknown as HotelSearchParams;
 
     // Build query parameters for provider API
     const queryParams: Record<string, string> = {

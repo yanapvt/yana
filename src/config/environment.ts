@@ -52,7 +52,14 @@ const EnvironmentSchema = z.object({
     provider: z.string().min(1),
     apiKey: isNonProductionMode ? z.string().default('dev_api_key') : z.string().min(1),
     model: z.string().min(1),
+    baseUrl: z.string().url().optional(),
     confidenceThreshold: z.number().min(0).max(1).default(0.85),
+  }),
+
+  voice: z.object({
+    openAiApiKey: isNonProductionMode ? z.string().optional() : z.string().min(1),
+    transcriptionModel: z.string().min(1).default('gpt-4o-mini-transcribe'),
+    maxMb: z.number().positive().default(10),
   }),
 
   // Translation Service
@@ -129,7 +136,14 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       provider: process.env.LLM_PROVIDER || 'openai',
       apiKey: process.env.LLM_API_KEY || '',
       model: process.env.LLM_MODEL || 'gpt-4',
+      baseUrl: process.env.LLM_BASE_URL,
       confidenceThreshold: parseFloat(process.env.LLM_CONFIDENCE_THRESHOLD || '0.85'),
+    },
+
+    voice: {
+      openAiApiKey: process.env.OPENAI_API_KEY,
+      transcriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-mini-transcribe',
+      maxMb: parseFloat(process.env.VOICE_NOTE_MAX_MB || '10'),
     },
 
     translation: {

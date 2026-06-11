@@ -6,6 +6,8 @@
 import express, { Express } from 'express';
 import webhookRoutes from './routes/webhook.js';
 import demoRouter from './routes/demo.js';
+import formsRouter from './routes/forms.js';
+import mediaRouter from './routes/media.js';
 
 /**
  * Creates and configures the Express application
@@ -26,6 +28,12 @@ export function createApp(): Express {
 
   // Mount webhook routes
   app.use('/', webhookRoutes);
+
+  // Mount secure external collection forms
+  app.use('/', formsRouter);
+
+  // Mount safe media proxy routes
+  app.use('/', mediaRouter);
 
   // Mount demo/playground routes
   app.use('/demo', demoRouter);

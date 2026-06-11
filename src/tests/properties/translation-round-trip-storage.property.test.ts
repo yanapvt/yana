@@ -133,8 +133,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   };
 
   it('should produce Canonical_Form for any user utterance', () => {
-    fc.assert(
-      fc.property(userUtteranceArb, languageCodeArb, async (utterance, sourceLang) => {
+    return fc.assert(
+      fc.asyncProperty(userUtteranceArb, languageCodeArb, async (utterance, sourceLang) => {
         // Given: Any user utterance in any language
         
         // When: We normalize to canonical form
@@ -156,8 +156,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should store complete translation record with all required fields', () => {
-    fc.assert(
-      fc.property(translationContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(translationContextArb, async (context) => {
         // Given: A user utterance that requires translation
         const mockStoredTranslation = {
           translationId: fc.sample(fc.uuid(), 1)[0],
@@ -220,8 +220,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should preserve original utterance exactly as received', () => {
-    fc.assert(
-      fc.property(translationContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(translationContextArb, async (context) => {
         // Given: A user utterance with specific formatting
         const mockStoredTranslation = {
           translationId: fc.sample(fc.uuid(), 1)[0],
@@ -259,15 +259,15 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
         // Then: Original text should be preserved exactly
         const createCall = getLastCreateTranslationCall();
         expect(createCall.originalText).toBe(context.utterance);
-        expect(createCall.originalText).not.toBe(createCall.canonicalForm); // Unless already normalized
+        expect(createCall.canonicalForm).toBe(translationResult.canonicalForm);
       }),
       { numRuns: 50 }
     );
   });
 
   it('should store detected language for every translation', () => {
-    fc.assert(
-      fc.property(translationContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(translationContextArb, async (context) => {
         // Given: A user utterance
         const mockStoredTranslation = {
           translationId: fc.sample(fc.uuid(), 1)[0],
@@ -313,8 +313,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should store translation confidence for every translation', () => {
-    fc.assert(
-      fc.property(translationContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(translationContextArb, async (context) => {
         // Given: A user utterance
         const mockStoredTranslation = {
           translationId: fc.sample(fc.uuid(), 1)[0],
@@ -361,8 +361,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should store translator metadata for every translation', () => {
-    fc.assert(
-      fc.property(translationContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(translationContextArb, async (context) => {
         // Given: A user utterance
         const mockStoredTranslation = {
           translationId: fc.sample(fc.uuid(), 1)[0],
@@ -408,8 +408,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should produce consistent Canonical_Form for same input', () => {
-    fc.assert(
-      fc.property(userUtteranceArb, languageCodeArb, async (utterance, sourceLang) => {
+    return fc.assert(
+      fc.asyncProperty(userUtteranceArb, languageCodeArb, async (utterance, sourceLang) => {
         // Given: The same user utterance
         
         // When: We normalize it multiple times
@@ -426,8 +426,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should store translated text that differs from original for different languages', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           const mockStoredTranslation = {
@@ -474,8 +474,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should handle round-trip: translate, store, and retrieve maintains data integrity', () => {
-    fc.assert(
-      fc.property(translationContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(translationContextArb, async (context) => {
         // Given: A complete translation workflow
         const translationResult = await translationService.translate(
           context.utterance,
@@ -528,8 +528,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should include sessionId in translator metadata when storing', () => {
-    fc.assert(
-      fc.property(translationContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(translationContextArb, async (context) => {
         // Clear mocks for this property run
         vi.clearAllMocks();
         
@@ -583,8 +583,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should reject empty utterances', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         fc.constantFrom('', '   ', '\t', '\n'),
         languageCodeArb,
         async (emptyUtterance, targetLang) => {
@@ -601,8 +601,8 @@ describe('Property 20: Translation Round-Trip and Storage', () => {
   });
 
   it('should reject empty text for canonical form generation', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         fc.constantFrom('', '   ', '\t', '\n'),
         languageCodeArb,
         async (emptyText, sourceLang) => {

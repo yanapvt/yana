@@ -163,10 +163,10 @@ const sessionStateArb: fc.Arbitrary<SessionState> = fc.record({
  */
 const userProfileArb = fc.record({
   userId: userIdArb,
-  name: fc.option(fc.fullName(), { nil: undefined }),
+  name: fc.option(fc.string({ minLength: 1, maxLength: 80 }), { nil: undefined }),
   nationality: fc.option(fc.constantFrom('US', 'UK', 'LK', 'IN', 'AU'), { nil: undefined }),
   preferredLanguage: fc.constantFrom('en', 'es', 'fr', 'de', 'si', 'ta'),
-  homeLocation: fc.option(fc.city(), { nil: undefined }),
+  homeLocation: fc.option(fc.constantFrom('Colombo', 'Galle', 'Kandy', 'Ella', 'Mirissa'), { nil: undefined }),
   preferredCurrency: fc.constantFrom('USD', 'EUR', 'GBP', 'LKR'),
   createdAt: fc.date(),
   updatedAt: fc.date(),
@@ -268,8 +268,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should load and return all stored state components from State_Store', () => {
-    fc.assert(
-      fc.property(sessionContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(sessionContextArb, async (context) => {
         // Given: A session with stored state in State_Store
         const mockUser = {
           userId: context.userId,
@@ -365,8 +365,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should fallback to Durable_Store when State_Store is empty', () => {
-    fc.assert(
-      fc.property(sessionContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(sessionContextArb, async (context) => {
         // Given: A session with state only in Durable_Store (State_Store expired)
         const mockUser = {
           userId: context.userId,
@@ -439,8 +439,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should preserve all session state components through update and reload cycle', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         sessionContextArb,
         sessionStateArb,
         async (initialContext, updatedState) => {
@@ -513,8 +513,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should maintain state consistency across multiple resume operations', () => {
-    fc.assert(
-      fc.property(sessionContextArb, async (context) => {
+    return fc.assert(
+      fc.asyncProperty(sessionContextArb, async (context) => {
         // Given: A session with stored state
         const mockUser = {
           userId: context.userId,
@@ -574,8 +574,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should handle empty session state gracefully', () => {
-    fc.assert(
-      fc.property(phoneNumberArb, userIdArb, sessionIdArb, async (phoneNumber, userId, sessionId) => {
+    return fc.assert(
+      fc.asyncProperty(phoneNumberArb, userIdArb, sessionIdArb, async (phoneNumber, userId, sessionId) => {
         // Given: A session with no stored state (new session)
         const mockUser = {
           userId,
@@ -649,8 +649,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should preserve booking and payment progress through round-trip', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         sessionContextArb,
         bookingProgressArb,
         paymentProgressArb,
@@ -703,8 +703,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should return null for non-existent users', () => {
-    fc.assert(
-      fc.property(phoneNumberArb, async (phoneNumber) => {
+    return fc.assert(
+      fc.asyncProperty(phoneNumberArb, async (phoneNumber) => {
         // Given: A phone number with no associated user
         vi.mocked(mockUserRepository.findByPhoneNumber).mockResolvedValue(null);
 
@@ -720,8 +720,8 @@ describe('Property 2: Session State Round-Trip', () => {
   });
 
   it('should return null for users with no active session', () => {
-    fc.assert(
-      fc.property(phoneNumberArb, userIdArb, async (phoneNumber, userId) => {
+    return fc.assert(
+      fc.asyncProperty(phoneNumberArb, userIdArb, async (phoneNumber, userId) => {
         // Given: A user with no active session
         const mockUser = {
           userId,

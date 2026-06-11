@@ -5,7 +5,6 @@
  */
 
 import { pool } from '../connection.js';
-import type { UserProfile } from '../../types/core.js';
 
 // ============================================================================
 // Types
@@ -71,7 +70,7 @@ export class UserRepository {
       await client.query('BEGIN');
 
       // Check if user exists (idempotency)
-      const existingUser = await client.query<User>(
+      const existingUser = await client.query<any>(
         'SELECT user_id, phone_number, phone_hash, created_at, updated_at FROM users WHERE phone_number = $1',
         [phoneNumber]
       );
@@ -82,7 +81,7 @@ export class UserRepository {
       }
 
       // Create user
-      const userResult = await client.query<User>(
+      const userResult = await client.query<any>(
         `INSERT INTO users (phone_number, phone_hash, created_at, updated_at)
          VALUES ($1, $2, NOW(), NOW())
          RETURNING user_id, phone_number, phone_hash, created_at, updated_at`,
@@ -126,7 +125,7 @@ export class UserRepository {
    * Find user by phone number
    */
   async findByPhoneNumber(phoneNumber: string): Promise<User | null> {
-    const result = await pool.query<User>(
+    const result = await pool.query<any>(
       'SELECT user_id, phone_number, phone_hash, created_at, updated_at FROM users WHERE phone_number = $1',
       [phoneNumber]
     );
@@ -138,7 +137,7 @@ export class UserRepository {
    * Find user by user ID
    */
   async findById(userId: string): Promise<User | null> {
-    const result = await pool.query<User>(
+    const result = await pool.query<any>(
       'SELECT user_id, phone_number, phone_hash, created_at, updated_at FROM users WHERE user_id = $1',
       [userId]
     );
@@ -150,7 +149,7 @@ export class UserRepository {
    * Get user profile
    */
   async getProfile(userId: string): Promise<UserProfileData | null> {
-    const result = await pool.query<UserProfileData>(
+    const result = await pool.query<any>(
       `SELECT user_id, name, nationality, preferred_language, home_location, preferred_currency, created_at, updated_at
        FROM user_profiles WHERE user_id = $1`,
       [userId]
@@ -195,7 +194,7 @@ export class UserRepository {
     fields.push(`updated_at = NOW()`);
     values.push(userId);
 
-    const result = await pool.query<UserProfileData>(
+    const result = await pool.query<any>(
       `UPDATE user_profiles SET ${fields.join(', ')}
        WHERE user_id = $${paramIndex}
        RETURNING user_id, name, nationality, preferred_language, home_location, preferred_currency, created_at, updated_at`,
@@ -209,7 +208,7 @@ export class UserRepository {
    * Get user preferences
    */
   async getPreferences(userId: string): Promise<UserPreferences | null> {
-    const result = await pool.query<UserPreferences>(
+    const result = await pool.query<any>(
       `SELECT user_id, tts_enabled, proactive_messaging_enabled, notification_preferences, created_at, updated_at
        FROM user_preferences WHERE user_id = $1`,
       [userId]
@@ -246,7 +245,7 @@ export class UserRepository {
     fields.push(`updated_at = NOW()`);
     values.push(userId);
 
-    const result = await pool.query<UserPreferences>(
+    const result = await pool.query<any>(
       `UPDATE user_preferences SET ${fields.join(', ')}
        WHERE user_id = $${paramIndex}
        RETURNING user_id, tts_enabled, proactive_messaging_enabled, notification_preferences, created_at, updated_at`,
@@ -260,7 +259,7 @@ export class UserRepository {
    * Get user language settings (behavioral memory)
    */
   async getLanguageSettings(userId: string): Promise<UserLanguageSettings | null> {
-    const result = await pool.query<UserLanguageSettings>(
+    const result = await pool.query<any>(
       `SELECT user_id, recent_actions, frequent_services, common_destinations, preferred_vendors, past_bookings, timing_patterns, created_at, updated_at
        FROM user_language_settings WHERE user_id = $1`,
       [userId]
@@ -309,7 +308,7 @@ export class UserRepository {
     fields.push(`updated_at = NOW()`);
     values.push(userId);
 
-    const result = await pool.query<UserLanguageSettings>(
+    const result = await pool.query<any>(
       `UPDATE user_language_settings SET ${fields.join(', ')}
        WHERE user_id = $${paramIndex}
        RETURNING user_id, recent_actions, frequent_services, common_destinations, preferred_vendors, past_bookings, timing_patterns, created_at, updated_at`,

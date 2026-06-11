@@ -2,6 +2,8 @@
 
 This guide shows you how to test the platform at its current stage of development.
 
+For the current implementation checklist, see [CURRENT_IMPLEMENTATION_STATUS.md](CURRENT_IMPLEMENTATION_STATUS.md).
+
 ---
 
 ## 🧪 **Testing Methods**
@@ -230,14 +232,13 @@ The debugger will pause at your breakpoint, and you can inspect variables, step 
    npm test -- src/tests/properties/
    ```
 
-### ⏳ **Not Yet Testable (Not Implemented)**
+### **Not Yet Production-Complete**
 
-- ❌ End-to-end hotel search flow
-- ❌ WhatsApp message rendering
-- ❌ Booking and payment flows
-- ❌ Translation service
-- ❌ TTS generation
-- ❌ Vendor CMS
+- End-to-end WhatsApp hotel search through the production webhook route
+- Booking and payment manager state machines
+- Real provider/Nango execution against live inventory
+- TTS generation
+- Vendor CMS, proactive messaging, and Admin API
 
 ---
 

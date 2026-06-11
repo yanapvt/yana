@@ -25,6 +25,37 @@ export type {
 export { LLMService, getLLMService, initLLMService, LLMServiceError } from './LLMService.js';
 export type { ContextPackage as LLMContextPackage, LLMConfig } from './LLMService.js';
 
+export { HotelIntakeService, getHotelIntakeService } from './HotelIntakeService.js';
+export type { HotelIntakeContext, HotelIntakeResult, HotelSearchCriteria } from './HotelIntakeService.js';
+
+export {
+  HotelSearchFlowService,
+  getHotelSearchFlowService,
+} from './HotelSearchFlowService.js';
+export type {
+  HotelSearchFlowContext,
+  HotelSearchFlowResult,
+} from './HotelSearchFlowService.js';
+
+export {
+  GooglePlacesHotelBrowsingService,
+  getGooglePlacesHotelBrowsingService,
+} from './GooglePlacesHotelBrowsingService.js';
+export type {
+  HotelBrowseResult,
+  HotelBrowseResponse,
+} from './GooglePlacesHotelBrowsingService.js';
+
+export { FormTokenService, getFormTokenService, initFormTokenService } from './formTokenService.js';
+export { ProfileService, getProfileService, initProfileService } from './profileService.js';
+export { ProfileGate, getProfileGate, initProfileGate } from './profileGate.js';
+export {
+  PendingRequestService,
+  getPendingRequestService,
+  initPendingRequestService,
+} from './pendingRequestService.js';
+export type { PendingProfileRequest } from './pendingRequestService.js';
+
 export { Orchestrator, getOrchestrator, initOrchestrator } from './Orchestrator.js';
 export type {
   ValidationResult as OrchestratorValidationResult,

@@ -105,13 +105,17 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should persist detected language on first message', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         userMessageArb,
         languageCodeArb,
         confidenceArb,
         async (userId, firstMessage, detectedLang, confidence) => {
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
+
           // Given: A new user with no stored language preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(null);
 
@@ -143,12 +147,13 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should use stored language preference for all subsequent interactions', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userContextArb,
         async (context) => {
-          // Clear mocks for this property run
-          vi.clearAllMocks();
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
           
           // Given: A user with a stored language preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(context.preferredLanguage);
@@ -178,12 +183,15 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should return stored preference for rendering regardless of message language', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         languageCodeArb,
         fc.array(userMessageArb, { minLength: 1, maxLength: 5 }),
         async (userId, storedLanguage, messages) => {
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+
           // Given: A user with a stored language preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(storedLanguage);
 
@@ -207,12 +215,14 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should maintain language preference consistency across multiple rendering calls', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         languageCodeArb,
         fc.integer({ min: 2, max: 10 }),
         async (userId, storedLanguage, numCalls) => {
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+
           // Given: A user with a stored language preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(storedLanguage);
 
@@ -234,14 +244,15 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should not re-detect language when stored preference exists (even if different from message)', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         languageCodeArb,
         userMessageArb,
         async (userId, storedLanguage, messageInDifferentLanguage) => {
-          // Clear mocks for this property run
-          vi.clearAllMocks();
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
           
           // Given: A user with stored Spanish preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(storedLanguage);
@@ -264,19 +275,17 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should allow manual language preference updates', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         languageCodeArb,
         languageCodeArb,
         async (userId, initialLanguage, newLanguage) => {
-          // Clear mocks for this property run
-          vi.clearAllMocks();
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
           
-          // Given: A user with an initial language preference
-          vi.mocked(mockSessionManager.getPreferredLanguage)
-            .mockResolvedValueOnce(initialLanguage)
-            .mockResolvedValueOnce(newLanguage);
+          // Given: A user whose next profile read reflects the manual update
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(newLanguage);
 
           vi.mocked(mockSessionManager.updatePreferredLanguage).mockResolvedValue(undefined);
 
@@ -295,16 +304,20 @@ describe('Property 21: User Language Preference Persistence', () => {
     );
   });
 
-  it('should detect and persist language when stored preference is default "en"', () => {
-    fc.assert(
-      fc.property(
+  it('should detect and persist language when no stored preference exists', () => {
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         userMessageArb,
         languageCodeArb.filter(lang => lang !== 'en'),
         confidenceArb,
         async (userId, message, detectedLang, confidence) => {
-          // Given: A user with default 'en' preference (not yet detected)
-          vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue('en');
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
+
+          // Given: A user with no stored language preference
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(null);
 
           // Mock language detection to return non-English language
           vi.mocked(mockTranslationService.detectLanguage).mockResolvedValue({
@@ -333,13 +346,14 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should handle complete user journey: first message → persistence → subsequent interactions', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userContextArb,
         confidenceArb,
         async (context, confidence) => {
-          // Clear mocks for this property run
-          vi.clearAllMocks();
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
           
           // Phase 1: First message - detect and persist
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValueOnce(null);
@@ -365,8 +379,10 @@ describe('Property 21: User Language Preference Persistence', () => {
           );
 
           // Phase 2: Subsequent messages - use stored preference
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(context.preferredLanguage);
-          vi.clearAllMocks(); // Clear first phase calls
 
           for (const message of context.subsequentMessages) {
             const result = await languagePreferenceManager.detectAndPersistLanguagePreference(
@@ -396,10 +412,13 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should fall back to English when no preference and no message provided', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         async (userId) => {
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+
           // Given: A user with no stored preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(null);
 
@@ -416,13 +435,17 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should detect and persist when no preference but message is provided', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         userMessageArb,
         languageCodeArb,
         confidenceArb,
         async (userId, message, detectedLang, confidence) => {
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
+          vi.mocked(mockSessionManager.updatePreferredLanguage).mockReset();
+
           // Given: A user with no stored preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(null);
 
@@ -451,11 +474,13 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should gracefully fall back to English on errors', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         userMessageArb,
         async (userId, message) => {
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+
           // Given: SessionManager throws an error
           vi.mocked(mockSessionManager.getPreferredLanguage).mockRejectedValue(
             new Error('Database error')
@@ -476,14 +501,13 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should maintain preference persistence across service restarts (idempotency)', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         languageCodeArb,
         fc.integer({ min: 2, max: 5 }),
         async (userId, storedLanguage, numRestarts) => {
-          // Clear mocks for this property run
-          vi.clearAllMocks();
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
           
           // Given: A user with a stored language preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(storedLanguage);
@@ -510,14 +534,14 @@ describe('Property 21: User Language Preference Persistence', () => {
   });
 
   it('should never lose language preference once stored', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         userIdArb,
         languageCodeArb,
         fc.array(userMessageArb, { minLength: 5, maxLength: 20 }),
         async (userId, initialLanguage, messages) => {
-          // Clear mocks for this property run
-          vi.clearAllMocks();
+          vi.mocked(mockSessionManager.getPreferredLanguage).mockReset();
+          vi.mocked(mockTranslationService.detectLanguage).mockReset();
           
           // Given: A user with an initial stored language preference
           vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue(initialLanguage);

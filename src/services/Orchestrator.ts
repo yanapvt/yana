@@ -106,18 +106,6 @@ export class Orchestrator {
     const confidenceError = this.validateConfidence(decision);
     if (confidenceError) {
       errors.push(confidenceError);
-      
-      // Low confidence triggers immediate fallback to UI narrowing
-      return {
-        decision,
-        validation: {
-          valid: false,
-          errors,
-        },
-        shouldProceed: false,
-        fallbackAction: 'ui_narrowing',
-        fallbackReason: `Confidence ${decision.confidence.toFixed(2)} below threshold ${this.config.confidenceThreshold.toFixed(2)}`,
-      };
     }
 
     // Step 3: Validate against schema if provided (Requirement 4.4)
@@ -140,10 +128,14 @@ export class Orchestrator {
 
     if (!shouldProceed) {
       // Choose fallback based on error types
+      const hasConfidenceErrors = errors.some((e) => e.type === 'confidence');
       const hasSchemaErrors = errors.some((e) => e.type === 'schema');
       const hasBusinessRuleErrors = errors.some((e) => e.type === 'business_rule');
 
-      if (hasSchemaErrors) {
+      if (hasConfidenceErrors) {
+        fallbackAction = 'ui_narrowing';
+        fallbackReason = `Confidence ${decision.confidence.toFixed(2)} below threshold ${this.config.confidenceThreshold.toFixed(2)}`;
+      } else if (hasSchemaErrors) {
         fallbackAction = 'ui_narrowing';
         fallbackReason = 'Schema validation failed - collecting fields via UI';
       } else if (hasBusinessRuleErrors) {
@@ -190,6 +182,14 @@ export class Orchestrator {
    */
   private validateStructure(decision: LLMDecisionOutput): ValidationError[] {
     const errors: ValidationError[] = [];
+
+    if (!decision || typeof decision !== 'object' || Array.isArray(decision)) {
+      return [{
+        type: 'structure',
+        message: 'Decision must be an object',
+        severity: 'error',
+      }];
+    }
 
     // Validate intent
     if (!decision.intent || typeof decision.intent !== 'string' || decision.intent.trim() === '') {

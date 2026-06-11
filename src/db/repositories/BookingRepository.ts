@@ -66,7 +66,7 @@ export class BookingRepository {
       await client.query('BEGIN');
 
       // Check if booking exists (idempotency)
-      const existing = await client.query<Booking>(
+      const existing = await client.query<any>(
         'SELECT * FROM bookings WHERE correlation_id = $1',
         [data.correlationId]
       );
@@ -77,7 +77,7 @@ export class BookingRepository {
       }
 
       // Create booking
-      const result = await client.query<Booking>(
+      const result = await client.query<any>(
         `INSERT INTO bookings (user_id, session_id, correlation_id, state, service_type, service_details, provider_name, provider_booking_ref, amount, currency, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
          RETURNING booking_id, user_id, session_id, correlation_id, state, service_type, service_details, provider_name, provider_booking_ref, amount, currency, created_at, updated_at, confirmed_at, cancelled_at, timed_out_at`,
@@ -118,7 +118,7 @@ export class BookingRepository {
    * Find booking by ID
    */
   async findById(bookingId: string): Promise<Booking | null> {
-    const result = await pool.query<Booking>(
+    const result = await pool.query<any>(
       `SELECT booking_id, user_id, session_id, correlation_id, state, service_type, service_details, provider_name, provider_booking_ref, amount, currency, created_at, updated_at, confirmed_at, cancelled_at, timed_out_at
        FROM bookings WHERE booking_id = $1`,
       [bookingId]
@@ -131,7 +131,7 @@ export class BookingRepository {
    * Find booking by correlation ID
    */
   async findByCorrelationId(correlationId: string): Promise<Booking | null> {
-    const result = await pool.query<Booking>(
+    const result = await pool.query<any>(
       `SELECT booking_id, user_id, session_id, correlation_id, state, service_type, service_details, provider_name, provider_booking_ref, amount, currency, created_at, updated_at, confirmed_at, cancelled_at, timed_out_at
        FROM bookings WHERE correlation_id = $1`,
       [correlationId]
@@ -144,7 +144,7 @@ export class BookingRepository {
    * Find bookings by user ID
    */
   async findByUserId(userId: string, limit = 100): Promise<Booking[]> {
-    const result = await pool.query<Booking>(
+    const result = await pool.query<any>(
       `SELECT booking_id, user_id, session_id, correlation_id, state, service_type, service_details, provider_name, provider_booking_ref, amount, currency, created_at, updated_at, confirmed_at, cancelled_at, timed_out_at
        FROM bookings WHERE user_id = $1
        ORDER BY created_at DESC
@@ -159,7 +159,7 @@ export class BookingRepository {
    * Find bookings by session ID
    */
   async findBySessionId(sessionId: string): Promise<Booking[]> {
-    const result = await pool.query<Booking>(
+    const result = await pool.query<any>(
       `SELECT booking_id, user_id, session_id, correlation_id, state, service_type, service_details, provider_name, provider_booking_ref, amount, currency, created_at, updated_at, confirmed_at, cancelled_at, timed_out_at
        FROM bookings WHERE session_id = $1
        ORDER BY created_at DESC`,
@@ -184,7 +184,7 @@ export class BookingRepository {
       await client.query('BEGIN');
 
       // Get current booking
-      const current = await client.query<Booking>(
+      const current = await client.query<any>(
         'SELECT * FROM bookings WHERE booking_id = $1',
         [bookingId]
       );
@@ -210,7 +210,7 @@ export class BookingRepository {
 
       values.push(bookingId);
 
-      const result = await client.query<Booking>(
+      const result = await client.query<any>(
         `UPDATE bookings SET ${updates.join(', ')}
          WHERE booking_id = $${paramIndex}
          RETURNING booking_id, user_id, session_id, correlation_id, state, service_type, service_details, provider_name, provider_booking_ref, amount, currency, created_at, updated_at, confirmed_at, cancelled_at, timed_out_at`,
@@ -258,7 +258,7 @@ export class BookingRepository {
    * Get booking events
    */
   async getEvents(bookingId: string): Promise<BookingEvent[]> {
-    const result = await pool.query<BookingEvent>(
+    const result = await pool.query<any>(
       `SELECT event_id, booking_id, previous_state, new_state, triggering_action, metadata, created_at
        FROM booking_events WHERE booking_id = $1
        ORDER BY created_at ASC`,
@@ -283,7 +283,7 @@ export class BookingRepository {
       serviceDetails: row.service_details,
       providerName: row.provider_name,
       providerBookingRef: row.provider_booking_ref,
-      amount: row.amount,
+      amount: row.amount == null ? undefined : parseFloat(row.amount),
       currency: row.currency,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

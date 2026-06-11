@@ -109,7 +109,7 @@ class MockAlwaysFailAdapter implements ProviderAdapter {
 function createMockToolDefinition(
   toolName: string,
   retryCount: number,
-  retryDelayMs: number = 10,
+  retryDelayMs: number = 0,
   adapterClass: string = 'MockRetryableAdapter'
 ) {
   return {
@@ -205,7 +205,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new MockAlwaysFailAdapter('retryable');
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'MockRetryableAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'MockRetryableAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;
@@ -253,7 +253,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new MockAlwaysFailAdapter('retryable');
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'MockRetryableAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'MockRetryableAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;
@@ -305,7 +305,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new MockRetryableAdapter(actualFailures, 'retryable');
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'MockRetryableAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'MockRetryableAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;
@@ -351,7 +351,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new MockAlwaysFailAdapter('non-retryable');
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'MockRetryableAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'MockRetryableAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;
@@ -438,7 +438,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new MockAlwaysFailAdapter('retryable');
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'MockRetryableAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'MockRetryableAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;
@@ -479,7 +479,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new MockAlwaysFailAdapter('retryable');
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'MockRetryableAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'MockRetryableAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;
@@ -536,7 +536,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new CustomErrorAdapter();
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'CustomErrorAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'CustomErrorAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;
@@ -578,7 +578,7 @@ describe('Property 12: Tool Call Retry Policy', () => {
           const mockAdapter = new MockRetryableAdapter(0, 'retryable'); // 0 failures before success
           const mockToolRegistry = {
             getTool: vi.fn().mockResolvedValue(
-              createMockToolDefinition('test_tool', retryCount, 10, 'MockRetryableAdapter')
+              createMockToolDefinition('test_tool', retryCount, 0, 'MockRetryableAdapter')
             ),
             isToolAvailable: vi.fn().mockResolvedValue(true),
           } as any;

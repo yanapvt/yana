@@ -50,6 +50,7 @@ export interface InboundMessage {
   to: string;
   timestamp: Date;
   type: 'text' | 'media' | 'audio' | 'interactive';
+  inputType?: 'text' | 'voice' | 'media' | 'interactive';
   content: MessageContent;
   metadata?: Record<string, unknown>;
 }
@@ -75,6 +76,7 @@ export interface MediaContent {
 export interface AudioContent {
   type: 'audio';
   audioUrl: string;
+  contentType?: string;
 }
 
 export interface InteractiveContent {

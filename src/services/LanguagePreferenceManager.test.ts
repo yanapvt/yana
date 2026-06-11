@@ -101,8 +101,8 @@ describe('LanguagePreferenceManager', () => {
       });
     });
 
-    it('should detect and persist if stored preference is default "en"', async () => {
-      // Mock: User has default 'en' preference (not yet detected)
+    it('should use stored English preference without re-detection', async () => {
+      // Mock: User has an explicit English preference
       vi.mocked(mockSessionManager.getPreferredLanguage).mockResolvedValue('en');
 
       // Mock: Language detection returns Spanish
@@ -117,19 +117,19 @@ describe('LanguagePreferenceManager', () => {
         'Hola, busco un hotel'
       );
 
-      // Should detect language even though 'en' is stored
-      expect(mockTranslationService.detectLanguage).toHaveBeenCalledWith('Hola, busco un hotel');
+      // Should not detect language when any preference is stored
+      expect(mockTranslationService.detectLanguage).not.toHaveBeenCalled();
 
-      // Should update preference to detected language
-      expect(mockSessionManager.updatePreferredLanguage).toHaveBeenCalledWith('user_123', 'es');
+      // Should not update preference
+      expect(mockSessionManager.updatePreferredLanguage).not.toHaveBeenCalled();
 
-      // Should return detection result
+      // Should return the stored preference
       expect(result).toEqual({
         userId: 'user_123',
-        detectedLanguage: 'es',
-        confidence: 0.92,
-        isFirstDetection: true,
-        preferredLanguage: 'es',
+        detectedLanguage: 'en',
+        confidence: 1.0,
+        isFirstDetection: false,
+        preferredLanguage: 'en',
       });
     });
 

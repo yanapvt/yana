@@ -179,8 +179,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should always return a structured object with all required fields', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input processed in decision mode
         
         // When: The LLM service processes the input
@@ -205,8 +205,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should always include a non-empty string intent', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -221,8 +221,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should always include a parameters object (not array or null)', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -239,8 +239,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should always include a missingFields array', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -259,8 +259,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should always include a valid suggestedAction', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -275,8 +275,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should always include a confidence value between 0 and 1', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -294,8 +294,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should include optional reasoning field as string when present', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -311,8 +311,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should maintain structure consistency across multiple calls with same input', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: A specific user input
         
         // When: The LLM service processes the same input multiple times
@@ -338,8 +338,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should handle empty user messages without breaking structure', () => {
-    fc.assert(
-      fc.property(async () => {
+    return fc.assert(
+      fc.asyncProperty(fc.constant(null), async () => {
         // Given: An empty user message
         const contextPackage: ContextPackage = {
           userMessage: '',
@@ -361,8 +361,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should handle very long user messages without breaking structure', () => {
-    fc.assert(
-      fc.property(fc.string({ minLength: 500, maxLength: 2000 }), async (longMessage) => {
+    return fc.assert(
+      fc.asyncProperty(fc.string({ minLength: 500, maxLength: 2000 }), async (longMessage) => {
         // Given: A very long user message
         const contextPackage: ContextPackage = {
           userMessage: longMessage,
@@ -379,8 +379,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should handle special characters in user messages without breaking structure', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         fc.string({ minLength: 10, maxLength: 100 }),
         async (message) => {
           // Given: A user message with special characters
@@ -401,8 +401,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should handle context packages with all optional fields undefined', () => {
-    fc.assert(
-      fc.property(userMessageArb, async (userMessage) => {
+    return fc.assert(
+      fc.asyncProperty(userMessageArb, async (userMessage) => {
         // Given: A context package with only the required userMessage field
         const contextPackage: ContextPackage = {
           userMessage,
@@ -423,8 +423,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should handle context packages with empty arrays and objects', () => {
-    fc.assert(
-      fc.property(userMessageArb, async (userMessage) => {
+    return fc.assert(
+      fc.asyncProperty(userMessageArb, async (userMessage) => {
         // Given: A context package with empty arrays and objects
         const contextPackage: ContextPackage = {
           userMessage,
@@ -452,8 +452,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should never return null or undefined as the decision output', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -468,8 +468,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should never return primitive types as the decision output', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -484,8 +484,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should ensure parameters object never contains functions', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -501,8 +501,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should ensure missingFields array contains only strings', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -519,8 +519,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should ensure confidence is a valid finite number', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input
         
         // When: The LLM service processes the input
@@ -537,8 +537,8 @@ describe('Property 7: LLM Decision Output Structure', () => {
   });
 
   it('should validate Requirement 4.1: structured output with all required components', () => {
-    fc.assert(
-      fc.property(contextPackageArb, async (contextPackage) => {
+    return fc.assert(
+      fc.asyncProperty(contextPackageArb, async (contextPackage) => {
         // Given: Any user input processed in decision mode
         
         // When: The LLM service processes the input

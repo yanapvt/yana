@@ -43,10 +43,12 @@ const fieldTypeArb: fc.Arbitrary<SchemaFieldType> = fc.constantFrom(
 /**
  * Generate a valid value for a given field type
  */
-function generateValidValueForType(type: SchemaFieldType): unknown {
-  switch (type) {
+function generateValidValueForField(field: SchemaField): unknown {
+  switch (field.type) {
     case 'number':
-      return 42;
+      return field.validation.max !== undefined
+        ? Math.min(field.validation.max, Math.max(field.validation.min ?? field.validation.max, field.validation.max))
+        : Math.max(42, field.validation.min ?? 42);
     case 'date':
       return '2026-04-18';
     case 'boolean':
@@ -60,7 +62,7 @@ function generateValidValueForType(type: SchemaFieldType): unknown {
       return 'option_a';
     case 'text':
     default:
-      return 'valid_text_value';
+      return 'validtextvalue';
   }
 }
 
@@ -128,7 +130,14 @@ const schemaDefinitionArb: fc.Arbitrary<SchemaDefinition> = fc
       metadata: {},
     });
   })
-  .filter((schema) => schema.requiredFields.length > 0); // Ensure at least one required field
+  .filter((schema) => schema.requiredFields.length > 0)
+  .filter((schema) =>
+    Object.values(schema.fields).every((field) =>
+      field.validation.min === undefined ||
+      field.validation.max === undefined ||
+      field.validation.min <= field.validation.max
+    )
+  );
 
 // ============================================================================
 // Property Tests
@@ -145,7 +154,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check for missing fields
@@ -167,7 +176,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check if schema is complete
@@ -188,7 +197,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We validate the fields
@@ -210,7 +219,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check for the next field to collect
@@ -231,7 +240,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          completeInput[fieldName] = generateValidValueForType(fieldDef.type);
+          completeInput[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We process this complete input
@@ -258,7 +267,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check completeness without optional fields
@@ -284,14 +293,14 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
         // Collect all required fields
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // Also collect some optional fields
         const optionalToCollect = schema.optionalFields.slice(0, Math.ceil(schema.optionalFields.length / 2));
         optionalToCollect.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check completeness
@@ -317,7 +326,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
         const completeFields: CollectedFields = {};
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          completeFields[fieldName] = generateValidValueForType(fieldDef.type);
+          completeFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // Then: Should immediately transition to complete
@@ -337,7 +346,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          completeInput[fieldName] = generateValidValueForType(fieldDef.type);
+          completeInput[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check completeness multiple times
@@ -371,13 +380,13 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
         // Complete input has all required fields
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          completeInput[fieldName] = generateValidValueForType(fieldDef.type);
+          completeInput[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // Incomplete input has all but one required field
         schema.requiredFields.slice(0, -1).forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          incompleteInput[fieldName] = generateValidValueForType(fieldDef.type);
+          incompleteInput[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check both inputs
@@ -405,7 +414,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
 
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
-          completeInput[fieldName] = generateValidValueForType(fieldDef.type);
+          completeInput[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We validate and check completeness
@@ -451,7 +460,7 @@ describe('Property 5: Schema Bypass on Complete Input', () => {
             const minValue = fieldDef.validation.min!;
             collectedFields[fieldName] = minValue - 1;
           } else {
-            collectedFields[fieldName] = generateValidValueForType(fieldDef.type);
+            collectedFields[fieldName] = generateValidValueForField(fieldDef);
           }
         });
 

@@ -66,7 +66,7 @@ export class PaymentRepository {
       await client.query('BEGIN');
 
       // Check if payment exists (idempotency)
-      const existing = await client.query<Payment>(
+      const existing = await client.query<any>(
         'SELECT * FROM payments WHERE correlation_id = $1',
         [data.correlationId]
       );
@@ -77,7 +77,7 @@ export class PaymentRepository {
       }
 
       // Create payment
-      const result = await client.query<Payment>(
+      const result = await client.query<any>(
         `INSERT INTO payments (booking_id, user_id, correlation_id, state, amount, currency, payment_method, provider_name, provider_payment_ref, payment_url, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
          RETURNING payment_id, booking_id, user_id, correlation_id, state, amount, currency, payment_method, provider_name, provider_payment_ref, payment_url, created_at, updated_at, succeeded_at, failed_at, timed_out_at`,
@@ -118,7 +118,7 @@ export class PaymentRepository {
    * Find payment by ID
    */
   async findById(paymentId: string): Promise<Payment | null> {
-    const result = await pool.query<Payment>(
+    const result = await pool.query<any>(
       `SELECT payment_id, booking_id, user_id, correlation_id, state, amount, currency, payment_method, provider_name, provider_payment_ref, payment_url, created_at, updated_at, succeeded_at, failed_at, timed_out_at
        FROM payments WHERE payment_id = $1`,
       [paymentId]
@@ -131,7 +131,7 @@ export class PaymentRepository {
    * Find payment by correlation ID
    */
   async findByCorrelationId(correlationId: string): Promise<Payment | null> {
-    const result = await pool.query<Payment>(
+    const result = await pool.query<any>(
       `SELECT payment_id, booking_id, user_id, correlation_id, state, amount, currency, payment_method, provider_name, provider_payment_ref, payment_url, created_at, updated_at, succeeded_at, failed_at, timed_out_at
        FROM payments WHERE correlation_id = $1`,
       [correlationId]
@@ -144,7 +144,7 @@ export class PaymentRepository {
    * Find payments by booking ID
    */
   async findByBookingId(bookingId: string): Promise<Payment[]> {
-    const result = await pool.query<Payment>(
+    const result = await pool.query<any>(
       `SELECT payment_id, booking_id, user_id, correlation_id, state, amount, currency, payment_method, provider_name, provider_payment_ref, payment_url, created_at, updated_at, succeeded_at, failed_at, timed_out_at
        FROM payments WHERE booking_id = $1
        ORDER BY created_at DESC`,
@@ -158,7 +158,7 @@ export class PaymentRepository {
    * Find payments by user ID
    */
   async findByUserId(userId: string, limit = 100): Promise<Payment[]> {
-    const result = await pool.query<Payment>(
+    const result = await pool.query<any>(
       `SELECT payment_id, booking_id, user_id, correlation_id, state, amount, currency, payment_method, provider_name, provider_payment_ref, payment_url, created_at, updated_at, succeeded_at, failed_at, timed_out_at
        FROM payments WHERE user_id = $1
        ORDER BY created_at DESC
@@ -184,7 +184,7 @@ export class PaymentRepository {
       await client.query('BEGIN');
 
       // Get current payment
-      const current = await client.query<Payment>(
+      const current = await client.query<any>(
         'SELECT * FROM payments WHERE payment_id = $1',
         [paymentId]
       );
@@ -210,7 +210,7 @@ export class PaymentRepository {
 
       values.push(paymentId);
 
-      const result = await client.query<Payment>(
+      const result = await client.query<any>(
         `UPDATE payments SET ${updates.join(', ')}
          WHERE payment_id = $${paramIndex}
          RETURNING payment_id, booking_id, user_id, correlation_id, state, amount, currency, payment_method, provider_name, provider_payment_ref, payment_url, created_at, updated_at, succeeded_at, failed_at, timed_out_at`,
@@ -269,7 +269,7 @@ export class PaymentRepository {
    * Get payment events
    */
   async getEvents(paymentId: string): Promise<PaymentEvent[]> {
-    const result = await pool.query<PaymentEvent>(
+    const result = await pool.query<any>(
       `SELECT event_id, payment_id, previous_state, new_state, triggering_action, metadata, created_at
        FROM payment_events WHERE payment_id = $1
        ORDER BY created_at ASC`,

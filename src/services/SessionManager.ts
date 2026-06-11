@@ -145,13 +145,16 @@ export class SessionManager {
           schemaVersion: stateData.schemaVersion,
           missingFields: stateData.missingFields,
           collectedFields: stateData.collectedFields,
-          pendingOptions: stateData.pendingOptions,
-          bookingProgress: stateData.bookingProgress,
-          paymentProgress: stateData.paymentProgress,
+          pendingOptions: stateData.pendingOptions as SessionState['pendingOptions'],
+          bookingProgress: stateData.bookingProgress as SessionState['bookingProgress'],
+          paymentProgress: stateData.paymentProgress as SessionState['paymentProgress'],
         };
 
         // Restore to State_Store for future access
-        await this.stateStore.setSessionState(session.sessionId, sessionState);
+        await this.stateStore.setSessionState(
+          session.sessionId,
+          sessionState as SessionState
+        );
       }
     }
 
@@ -210,9 +213,9 @@ export class SessionManager {
           schemaVersion: stateData.schemaVersion,
           missingFields: stateData.missingFields,
           collectedFields: stateData.collectedFields,
-          pendingOptions: stateData.pendingOptions,
-          bookingProgress: stateData.bookingProgress,
-          paymentProgress: stateData.paymentProgress,
+          pendingOptions: stateData.pendingOptions as SessionState['pendingOptions'],
+          bookingProgress: stateData.bookingProgress as SessionState['bookingProgress'],
+          paymentProgress: stateData.paymentProgress as SessionState['paymentProgress'],
         };
       }
     }
@@ -335,7 +338,7 @@ export class SessionManager {
     await this.stateStore.setSessionState(sessionId, newState);
 
     // Update Durable_Store
-    await this.sessionRepository.updateState(sessionId, updates);
+    await this.sessionRepository.updateState(sessionId, updates as any);
 
     // Update session last activity
     await this.sessionRepository.updateLastActivity(sessionId);
