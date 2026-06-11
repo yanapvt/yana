@@ -38,7 +38,7 @@ class MockFailingNangoAdapter extends NangoAdapter {
     errorType: 'network' | 'rate-limit' | 'server-error' | 'auth-error' = 'network',
     maxRetries: number = 3
   ) {
-    super(config, { maxRetries, initialDelayMs: 10, maxDelayMs: 50 });
+    super(config, { maxRetries, initialDelayMs: 0, maxDelayMs: 0 });
     this.errorType = errorType;
     
     // Map error types to status codes
@@ -101,7 +101,7 @@ class MockFailingBaseAdapter extends BaseProviderAdapter {
   private shouldThrow: boolean;
 
   constructor(maxRetries: number = 3, shouldThrow: boolean = true) {
-    super({ maxRetries, initialDelayMs: 10, maxDelayMs: 50 });
+    super({ maxRetries, initialDelayMs: 0, maxDelayMs: 0 });
     this.shouldThrow = shouldThrow;
   }
 

@@ -442,6 +442,15 @@ export class TranslationService {
 
       const handoff = await this.humanHandoffRepository.createHandoff(handoffData);
 
+      if (!handoff?.handoffId) {
+        console.warn('[TranslationService] Operator review handoff was not created:', {
+          sessionId,
+          messageId,
+          confidence: translationResult.confidence,
+        });
+        return undefined;
+      }
+
       console.log('[TranslationService] Message flagged for operator review:', {
         handoffId: handoff.handoffId,
         sessionId,
@@ -581,7 +590,8 @@ export class TranslationService {
       .trim()
       .toLowerCase()
       .replace(/\s+/g, ' ') // Replace multiple spaces with single space
-      .replace(/[^\w\s]/g, '') // Remove punctuation
+      .replace(/[^\p{L}\p{N}_\s]/gu, '') // Remove punctuation while preserving non-Latin text
+      .replace(/\s+/g, ' ') // Punctuation removal can leave new whitespace runs
       .trim();
   }
 
@@ -692,7 +702,10 @@ export class TranslationService {
     const key = `${sourceLang}-${targetLang}`;
     const lowerText = text.toLowerCase().trim();
 
-    if (translations[key] && translations[key][lowerText]) {
+    if (
+      translations[key] &&
+      Object.prototype.hasOwnProperty.call(translations[key], lowerText)
+    ) {
       return {
         text: translations[key][lowerText],
         confidence: 0.95,

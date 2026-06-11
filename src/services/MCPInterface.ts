@@ -150,6 +150,7 @@ export class MCPInterface {
     // Step 4: Execute with retry policy (Requirement 5.5)
     let lastError: ToolCallError | undefined;
     const maxAttempts = (executionPolicy.retryCount || 0) + 1;
+    let finalAttempt = 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -179,6 +180,7 @@ export class MCPInterface {
 
         return successResult;
       } catch (error) {
+        finalAttempt = attempt;
         // Determine if error is retryable
         const isRetryable = this.isRetryableError(error);
         const errorCategory = this.categorizeError(error);
@@ -210,14 +212,14 @@ export class MCPInterface {
       metadata: {
         toolName,
         executionTimeMs: Date.now() - startTime,
-        attemptNumber: maxAttempts,
+        attemptNumber: finalAttempt,
         provider: toolDef.providerMapping.providerName,
         timestamp: new Date(),
       },
     };
 
     // Log failure (Requirement 5.3)
-    await this.logToolCall(toolCallRequest, correlationCtx, failureResult, maxAttempts);
+    await this.logToolCall(toolCallRequest, correlationCtx, failureResult, finalAttempt);
 
     return failureResult;
   }
@@ -311,6 +313,12 @@ export class MCPInterface {
       case 'date':
         if (actualType !== 'string' && !(value instanceof Date)) {
           return `Parameter '${name}' must be a date string or Date object, got ${actualType}`;
+        }
+        if (typeof value === 'string' && isNaN(new Date(value).getTime())) {
+          return `Parameter '${name}' must be a valid date string`;
+        }
+        if (value instanceof Date && isNaN(value.getTime())) {
+          return `Parameter '${name}' must be a valid Date object`;
         }
         break;
       case 'object':
@@ -419,8 +427,17 @@ export class MCPInterface {
    * Determine if an error is retryable
    */
   private isRetryableError(error: unknown): boolean {
+    const explicitRetryable = (error as any)?.retryable;
+    if (typeof explicitRetryable === 'boolean') {
+      return explicitRetryable;
+    }
+
     if (error instanceof Error) {
       const message = error.message.toLowerCase();
+      if (message.includes('non-retryable')) {
+        return false;
+      }
+
       // Network errors, timeouts, rate limits are retryable
       if (
         message.includes('timeout') ||
@@ -478,8 +495,8 @@ export class MCPInterface {
    * Calculate retry delay with exponential backoff
    */
   private calculateRetryDelay(executionPolicy: any, attemptNumber: number): number {
-    const baseDelay = executionPolicy.retryDelayMs || 1000;
-    const backoffMultiplier = executionPolicy.retryBackoffMultiplier || 2;
+    const baseDelay = executionPolicy.retryDelayMs ?? 1000;
+    const backoffMultiplier = executionPolicy.retryBackoffMultiplier ?? 2;
 
     return baseDelay * Math.pow(backoffMultiplier, attemptNumber - 1);
   }

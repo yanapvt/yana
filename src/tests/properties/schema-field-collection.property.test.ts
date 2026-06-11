@@ -100,7 +100,36 @@ const schemaDefinitionArb: fc.Arbitrary<SchemaDefinition> = fc
       metadata: {},
     });
   })
-  .filter((schema) => schema.requiredFields.length > 0); // Ensure at least one required field
+  .filter((schema) => schema.requiredFields.length > 0)
+  .filter((schema) =>
+    Object.values(schema.fields).every((field) =>
+      field.validation.min === undefined ||
+      field.validation.max === undefined ||
+      field.validation.min <= field.validation.max
+    )
+  );
+
+function generateValidValueForField(field: SchemaField): unknown {
+  switch (field.type) {
+    case 'number':
+      return field.validation.max !== undefined
+        ? Math.min(field.validation.max, Math.max(field.validation.min ?? field.validation.max, field.validation.max))
+        : Math.max(42, field.validation.min ?? 42);
+    case 'date':
+      return '2026-04-18';
+    case 'boolean':
+      return true;
+    case 'location':
+    case 'location_or_text':
+      return 'Galle';
+    case 'currency':
+      return 'USD';
+    case 'text':
+    case 'enum':
+    default:
+      return 'validvalue';
+  }
+}
 
 // ============================================================================
 // Property Tests
@@ -175,27 +204,7 @@ describe('Property 4: Schema Field Collection Completeness', () => {
         schema.requiredFields.forEach((fieldName) => {
           const fieldDef = schema.fields[fieldName];
 
-          // Provide valid values based on field type
-          switch (fieldDef.type) {
-            case 'number':
-              collectedFields[fieldName] = 42;
-              break;
-            case 'date':
-              collectedFields[fieldName] = '2026-04-18';
-              break;
-            case 'boolean':
-              collectedFields[fieldName] = true;
-              break;
-            case 'location':
-            case 'location_or_text':
-              collectedFields[fieldName] = 'Galle, Sri Lanka';
-              break;
-            case 'currency':
-              collectedFields[fieldName] = 'USD';
-              break;
-            default:
-              collectedFields[fieldName] = 'valid_value';
-          }
+          collectedFields[fieldName] = generateValidValueForField(fieldDef);
         });
 
         // When: We check if schema is complete

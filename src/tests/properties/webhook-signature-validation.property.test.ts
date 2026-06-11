@@ -1,16 +1,16 @@
 /**
  * Property Test 1: Webhook Signature Validation
- * 
+ *
  * Property Statement:
- * For any inbound webhook request, the AI_Gateway SHALL accept the request if and only if 
+ * For any inbound webhook request, the AI_Gateway SHALL accept the request if and only if
  * the signature is valid; requests with invalid signatures SHALL be rejected and logged.
- * 
+ *
  * **Validates: Requirements 1.1, 1.2**
- * 
+ *
  * Requirements:
- * - 1.1: WHEN an inbound WhatsApp message is received, THE AI_Gateway SHALL validate 
+ * - 1.1: WHEN an inbound WhatsApp message is received, THE AI_Gateway SHALL validate
  *        the webhook signature before processing the message
- * - 1.2: WHEN a webhook signature is invalid, THEN THE AI_Gateway SHALL reject the 
+ * - 1.2: WHEN a webhook signature is invalid, THEN THE AI_Gateway SHALL reject the
  *        request and log the rejection with the Correlation_ID
  */
 
@@ -96,7 +96,7 @@ function createMockNext(): NextFunction {
 const webhookUrlArb = fc.oneof(
   fc.constant('/webhook/whatsapp'),
   fc.constant('/webhook/whatsapp?test=1'),
-  fc.webPath().map(path => `/webhook${path}`)
+  fc.webPath().map((path) => `/webhook${path}`)
 );
 
 /**
@@ -104,12 +104,7 @@ const webhookUrlArb = fc.oneof(
  */
 const webhookBodyArb = fc.dictionary(
   fc.stringMatching(/^[A-Za-z][A-Za-z0-9_]*$/),
-  fc.oneof(
-    fc.string(),
-    fc.integer(),
-    fc.constant(null),
-    fc.constant(undefined)
-  ),
+  fc.oneof(fc.string(), fc.integer(), fc.constant(null), fc.constant(undefined)),
   { minKeys: 1, maxKeys: 10 }
 );
 
@@ -126,34 +121,37 @@ const correlationIdArb = fc.uuid();
 /**
  * Generates a complete webhook request with valid signature
  */
-const validWebhookRequestArb = fc.record({
-  authToken: authTokenArb,
-  url: webhookUrlArb,
-  body: webhookBodyArb,
-  correlationId: correlationIdArb,
-}).map(({ authToken, url, body, correlationId }) => {
-  const fullUrl = `https://example.com${url}`;
-  const signature = computeValidSignature(authToken, fullUrl, body);
-  return { authToken, url, body, signature, correlationId };
-});
+const validWebhookRequestArb = fc
+  .record({
+    authToken: authTokenArb,
+    url: webhookUrlArb,
+    body: webhookBodyArb,
+    correlationId: correlationIdArb,
+  })
+  .map(({ authToken, url, body, correlationId }) => {
+    const fullUrl = `https://example.com${url}`;
+    const signature = computeValidSignature(authToken, fullUrl, body);
+    return { authToken, url, body, signature, correlationId };
+  });
 
 /**
  * Generates a webhook request with invalid signature
  */
-const invalidWebhookRequestArb = fc.record({
-  authToken: authTokenArb,
-  url: webhookUrlArb,
-  body: webhookBodyArb,
-  correlationId: correlationIdArb,
-  invalidSignature: fc.oneof(
-    fc.base64String(), // Random base64 string
-    fc.constant(''), // Empty signature
-    fc.constant('invalid'), // Invalid format
-    fc.hexaString({ minLength: 20, maxLength: 40 }) // Wrong encoding
-  ),
-}).map(({ authToken, url, body, correlationId, invalidSignature }) => {
-  return { authToken, url, body, signature: invalidSignature, correlationId };
-});
+const invalidWebhookRequestArb = fc
+  .record({
+    authToken: authTokenArb,
+    url: webhookUrlArb,
+    body: webhookBodyArb,
+    correlationId: correlationIdArb,
+    invalidSignature: fc.oneof(
+      fc.base64String().filter((value) => value.length > 0), // Random base64 string
+      fc.constant('invalid'), // Invalid format
+      fc.hexaString({ minLength: 20, maxLength: 40 }) // Wrong encoding
+    ),
+  })
+  .map(({ authToken, url, body, correlationId, invalidSignature }) => {
+    return { authToken, url, body, signature: invalidSignature, correlationId };
+  });
 
 // ============================================================================
 // Property Tests
@@ -162,29 +160,65 @@ const invalidWebhookRequestArb = fc.record({
 describe('Property 1: Webhook Signature Validation', () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
   let originalAuthToken: string;
+  let originalPublicWebhookUrl: string | undefined;
+  let originalSignatureBypass: string | undefined;
 
   beforeEach(() => {
     // Spy on console.error to verify logging
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    
+
     // Store original auth token
     originalAuthToken = process.env.TWILIO_AUTH_TOKEN || '';
+    originalPublicWebhookUrl = process.env.TWILIO_WEBHOOK_PUBLIC_URL;
+    originalSignatureBypass = process.env.TWILIO_SIGNATURE_BYPASS;
+    delete process.env.TWILIO_WEBHOOK_PUBLIC_URL;
+    delete process.env.TWILIO_SIGNATURE_BYPASS;
   });
 
   afterEach(() => {
     // Restore console.error
     consoleErrorSpy.mockRestore();
-    
+
     // Restore original auth token
     process.env.TWILIO_AUTH_TOKEN = originalAuthToken;
+    if (originalPublicWebhookUrl === undefined) {
+      delete process.env.TWILIO_WEBHOOK_PUBLIC_URL;
+    } else {
+      process.env.TWILIO_WEBHOOK_PUBLIC_URL = originalPublicWebhookUrl;
+    }
+    if (originalSignatureBypass === undefined) {
+      delete process.env.TWILIO_SIGNATURE_BYPASS;
+    } else {
+      process.env.TWILIO_SIGNATURE_BYPASS = originalSignatureBypass;
+    }
+  });
+
+  it('accepts a signature generated for a configured public proxy webhook URL', () => {
+    const authToken = 'sandbox-auth-token';
+    const publicWebhookUrl = 'https://public-tunnel.example/webhook/whatsapp';
+    const body = { MessageSid: 'SM123', Body: 'Hello' };
+    const signature = computeValidSignature(authToken, publicWebhookUrl, body);
+    process.env.TWILIO_AUTH_TOKEN = authToken;
+    process.env.TWILIO_WEBHOOK_PUBLIC_URL = publicWebhookUrl;
+
+    const req = createMockRequest('/webhook/whatsapp', body, signature, 'proxy-request');
+    const res = createMockResponse();
+    const next = createMockNext();
+
+    validateTwilioSignature(req as Request, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.status).not.toHaveBeenCalled();
   });
 
   it('should accept all requests with valid signatures', () => {
     fc.assert(
       fc.property(validWebhookRequestArb, ({ authToken, url, body, signature, correlationId }) => {
+        consoleErrorSpy.mockClear();
+
         // Given: A webhook request with a valid signature
         process.env.TWILIO_AUTH_TOKEN = authToken;
-        
+
         // Re-import to pick up new env var (in real scenario, this would be handled by config)
         const req = createMockRequest(url, body, signature, correlationId);
         const res = createMockResponse();
@@ -195,11 +229,11 @@ describe('Property 1: Webhook Signature Validation', () => {
 
         // Then: The request should be accepted (next() called)
         expect(next).toHaveBeenCalledOnce();
-        
+
         // And: No error response should be sent
         expect(res.status).not.toHaveBeenCalled();
         expect(res.json).not.toHaveBeenCalled();
-        
+
         // And: No error should be logged
         expect(consoleErrorSpy).not.toHaveBeenCalled();
       }),
@@ -209,30 +243,35 @@ describe('Property 1: Webhook Signature Validation', () => {
 
   it('should reject all requests with invalid signatures', () => {
     fc.assert(
-      fc.property(invalidWebhookRequestArb, ({ authToken, url, body, signature, correlationId }) => {
-        // Given: A webhook request with an invalid signature
-        process.env.TWILIO_AUTH_TOKEN = authToken;
-        
-        const req = createMockRequest(url, body, signature, correlationId);
-        const res = createMockResponse();
-        const next = createMockNext();
+      fc.property(
+        invalidWebhookRequestArb,
+        ({ authToken, url, body, signature, correlationId }) => {
+          consoleErrorSpy.mockClear();
 
-        // When: The signature validation middleware is invoked
-        validateTwilioSignature(req as Request, res, next);
+          // Given: A webhook request with an invalid signature
+          process.env.TWILIO_AUTH_TOKEN = authToken;
 
-        // Then: The request should be rejected (next() not called)
-        expect(next).not.toHaveBeenCalled();
-        
-        // And: A 403 error response should be sent
-        expect(res.status).toHaveBeenCalledWith(403);
-        expect(res.json).toHaveBeenCalledWith({ error: 'Invalid signature' });
-        
-        // And: The rejection should be logged with the Correlation_ID
-        expect(consoleErrorSpy).toHaveBeenCalled();
-        const errorLog = consoleErrorSpy.mock.calls[0][0];
-        expect(errorLog).toContain(correlationId);
-        expect(errorLog).toContain('Invalid Twilio signature');
-      }),
+          const req = createMockRequest(url, body, signature, correlationId);
+          const res = createMockResponse();
+          const next = createMockNext();
+
+          // When: The signature validation middleware is invoked
+          validateTwilioSignature(req as Request, res, next);
+
+          // Then: The request should be rejected (next() not called)
+          expect(next).not.toHaveBeenCalled();
+
+          // And: A 403 error response should be sent
+          expect(res.status).toHaveBeenCalledWith(403);
+          expect(res.json).toHaveBeenCalledWith({ error: 'Invalid signature' });
+
+          // And: The rejection should be logged with the Correlation_ID
+          expect(consoleErrorSpy).toHaveBeenCalled();
+          const errorLog = consoleErrorSpy.mock.calls[0][0];
+          expect(errorLog).toContain(correlationId);
+          expect(errorLog).toContain('Invalid Twilio signature');
+        }
+      ),
       { numRuns: 100 }
     );
   });
@@ -245,9 +284,11 @@ describe('Property 1: Webhook Signature Validation', () => {
         webhookBodyArb,
         correlationIdArb,
         (authToken, url, body, correlationId) => {
+          consoleErrorSpy.mockClear();
+
           // Given: A webhook request with no signature header
           process.env.TWILIO_AUTH_TOKEN = authToken;
-          
+
           const req = createMockRequest(url, body, undefined, correlationId);
           const res = createMockResponse();
           const next = createMockNext();
@@ -257,11 +298,11 @@ describe('Property 1: Webhook Signature Validation', () => {
 
           // Then: The request should be rejected
           expect(next).not.toHaveBeenCalled();
-          
+
           // And: A 403 error response should be sent
           expect(res.status).toHaveBeenCalledWith(403);
           expect(res.json).toHaveBeenCalledWith({ error: 'Missing signature' });
-          
+
           // And: The rejection should be logged with the Correlation_ID
           expect(consoleErrorSpy).toHaveBeenCalled();
           const errorLog = consoleErrorSpy.mock.calls[0][0];
@@ -276,6 +317,8 @@ describe('Property 1: Webhook Signature Validation', () => {
   it('should be deterministic: same request yields same validation result', () => {
     fc.assert(
       fc.property(validWebhookRequestArb, ({ authToken, url, body, signature, correlationId }) => {
+        consoleErrorSpy.mockClear();
+
         // Given: A webhook request with a valid signature
         process.env.TWILIO_AUTH_TOKEN = authToken;
 
@@ -285,9 +328,9 @@ describe('Property 1: Webhook Signature Validation', () => {
           const req = createMockRequest(url, body, signature, correlationId);
           const res = createMockResponse();
           const next = createMockNext();
-          
+
           validateTwilioSignature(req as Request, res, next);
-          
+
           results.push({
             nextCalled: (next as any).mock.calls.length > 0,
             statusCalled: (res.status as any).mock.calls.length > 0,
@@ -310,18 +353,20 @@ describe('Property 1: Webhook Signature Validation', () => {
         correlationIdArb,
         fc.dictionary(fc.string(), fc.string(), { minKeys: 1, maxKeys: 5 }),
         (authToken, body, correlationId, queryParams) => {
+          consoleErrorSpy.mockClear();
+
           // Given: A webhook URL with query parameters
           const queryString = Object.entries(queryParams)
             .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
             .join('&');
           const url = `/webhook/whatsapp?${queryString}`;
           const fullUrl = `https://example.com${url}`;
-          
+
           // And: A valid signature computed with the full URL
           const validSignature = computeValidSignature(authToken, fullUrl, body);
-          
+
           process.env.TWILIO_AUTH_TOKEN = authToken;
-          
+
           const req = createMockRequest(url, body, validSignature, correlationId);
           const res = createMockResponse();
           const next = createMockNext();
@@ -347,26 +392,28 @@ describe('Property 1: Webhook Signature Validation', () => {
         webhookBodyArb,
         correlationIdArb,
         (authToken, url, body1, body2, correlationId) => {
+          consoleErrorSpy.mockClear();
+
           // Pre-condition: bodies must be different
           fc.pre(JSON.stringify(body1) !== JSON.stringify(body2));
-          
+
           // Given: A signature computed for body1
           const fullUrl = `https://example.com${url}`;
           const signatureForBody1 = computeValidSignature(authToken, fullUrl, body1);
-          
+
           process.env.TWILIO_AUTH_TOKEN = authToken;
-          
+
           // When: The signature is used with body2 (different body)
           const req = createMockRequest(url, body2, signatureForBody1, correlationId);
           const res = createMockResponse();
           const next = createMockNext();
-          
+
           validateTwilioSignature(req as Request, res, next);
 
           // Then: The request should be rejected
           expect(next).not.toHaveBeenCalled();
           expect(res.status).toHaveBeenCalledWith(403);
-          
+
           // And: The rejection should be logged
           expect(consoleErrorSpy).toHaveBeenCalled();
           const errorLog = consoleErrorSpy.mock.calls[0][0];
@@ -386,26 +433,28 @@ describe('Property 1: Webhook Signature Validation', () => {
         webhookBodyArb,
         correlationIdArb,
         (authToken, url1, url2, body, correlationId) => {
+          consoleErrorSpy.mockClear();
+
           // Pre-condition: URLs must be different
           fc.pre(url1 !== url2);
-          
+
           // Given: A signature computed for url1
           const fullUrl1 = `https://example.com${url1}`;
           const signatureForUrl1 = computeValidSignature(authToken, fullUrl1, body);
-          
+
           process.env.TWILIO_AUTH_TOKEN = authToken;
-          
+
           // When: The signature is used with url2 (different URL)
           const req = createMockRequest(url2, body, signatureForUrl1, correlationId);
           const res = createMockResponse();
           const next = createMockNext();
-          
+
           validateTwilioSignature(req as Request, res, next);
 
           // Then: The request should be rejected
           expect(next).not.toHaveBeenCalled();
           expect(res.status).toHaveBeenCalledWith(403);
-          
+
           // And: The rejection should be logged
           expect(consoleErrorSpy).toHaveBeenCalled();
           const errorLog = consoleErrorSpy.mock.calls[0][0];
@@ -421,9 +470,11 @@ describe('Property 1: Webhook Signature Validation', () => {
       fc.property(
         invalidWebhookRequestArb,
         ({ authToken, url, body, signature, correlationId }) => {
+          consoleErrorSpy.mockClear();
+
           // Given: Any invalid webhook request
           process.env.TWILIO_AUTH_TOKEN = authToken;
-          
+
           const req = createMockRequest(url, body, signature, correlationId);
           const res = createMockResponse();
           const next = createMockNext();
@@ -433,7 +484,7 @@ describe('Property 1: Webhook Signature Validation', () => {
 
           // Then: The Correlation_ID must appear in the error log
           expect(consoleErrorSpy).toHaveBeenCalled();
-          const allErrorLogs = consoleErrorSpy.mock.calls.map(call => call[0]).join(' ');
+          const allErrorLogs = consoleErrorSpy.mock.calls.map((call) => call[0]).join(' ');
           expect(allErrorLogs).toContain(correlationId);
         }
       ),
@@ -449,16 +500,18 @@ describe('Property 1: Webhook Signature Validation', () => {
         webhookBodyArb,
         correlationIdArb,
         (authToken, url, body, correlationId) => {
+          consoleErrorSpy.mockClear();
+
           // Given: A valid signature
           const fullUrl = `https://example.com${url}`;
           const validSignature = computeValidSignature(authToken, fullUrl, body);
-          
+
           // And: An almost-valid signature (one character different)
-          const almostValidSignature = validSignature.slice(0, -1) + 
-            (validSignature.slice(-1) === 'A' ? 'B' : 'A');
-          
+          const almostValidSignature =
+            validSignature.slice(0, -1) + (validSignature.slice(-1) === 'A' ? 'B' : 'A');
+
           process.env.TWILIO_AUTH_TOKEN = authToken;
-          
+
           const req = createMockRequest(url, body, almostValidSignature, correlationId);
           const res = createMockResponse();
           const next = createMockNext();

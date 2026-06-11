@@ -286,8 +286,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should persist and retrieve a single message with all original content and metadata', () => {
-    fc.assert(
-      fc.property(messageArb, async (messageData) => {
+    return fc.assert(
+      fc.asyncProperty(messageArb, async (messageData) => {
         // Given: A session exists
         const mockSession = {
           sessionId: messageData.sessionId,
@@ -360,8 +360,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should preserve message order in conversation history', () => {
-    fc.assert(
-      fc.property(messageBatchArb, async (batch) => {
+    return fc.assert(
+      fc.asyncProperty(messageBatchArb, async (batch) => {
         // Given: A session exists
         const mockSession = {
           sessionId: batch.sessionId,
@@ -404,8 +404,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should handle idempotent message creation (duplicate correlation IDs)', () => {
-    fc.assert(
-      fc.property(messageArb, async (messageData) => {
+    return fc.assert(
+      fc.asyncProperty(messageArb, async (messageData) => {
         // Given: A session exists
         const mockSession = {
           sessionId: messageData.sessionId,
@@ -463,8 +463,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should retrieve messages by correlation ID', () => {
-    fc.assert(
-      fc.property(messageArb, async (messageData) => {
+    return fc.assert(
+      fc.asyncProperty(messageArb, async (messageData) => {
         // Given: A session exists and a message is appended
         const mockSession = {
           sessionId: messageData.sessionId,
@@ -507,8 +507,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should preserve complex nested metadata structures', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         sessionIdArb,
         userIdArb,
         phoneNumberArb,
@@ -575,8 +575,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should handle messages with no metadata', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         sessionIdArb,
         userIdArb,
         phoneNumberArb,
@@ -624,8 +624,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should maintain message integrity across different message types', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         sessionIdArb,
         userIdArb,
         phoneNumberArb,
@@ -713,8 +713,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should update session last activity when appending messages', () => {
-    fc.assert(
-      fc.property(messageArb, async (messageData) => {
+    return fc.assert(
+      fc.asyncProperty(messageArb, async (messageData) => {
         // Given: A session exists
         const mockSession = {
           sessionId: messageData.sessionId,
@@ -749,8 +749,8 @@ describe('Property 3: Message History Persistence', () => {
   });
 
   it('should handle concurrent message appends for the same session', () => {
-    fc.assert(
-      fc.property(messageBatchArb, async (batch) => {
+    return fc.assert(
+      fc.asyncProperty(messageBatchArb, async (batch) => {
         // Given: A session exists
         const mockSession = {
           sessionId: batch.sessionId,

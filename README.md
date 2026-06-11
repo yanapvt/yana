@@ -8,6 +8,10 @@ WhatsApp-first AI orchestration platform for tourism and real-world service doma
 
 YANA / OGO is a state-aware orchestration engine that uses WhatsApp as the primary user interface, backend-controlled state and context, schema-driven workflows, one primary LLM for decision support, MCP-style tool calling as an interface layer, and Nango as the integration/auth/normalization layer.
 
+## Current Status
+
+Use [CURRENT_IMPLEMENTATION_STATUS.md](CURRENT_IMPLEMENTATION_STATUS.md) as the current source of truth. The backend now builds, the full test suite passes, migrations validate, and local Docker Postgres/Redis are supported. The next product milestone is wiring one deterministic WhatsApp hotel-search flow end to end.
+
 ## Project Structure
 
 ```

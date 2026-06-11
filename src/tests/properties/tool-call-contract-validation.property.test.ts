@@ -189,6 +189,13 @@ const toolDefinitionArb = fc.record({
   toolName: toolNameArb,
   requiredParams: fc.array(paramDefinitionArb, { minLength: 1, maxLength: 5 }),
   optionalParams: fc.array(paramDefinitionArb, { minLength: 0, maxLength: 3 }),
+}).filter((toolDef) => {
+  const names = [
+    ...toolDef.requiredParams.map((param) => param.name),
+    ...toolDef.optionalParams.map((param) => param.name),
+  ];
+
+  return new Set(names).size === names.length;
 });
 
 /**

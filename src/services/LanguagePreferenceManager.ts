@@ -70,10 +70,8 @@ export class LanguagePreferenceManager {
       // Check if user already has a stored language preference
       const existingLanguage = await this.sessionManager.getPreferredLanguage(userId);
 
-      // If user has a stored preference and it's not the default 'en', use it
-      // We check for 'en' because it's the default value set during user creation
-      // and may not represent an actual detection
-      if (existingLanguage && existingLanguage !== 'en') {
+      // If user has a stored preference, use it without re-detection.
+      if (existingLanguage) {
         return {
           userId,
           detectedLanguage: existingLanguage,

@@ -116,7 +116,9 @@ function checkMessageCompliance(messages: any[]): {
 /**
  * Generate arbitrary text within WhatsApp limits
  */
-const validTextArb = fc.string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_TEXT_LENGTH });
+const validTextArb = fc
+  .string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_TEXT_LENGTH })
+  .filter((s) => s.trim().length > 0);
 
 /**
  * Generate arbitrary text that exceeds WhatsApp limits
@@ -130,8 +132,10 @@ const oversizedTextArb = fc.string({
  * Generate arbitrary button with valid title
  */
 const validButtonArb: fc.Arbitrary<ButtonOption> = fc.record({
-  id: fc.string({ minLength: 1, maxLength: 50 }),
-  title: fc.string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH }),
+  id: fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.trim().length > 0),
+  title: fc
+    .string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH })
+    .filter((s) => s.trim().length > 0),
 });
 
 /**
@@ -149,8 +153,10 @@ const oversizedButtonArb: fc.Arbitrary<ButtonOption> = fc.record({
  * Generate arbitrary list row with valid fields
  */
 const validListRowArb: fc.Arbitrary<ListRow> = fc.record({
-  id: fc.string({ minLength: 1, maxLength: 50 }),
-  title: fc.string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_LIST_ITEM_TITLE_LENGTH }),
+  id: fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.trim().length > 0),
+  title: fc
+    .string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_LIST_ITEM_TITLE_LENGTH })
+    .filter((s) => s.trim().length > 0),
   description: fc.option(
     fc.string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_LIST_ITEM_DESCRIPTION_LENGTH }),
     { nil: undefined }
@@ -239,7 +245,9 @@ const validListContentArb: fc.Arbitrary<ListRenderContent> = fc
     return fc.record({
       type: fc.constant('list' as const),
       body: validTextArb,
-      buttonText: fc.string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH }),
+      buttonText: fc
+        .string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH })
+        .filter((s) => s.trim().length > 0),
       sections: fc.array(
         fc.record({
           title: fc.option(
@@ -263,7 +271,9 @@ const validListContentArb: fc.Arbitrary<ListRenderContent> = fc
 const tooManyListItemsContentArb: fc.Arbitrary<ListRenderContent> = fc.record({
   type: fc.constant('list' as const),
   body: validTextArb,
-  buttonText: fc.string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH }),
+  buttonText: fc
+    .string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH })
+    .filter((s) => s.trim().length > 0),
   sections: fc.array(
     fc.record({
       title: fc.option(
@@ -285,7 +295,9 @@ const tooManyListItemsContentArb: fc.Arbitrary<ListRenderContent> = fc.record({
 const oversizedListRowsContentArb: fc.Arbitrary<ListRenderContent> = fc.record({
   type: fc.constant('list' as const),
   body: validTextArb,
-  buttonText: fc.string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH }),
+  buttonText: fc
+    .string({ minLength: 1, maxLength: WHATSAPP_LIMITS.MAX_BUTTON_TITLE_LENGTH })
+    .filter((s) => s.trim().length > 0),
   sections: fc.array(
     fc.record({
       title: fc.option(

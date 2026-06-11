@@ -5,7 +5,6 @@
  */
 
 import { pool } from '../connection.js';
-import type { SessionState } from '../../types/core.js';
 
 // ============================================================================
 // Types
@@ -51,7 +50,7 @@ export class SessionRepository {
       await client.query('BEGIN');
 
       // Check for existing active session (idempotency)
-      const existingSession = await client.query<Session>(
+      const existingSession = await client.query<any>(
         `SELECT session_id, user_id, phone_number, created_at, updated_at, last_activity_at
          FROM sessions
          WHERE user_id = $1 AND last_activity_at > NOW() - INTERVAL '1 hour'
@@ -71,7 +70,7 @@ export class SessionRepository {
       }
 
       // Create new session
-      const sessionResult = await client.query<Session>(
+      const sessionResult = await client.query<any>(
         `INSERT INTO sessions (user_id, phone_number, created_at, updated_at, last_activity_at)
          VALUES ($1, $2, NOW(), NOW(), NOW())
          RETURNING session_id, user_id, phone_number, created_at, updated_at, last_activity_at`,
@@ -101,7 +100,7 @@ export class SessionRepository {
    * Find session by ID
    */
   async findById(sessionId: string): Promise<Session | null> {
-    const result = await pool.query<Session>(
+    const result = await pool.query<any>(
       `SELECT session_id, user_id, phone_number, created_at, updated_at, last_activity_at
        FROM sessions WHERE session_id = $1`,
       [sessionId]
@@ -114,7 +113,7 @@ export class SessionRepository {
    * Find active session for user
    */
   async findActiveByUserId(userId: string): Promise<Session | null> {
-    const result = await pool.query<Session>(
+    const result = await pool.query<any>(
       `SELECT session_id, user_id, phone_number, created_at, updated_at, last_activity_at
        FROM sessions
        WHERE user_id = $1 AND last_activity_at > NOW() - INTERVAL '1 hour'
@@ -141,7 +140,7 @@ export class SessionRepository {
    * Get session state
    */
   async getState(sessionId: string): Promise<SessionStateData | null> {
-    const result = await pool.query<SessionStateData>(
+    const result = await pool.query<any>(
       `SELECT session_id, current_intent, current_step, active_schema, schema_version,
               missing_fields, collected_fields, pending_options, booking_progress,
               payment_progress, conversation_history, created_at, updated_at
@@ -208,7 +207,7 @@ export class SessionRepository {
     fields.push(`updated_at = NOW()`);
     values.push(sessionId);
 
-    const result = await pool.query<SessionStateData>(
+    const result = await pool.query<any>(
       `UPDATE session_state SET ${fields.join(', ')}
        WHERE session_id = $${paramIndex}
        RETURNING session_id, current_intent, current_step, active_schema, schema_version,

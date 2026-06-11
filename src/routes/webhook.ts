@@ -29,6 +29,11 @@ import { getProfileGate } from '../services/profileGate.js';
 import { getProfileService } from '../services/profileService.js';
 import { getTwilioOutboundService } from '../services/twilioOutboundService.js';
 import {
+  getSpeechToTextService,
+  isSupportedVoiceContentType,
+  SpeechToTextServiceError,
+} from '../services/SpeechToTextService.js';
+import {
   buildHotelCollectionResponse,
   buildHotelFormLink,
   buildProfileCollectionResponse,
@@ -40,6 +45,18 @@ import type { HotelSearchCriteria } from '../services/HotelIntakeService.js';
 import type { HotelBrowseResult } from '../services/GooglePlacesHotelBrowsingService.js';
 
 const router = Router();
+const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
+  "Sorry, I couldn't clearly read that voice note. Could you send it again or type your request?";
+const VOICE_OPENAI_CONFIG_ERROR_MESSAGE =
+  'Voice notes are almost ready, but transcription is not configured yet. Please add OPENAI_API_KEY, or type your request for now.';
+const VOICE_TWILIO_CONFIG_ERROR_MESSAGE =
+  'Voice notes are almost ready, but I cannot download WhatsApp audio until real Twilio credentials are configured. Please add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN, or type your request for now.';
+const VOICE_DOWNLOAD_ERROR_MESSAGE =
+  "Sorry, I couldn't download that voice note from WhatsApp. Could you send it again or type your request?";
+const VOICE_TOO_LARGE_ERROR_MESSAGE =
+  'That voice note is too large for me to process here. Could you send a shorter one or type your request?';
+const UNSUPPORTED_MEDIA_MESSAGE =
+  'Sorry, I can only read text and WhatsApp voice notes right now. Could you type your request or send a voice note?';
 
 /**
  * POST /webhook/whatsapp
@@ -80,8 +97,12 @@ router.post(
         JSON.stringify(inboundMessage, null, 2)
       );
 
-      const reply = await processInboundMessage(inboundMessage, correlationId);
-      const whatsappReply = await enrichHotelResultsForWhatsApp(inboundMessage.from, reply);
+      const { inboundMessage: normalizedInput, reply } = await processWebhookPayload(
+        payload,
+        correlationId,
+        inboundMessage
+      );
+      const whatsappReply = await enrichHotelResultsForWhatsApp(normalizedInput.from, reply);
       res.type('text/xml').status(200).send(toTwiml(whatsappReply));
     } catch (error) {
       // Log the error but still return 200 to Twilio
@@ -98,6 +119,34 @@ router.post(
     }
   }
 );
+
+export async function processWebhookPayload(
+  payload: TwilioWebhookPayload,
+  correlationId: string,
+  normalizedMessage = normalizeInboundMessage(payload)
+): Promise<{ inboundMessage: InboundMessage; reply: string }> {
+  const voiceInput = await transcribeVoiceInputIfNeeded(normalizedMessage, correlationId);
+
+  if (voiceInput.status === 'error') {
+    return {
+      inboundMessage: normalizedMessage,
+      reply: voiceInput.message,
+    };
+  }
+
+  const reply = await processInboundMessage(voiceInput.inboundMessage, correlationId);
+  if (voiceInput.transcript) {
+    return {
+      inboundMessage: voiceInput.inboundMessage,
+      reply: `I heard: "${voiceInput.transcript}"\n\n${reply}`,
+    };
+  }
+
+  return {
+    inboundMessage: voiceInput.inboundMessage,
+    reply,
+  };
+}
 
 export async function processInboundMessage(
   inboundMessage: InboundMessage,
@@ -149,10 +198,26 @@ export async function processInboundMessage(
     correlationId
   );
 
+  const activeHotelSession = await getHotelSearchSessionService().get(inboundMessage.from);
+  const conversationRoute = await routeActiveConversation(
+    userMessage,
+    activeHotelSession,
+    correlationId
+  );
+
+  if (conversationRoute.action === 'start_new_hotel_search') {
+    return startFreshHotelSearch(inboundMessage.from, userMessage);
+  }
+
+  if (conversationRoute.action === 'reset_current_flow') {
+    return resetConversation(inboundMessage.from, userContext);
+  }
+
   const activeHotelSearchReply = await handleActiveHotelSearchSession(
     inboundMessage.from,
     inboundText,
-    correlationId
+    correlationId,
+    activeHotelSession
   );
 
   if (activeHotelSearchReply) {
@@ -259,6 +324,99 @@ export async function processInboundMessage(
   }
 }
 
+type VoiceInputResult =
+  | { status: 'ok'; inboundMessage: InboundMessage; transcript?: string }
+  | { status: 'error'; message: string };
+
+async function transcribeVoiceInputIfNeeded(
+  inboundMessage: InboundMessage,
+  correlationId: string
+): Promise<VoiceInputResult> {
+  if (inboundMessage.content.type === 'text' && inboundMessage.content.body.trim()) {
+    return { status: 'ok', inboundMessage };
+  }
+
+  const rawPayload = inboundMessage.metadata?.rawPayload as TwilioWebhookPayload | undefined;
+  const numMedia = parseInt(rawPayload?.NumMedia || '0', 10);
+
+  if (numMedia > 0 && inboundMessage.content.type !== 'audio') {
+    return { status: 'error', message: UNSUPPORTED_MEDIA_MESSAGE };
+  }
+
+  if (inboundMessage.content.type !== 'audio') {
+    return { status: 'ok', inboundMessage };
+  }
+
+  const contentType =
+    inboundMessage.content.contentType ||
+    rawPayload?.MediaContentType0 ||
+    '';
+
+  if (!isSupportedVoiceContentType(contentType)) {
+    return { status: 'error', message: UNSUPPORTED_MEDIA_MESSAGE };
+  }
+
+  try {
+    const result = await getSpeechToTextService().transcribe({
+      mediaUrl: inboundMessage.content.audioUrl,
+      contentType,
+      messageSid: inboundMessage.messageId,
+      userId: inboundMessage.from,
+    });
+
+    return {
+      status: 'ok',
+      transcript: result.transcript,
+      inboundMessage: {
+        ...inboundMessage,
+        type: 'text',
+        inputType: 'voice',
+        content: {
+          type: 'text',
+          body: result.transcript,
+        },
+        metadata: {
+          ...inboundMessage.metadata,
+          voice: {
+            transcript: result.transcript,
+            originalMediaUrl: inboundMessage.content.audioUrl,
+            contentType: result.contentType,
+            bytes: result.bytes,
+            model: result.model,
+          },
+        },
+      },
+    };
+  } catch (error) {
+    if (error instanceof SpeechToTextServiceError) {
+      console.error(
+        `[${correlationId}] Voice transcription failed (${error.code}, retryable=${error.retryable}): ${error.message}`
+      );
+      return { status: 'error', message: buildVoiceTranscriptionErrorMessage(error) };
+    }
+
+    throw error;
+  }
+}
+
+function buildVoiceTranscriptionErrorMessage(error: SpeechToTextServiceError): string {
+  switch (error.code) {
+    case 'missing_api_key':
+      return VOICE_OPENAI_CONFIG_ERROR_MESSAGE;
+    case 'missing_twilio_credentials':
+      return VOICE_TWILIO_CONFIG_ERROR_MESSAGE;
+    case 'unsupported_media_type':
+      return UNSUPPORTED_MEDIA_MESSAGE;
+    case 'media_too_large':
+      return VOICE_TOO_LARGE_ERROR_MESSAGE;
+    case 'download_failed':
+      return VOICE_DOWNLOAD_ERROR_MESSAGE;
+    case 'transcription_failed':
+    default:
+      return VOICE_TRANSCRIPTION_ERROR_MESSAGE;
+  }
+}
+
 async function handleHotelFormGate(
   userId: string,
   userMessage: string,
@@ -295,10 +453,11 @@ async function handleHotelFormGate(
 async function handleActiveHotelSearchSession(
   userId: string,
   inboundText: string,
-  correlationId: string
+  correlationId: string,
+  activeSession?: HotelSearchSession | null
 ): Promise<string | null> {
   const sessionService = getHotelSearchSessionService();
-  const session = await sessionService.get(userId);
+  const session = activeSession ?? (await sessionService.get(userId));
 
   if (!session) {
     return null;
@@ -397,13 +556,153 @@ async function handleActiveHotelSearchSession(
   const acknowledgement =
     'Just a moment while I check the best matches for you. I will send the top options here shortly.';
 
-  void searchHotelsAndNotify(userId, criteria, correlationId);
-
   if (getTwilioOutboundService().isConfigured()) {
+    void searchHotelsAndNotify(userId, criteria, correlationId);
     return acknowledgement;
   }
 
-  return `${acknowledgement}\n\nIf I take more than a few seconds, reply "status" and I'll show your saved results.`;
+  try {
+    const hotelSearchResult = await searchHotels(userId, criteria, correlationId);
+    const nextOffset = hotelSearchResult.browseResponse?.results.length
+      ? Math.min(3, hotelSearchResult.browseResponse.results.length)
+      : 0;
+    await saveHotelSearchResults(userId, criteria, hotelSearchResult, nextOffset);
+    return hotelSearchResult.reply;
+  } catch (error) {
+    console.error(`[${correlationId}] Hotel search failed during synchronous fallback:`, error);
+    return 'I am sorry, the hotel search failed while I was checking options. Your form details are saved, so please type "search again" and I will retry.';
+  }
+}
+
+type ConversationRoute =
+  | { action: 'continue_current_flow' }
+  | { action: 'reset_current_flow' }
+  | { action: 'start_new_hotel_search' };
+
+async function routeActiveConversation(
+  userMessage: string,
+  activeHotelSession: HotelSearchSession | null,
+  correlationId: string
+): Promise<ConversationRoute> {
+  if (!activeHotelSession) {
+    return { action: 'continue_current_flow' };
+  }
+
+  if (isCurrentHotelSessionCommand(userMessage) || isGreeting(userMessage)) {
+    return { action: 'continue_current_flow' };
+  }
+
+  if (isNaturalResetCue(userMessage) && !isHotelRequestMessage(userMessage)) {
+    return { action: 'reset_current_flow' };
+  }
+
+  if (isFreshHotelSearchCue(userMessage)) {
+    return { action: 'start_new_hotel_search' };
+  }
+
+  if (shouldTreatHotelRequestAsNewSearch(userMessage, activeHotelSession)) {
+    return { action: 'start_new_hotel_search' };
+  }
+
+  const llmRoute = await routeActiveConversationWithLlm(
+    userMessage,
+    activeHotelSession,
+    correlationId
+  );
+
+  return llmRoute ?? { action: 'continue_current_flow' };
+}
+
+async function routeActiveConversationWithLlm(
+  userMessage: string,
+  activeHotelSession: HotelSearchSession,
+  correlationId: string
+): Promise<ConversationRoute | null> {
+  if (!shouldAskLlmToRouteActiveMessage(userMessage, activeHotelSession)) {
+    return null;
+  }
+
+  try {
+    const decision = await getLLMService().decide({
+      userMessage,
+      sessionState: {
+        currentIntent: 'hotel_search',
+        activeSchema: 'search_hotels',
+        collectedFields: { ...activeHotelSession.criteria },
+      },
+      availableSchemas: ['search_hotels'],
+    });
+
+    console.log(
+      `[${correlationId}] Conversation route decision received:`,
+      JSON.stringify(decision, null, 2)
+    );
+
+    if (
+      decision.confidence >= 0.7 &&
+      isHotelRelatedIntent(decision.intent) &&
+      (decision.suggestedAction === 'ask_missing' || decision.suggestedAction === 'execute_tool')
+    ) {
+      return { action: 'start_new_hotel_search' };
+    }
+  } catch (error) {
+    console.warn(
+      `[${correlationId}] Conversation route LLM check failed; continuing deterministic flow:`,
+      error
+    );
+  }
+
+  return null;
+}
+
+function shouldAskLlmToRouteActiveMessage(
+  message: string,
+  activeHotelSession: HotelSearchSession
+): boolean {
+  if (activeHotelSession.stage === 'awaiting_preferences') {
+    return hasDirectionChangeCue(message);
+  }
+
+  return (
+    activeHotelSession.stage === 'results' ||
+    activeHotelSession.stage === 'searching' ||
+    activeHotelSession.stage === 'booking_provider_pending'
+  );
+}
+
+function shouldTreatHotelRequestAsNewSearch(
+  message: string,
+  activeHotelSession: HotelSearchSession
+): boolean {
+  if (!isHotelRequestMessage(message)) {
+    return false;
+  }
+
+  if (activeHotelSession.stage === 'awaiting_preferences') {
+    return hasFreshStartCue(message) || hasDirectionChangeCue(message);
+  }
+
+  return (
+    activeHotelSession.stage === 'results' ||
+    activeHotelSession.stage === 'searching' ||
+    activeHotelSession.stage === 'booking_provider_pending'
+  );
+}
+
+async function startFreshHotelSearch(userId: string, userMessage: string): Promise<string> {
+  await getHotelSearchSessionService().clear(userId);
+  await getPendingRequestService().clearProfileGateRequest(userId);
+
+  const token = getFormTokenService().createToken(userId, 'hotel');
+  const hotelFormResponse = buildHotelCollectionResponse(buildHotelFormLink(token));
+  const profile = await getProfileService().getProfile(userId);
+  await getHotelSearchSessionService().saveHotelFormSent(
+    userId,
+    userMessage,
+    profile?.form
+  );
+
+  return `Of course. I'll start a fresh hotel search.\n\n${hotelFormResponse}`;
 }
 
 async function resetConversation(
@@ -627,6 +926,10 @@ function isResetCue(message: string): boolean {
   );
 }
 
+function isNaturalResetCue(message: string): boolean {
+  return /\b(restart|reset|start over|start again|clear|cancel|forget)\b/i.test(message);
+}
+
 function isResumeConversationCue(message: string): boolean {
   const normalized = message
     .toLowerCase()
@@ -640,6 +943,30 @@ function isResumeConversationCue(message: string): boolean {
 
 function isNextCue(message: string): boolean {
   return /^(next|more|show more|next 3|another 3)$/i.test(message.trim());
+}
+
+function isCurrentHotelSessionCommand(message: string): boolean {
+  return (
+    isResumeCue(message) ||
+    isResumeConversationCue(message) ||
+    isNextCue(message) ||
+    parseNumberedCue(message, 'book') !== null ||
+    parseNumberedCue(message, 'details') !== null
+  );
+}
+
+function isFreshHotelSearchCue(message: string): boolean {
+  return (hasFreshStartCue(message) || hasDirectionChangeCue(message)) && isHotelRequestMessage(message);
+}
+
+function hasFreshStartCue(message: string): boolean {
+  return /\b(restart|reset|start over|start again|new|fresh|another|different)\b/i.test(message);
+}
+
+function hasDirectionChangeCue(message: string): boolean {
+  return /\b(actually|instead|change|changed my mind|switch|rather|not this|not these|different)\b/i.test(
+    message
+  );
 }
 
 function parseNumberedCue(message: string, action: 'book' | 'details'): number | null {

@@ -1,5 +1,5 @@
-import { getLLMService, LLMServiceError } from './LLMService.js';
 import { getStateStore } from './StateStore.js';
+import { getLLMService } from './LLMService.js';
 
 type HotelField =
   | 'location'
@@ -9,11 +9,18 @@ type HotelField =
   | 'boardBasis'
   | 'budgetPerNight';
 
-interface HotelSearchCriteria {
+export interface HotelSearchCriteria {
   location?: string;
   checkinDate?: string;
   checkoutDate?: string;
   guests?: number;
+  rooms?: number;
+  starRating?: string;
+  hotelType?: string;
+  facilities?: string;
+  bedPreference?: string;
+  specialOccasion?: string;
+  additionalPreferences?: string;
   boardBasis?: 'room_only' | 'bnb' | 'half_board' | 'full_board' | 'all_inclusive';
   budgetPerNight?: {
     amount: number;
@@ -38,6 +45,23 @@ interface HotelIntakeState {
   updatedAt: string;
 }
 
+interface LoadedHotelIntakeState {
+  state: HotelIntakeState;
+  active: boolean;
+}
+
+interface LLMHotelCriteriaExtraction {
+  location?: string;
+  checkinDate?: string;
+  checkoutDate?: string;
+  guests?: number;
+  boardBasis?: HotelSearchCriteria['boardBasis'];
+  budgetPerNight?: {
+    amount: number;
+    currency: string;
+  };
+}
+
 export interface HotelIntakeContext {
   whatsappNumber: string;
   profileName?: string;
@@ -48,6 +72,8 @@ export interface HotelIntakeContext {
 export interface HotelIntakeResult {
   handled: boolean;
   reply?: string;
+  completed?: boolean;
+  criteria?: HotelSearchCriteria;
 }
 
 const HOTEL_STATE_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -56,7 +82,6 @@ const HOTEL_FIELDS: HotelField[] = [
   'checkinDate',
   'checkoutDate',
   'guests',
-  'boardBasis',
   'budgetPerNight',
 ];
 
@@ -70,21 +95,24 @@ const FIELD_PROMPTS: Record<HotelField, string> = {
 };
 
 export class HotelIntakeService {
+  constructor(private readonly referenceDate: Date = new Date()) {}
+
   async handleMessage(
     message: string,
     context: HotelIntakeContext
   ): Promise<HotelIntakeResult> {
-    const state = await this.loadOrCreateState(message, context);
+    const { state, active } = await this.loadOrCreateState(message, context);
 
-    if (!this.isHotelMessage(message) && state.criteria.location === undefined) {
+    if (!active && !this.isHotelMessage(message) && state.criteria.location === undefined) {
       return { handled: false };
     }
 
-    const extracted = this.extractCriteria(message, state.pendingField);
+    const extracted = await this.extractCriteria(message, state.pendingField);
     state.criteria = {
       ...state.criteria,
       ...extracted,
     };
+    this.applyDerivedCriteria(state.criteria, message);
     state.pendingField = this.getNextMissingField(state.criteria);
     state.updatedAt = new Date().toISOString();
     state.profile = this.updateProfile(state.profile, context, state.criteria);
@@ -110,13 +138,15 @@ export class HotelIntakeService {
     return {
       handled: true,
       reply,
+      completed: true,
+      criteria: state.criteria,
     };
   }
 
   private async loadOrCreateState(
     message: string,
     context: HotelIntakeContext
-  ): Promise<HotelIntakeState> {
+  ): Promise<LoadedHotelIntakeState> {
     const store = getStateStore();
     const state = await store.getJson<HotelIntakeState>(
       this.getHotelStateKey(context.whatsappNumber)
@@ -124,8 +154,11 @@ export class HotelIntakeService {
 
     if (state) {
       return {
-        ...state,
-        profile: this.updateProfile(state.profile, context, state.criteria),
+        active: true,
+        state: {
+          ...state,
+          profile: this.updateProfile(state.profile, context, state.criteria),
+        },
       };
     }
 
@@ -135,10 +168,13 @@ export class HotelIntakeService {
       )) ?? this.createProfile(context);
 
     return {
-      intent: 'search_hotels',
-      criteria: this.isHotelMessage(message) ? { ...profile.hotelPreferences } : {},
-      profile: this.updateProfile(profile, context, profile.hotelPreferences ?? {}),
-      updatedAt: new Date().toISOString(),
+      active: false,
+      state: {
+        intent: 'search_hotels',
+        criteria: this.isHotelMessage(message) ? { ...profile.hotelPreferences } : {},
+        profile: this.updateProfile(profile, context, profile.hotelPreferences ?? {}),
+        updatedAt: new Date().toISOString(),
+      },
     };
   }
 
@@ -147,27 +183,7 @@ export class HotelIntakeService {
   ): Promise<string> {
     const summary = this.formatCriteria(criteria);
 
-    try {
-      const content = await getLLMService().generateUIContent(
-        [
-          'Write a concise WhatsApp response from Yana, a personal tour concierge.',
-          'The hotel search criteria are complete.',
-          'Do not invent live hotel availability or hotel names.',
-          'Do not promise that you will notify the user later.',
-          'Say that Yana has saved the criteria and is ready to search matching hotel inventory once the hotel provider is connected.',
-          'Return plain text only, with no surrounding quotes.',
-          `Criteria: ${summary}`,
-        ].join('\n')
-      );
-
-      return content;
-    } catch (error) {
-      if (error instanceof LLMServiceError) {
-        return `Perfect, I have the hotel search details: ${summary}. I am ready to search matching hotel inventory once the hotel provider is connected.`;
-      }
-
-      throw error;
-    }
+    return `Perfect, I have the hotel search details: ${summary}. I am ready to search live property matches once Google Places is configured for this environment.`;
   }
 
   private buildProgressReply(
@@ -182,10 +198,10 @@ export class HotelIntakeService {
     return `${prefix}${FIELD_PROMPTS[pendingField]}`;
   }
 
-  private extractCriteria(
+  private async extractCriteria(
     message: string,
     pendingField?: HotelField
-  ): Partial<HotelSearchCriteria> {
+  ): Promise<Partial<HotelSearchCriteria>> {
     const criteria: Partial<HotelSearchCriteria> = {};
 
     const location = this.extractLocation(message);
@@ -224,7 +240,10 @@ export class HotelIntakeService {
       this.assignPendingField(criteria, pendingField, message);
     }
 
-    return criteria;
+    return {
+      ...criteria,
+      ...(await this.extractCriteriaWithLLM(message, criteria)),
+    };
   }
 
   private assignPendingField(
@@ -270,8 +289,8 @@ export class HotelIntakeService {
 
   private extractLocation(message: string): string | null {
     const match =
-      message.match(/\bin\s+([a-zA-Z][a-zA-Z\s'-]{1,40})(?:\s|$|,|\.)/i) ??
-      message.match(/\bnear\s+([a-zA-Z][a-zA-Z\s'-]{1,40})(?:\s|$|,|\.)/i);
+      message.match(/\bin\s+([a-zA-Z][a-zA-Z0-9\s'-]{1,40})(?:\s|$|,|\.)/i) ??
+      message.match(/\bnear\s+([a-zA-Z][a-zA-Z0-9\s'-]{1,40})(?:\s|$|,|\.)/i);
 
     if (!match) {
       return null;
@@ -280,6 +299,9 @@ export class HotelIntakeService {
     return this.titleCase(
       match[1]
         .replace(/\bunder\b.*$/i, '')
+        .replace(/\bbelow\b.*$/i, '')
+        .replace(/\bchecking\b.*$/i, '')
+        .replace(/\bcheck(?:ing)?\s+in\b.*$/i, '')
         .replace(/\bfor\b.*$/i, '')
         .trim()
     );
@@ -288,15 +310,23 @@ export class HotelIntakeService {
   private extractBudget(
     message: string
   ): HotelSearchCriteria['budgetPerNight'] | null {
-    const match =
-      message.match(/\b(?:under|max|maximum|budget|below)\s*(?:of\s*)?([A-Z]{3})?\s*\$?\s*(\d+(?:\.\d{1,2})?)/i) ??
-      message.match(/\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:[A-Z]{3})?\s*(?:per night|\/night|night)/i);
+    const keywordMatch = message.match(
+      /\b(?:under|max|maximum|budget|below)\s*(?:of\s*)?([A-Z]{3})?\s*\$?\s*(\d+(?:\.\d{1,2})?)\s*\$?/i
+    );
+    const currencyFirstNightMatch = message.match(
+      /\b([A-Z]{3})\s*\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:per night|\/night|night)\b/i
+    );
+    const amountFirstNightMatch = message.match(
+      /\$?\s*(\d+(?:\.\d{1,2})?)\s*\$?\s*(?:[A-Z]{3})?\s*(?:per night|\/night|night)\b/i
+    );
 
-    if (!match) {
+    if (!keywordMatch && !currencyFirstNightMatch && !amountFirstNightMatch) {
       return null;
     }
 
-    const amount = Number(match[2] ?? match[1]);
+    const amount = Number(
+      keywordMatch?.[2] ?? currencyFirstNightMatch?.[2] ?? amountFirstNightMatch?.[1]
+    );
     const currencyMatch = message.match(/\b(USD|EUR|GBP|LKR|AUD|CAD|INR)\b/i);
     const hasDollar = message.includes('$');
 
@@ -307,12 +337,15 @@ export class HotelIntakeService {
   }
 
   private extractGuests(message: string): number | null {
-    const match = message.match(/\b(\d{1,2})\s*(?:people|persons|guests|adults|travellers|travelers|pax)\b/i);
+    const match =
+      message.match(/\b(\d{1,2})\s*(?:people|persons|guests|adults|travellers|travelers|pax)\b/i) ??
+      message.match(/\b(?:just\s+)?(?:the\s+)?(?:two|2)\s+of\s+us\b/i) ??
+      message.match(/\bwith\s+my\s+(?:wife|husband|partner|spouse)\b/i);
     if (!match) {
       return null;
     }
 
-    const guests = Number(match[1]);
+    const guests = match[1] ? Number(match[1]) : 2;
     return guests > 0 ? guests : null;
   }
 
@@ -337,13 +370,160 @@ export class HotelIntakeService {
     }
 
     const relativeDates: string[] = [];
-    if (/\btomorrow\b/i.test(message)) relativeDates.push('tomorrow');
-    if (/\btoday\b/i.test(message)) relativeDates.push('today');
-    if (/\bnext friday\b/i.test(message)) relativeDates.push('next Friday');
-    if (/\bnext saturday\b/i.test(message)) relativeDates.push('next Saturday');
-    if (/\bnext sunday\b/i.test(message)) relativeDates.push('next Sunday');
+    if (/\btoday\b/i.test(message)) relativeDates.push(this.formatDateOffset(0));
+    if (/\btomorrow\b/i.test(message)) relativeDates.push(this.formatDateOffset(1));
+    if (/\bday after tomorrow\b|\bthe day after\b/i.test(message)) {
+      relativeDates.push(this.formatDateOffset(2));
+    }
+    if (/\bnext friday\b/i.test(message)) relativeDates.push(this.formatNextWeekday(5));
+    if (/\bnext saturday\b/i.test(message)) relativeDates.push(this.formatNextWeekday(6));
+    if (/\bnext sunday\b/i.test(message)) relativeDates.push(this.formatNextWeekday(0));
 
     return relativeDates;
+  }
+
+  private applyDerivedCriteria(criteria: HotelSearchCriteria, message: string): void {
+    if (!criteria.checkoutDate && criteria.checkinDate) {
+      const nights = this.extractNightCount(message);
+      if (nights) {
+        criteria.checkoutDate = this.addDaysToDateString(criteria.checkinDate, nights);
+      }
+    }
+  }
+
+  private extractNightCount(message: string): number | null {
+    const numericMatch = message.match(/\b(\d{1,2})\s*nights?\b/i);
+    if (numericMatch) {
+      return Number(numericMatch[1]);
+    }
+
+    if (/\btwo\s+nights?\b/i.test(message)) return 2;
+    if (/\bone\s+night\b/i.test(message)) return 1;
+    if (/\bthree\s+nights?\b/i.test(message)) return 3;
+
+    return null;
+  }
+
+  private async extractCriteriaWithLLM(
+    message: string,
+    deterministicCriteria: Partial<HotelSearchCriteria>
+  ): Promise<Partial<HotelSearchCriteria>> {
+    if (!this.shouldUseLLMExtraction()) {
+      return {};
+    }
+
+    try {
+      const response = await getLLMService().generateUIContent(
+        [
+          'Extract only hotel search criteria from this user message.',
+          'Return JSON only. Do not add prose.',
+          'Use keys: location, checkinDate, checkoutDate, guests, boardBasis, budgetPerNight.',
+          'Use YYYY-MM-DD dates. Resolve relative dates using this base date:',
+          this.formatDate(this.referenceDate),
+          'Use boardBasis only if explicit: room_only, bnb, half_board, full_board, all_inclusive.',
+          'Use budgetPerNight as {"amount": number, "currency": "USD"} when present.',
+          `Already extracted: ${JSON.stringify(deterministicCriteria)}`,
+          `Message: ${message}`,
+        ].join('\n')
+      );
+      const parsed = JSON.parse(this.extractJson(response)) as LLMHotelCriteriaExtraction;
+      return this.sanitizeLLMExtraction(parsed);
+    } catch (error) {
+      console.warn('[HotelIntakeService] LLM criteria extraction failed, using deterministic extraction:', error);
+      return {};
+    }
+  }
+
+  private shouldUseLLMExtraction(): boolean {
+    return (
+      process.env.HOTEL_INTAKE_LLM_EXTRACTION_ENABLED === 'true' &&
+      Boolean(process.env.LLM_API_KEY && process.env.LLM_API_KEY !== 'dev_api_key')
+    );
+  }
+
+  private sanitizeLLMExtraction(
+    parsed: LLMHotelCriteriaExtraction
+  ): Partial<HotelSearchCriteria> {
+    const criteria: Partial<HotelSearchCriteria> = {};
+
+    if (typeof parsed.location === 'string' && parsed.location.trim()) {
+      criteria.location = this.titleCase(parsed.location.trim());
+    }
+
+    if (typeof parsed.checkinDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.checkinDate)) {
+      criteria.checkinDate = parsed.checkinDate;
+    }
+
+    if (typeof parsed.checkoutDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.checkoutDate)) {
+      criteria.checkoutDate = parsed.checkoutDate;
+    }
+
+    if (typeof parsed.guests === 'number' && Number.isFinite(parsed.guests) && parsed.guests > 0) {
+      criteria.guests = parsed.guests;
+    }
+
+    if (
+      parsed.boardBasis &&
+      ['room_only', 'bnb', 'half_board', 'full_board', 'all_inclusive'].includes(parsed.boardBasis)
+    ) {
+      criteria.boardBasis = parsed.boardBasis;
+    }
+
+    if (
+      parsed.budgetPerNight &&
+      typeof parsed.budgetPerNight.amount === 'number' &&
+      Number.isFinite(parsed.budgetPerNight.amount)
+    ) {
+      criteria.budgetPerNight = {
+        amount: parsed.budgetPerNight.amount,
+        currency:
+          typeof parsed.budgetPerNight.currency === 'string'
+            ? parsed.budgetPerNight.currency.toUpperCase()
+            : 'USD',
+      };
+    }
+
+    return criteria;
+  }
+
+  private extractJson(response: string): string {
+    const firstBrace = response.indexOf('{');
+    const lastBrace = response.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return response.slice(firstBrace, lastBrace + 1);
+    }
+
+    return response;
+  }
+
+  private formatDateOffset(days: number): string {
+    return this.formatDate(this.addDays(this.referenceDate, days));
+  }
+
+  private formatNextWeekday(targetDay: number): string {
+    const currentDay = this.referenceDate.getDay();
+    let offset = (targetDay - currentDay + 7) % 7;
+    if (offset === 0) {
+      offset = 7;
+    }
+    return this.formatDateOffset(offset);
+  }
+
+  private addDaysToDateString(dateString: string, days: number): string {
+    return this.formatDate(this.addDays(new Date(`${dateString}T00:00:00`), days));
+  }
+
+  private addDays(date: Date, days: number): Date {
+    const next = new Date(date);
+    next.setDate(next.getDate() + days);
+    return next;
+  }
+
+  private formatDate(date: Date): string {
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   private getNextMissingField(criteria: HotelSearchCriteria): HotelField | undefined {

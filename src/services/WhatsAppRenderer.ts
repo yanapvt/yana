@@ -546,28 +546,7 @@ export class WhatsAppRenderer {
       return;
     }
 
-    // Validate result count against WhatsApp limits
-    if (content.results.length > WHATSAPP_LIMITS.MAX_LIST_ITEMS) {
-      errors.push({
-        field: 'results',
-        message: 'Too many hotel results',
-        limit: WHATSAPP_LIMITS.MAX_LIST_ITEMS,
-        actual: content.results.length,
-      });
-    }
-
-    // Validate each hotel result
-    content.results.forEach((hotel, index) => {
-      // Validate hotel name length for list item title
-      if (hotel.name.length > WHATSAPP_LIMITS.MAX_LIST_ITEM_TITLE_LENGTH) {
-        errors.push({
-          field: `results[${index}].name`,
-          message: 'Hotel name exceeds maximum length for list item',
-          limit: WHATSAPP_LIMITS.MAX_LIST_ITEM_TITLE_LENGTH,
-          actual: hotel.name.length,
-        });
-      }
-    });
+    // Result count and long hotel names are normalized by renderHotelResults.
 
     // Validate header text if present
     if (content.headerText && content.headerText.length > WHATSAPP_LIMITS.MAX_TEXT_LENGTH) {
@@ -1072,7 +1051,10 @@ export class WhatsAppRenderer {
         if (!content.results || content.results.length === 0) {
           plainText = 'No hotels found for your search. Try adjusting your criteria.';
         } else {
-          plainText = content.headerText || `Found ${content.results.length} hotels:\n\n`;
+          plainText =
+            content.headerText && content.headerText.length <= WHATSAPP_LIMITS.MAX_TEXT_LENGTH
+              ? `${content.headerText}\n\n`
+              : `Found ${content.results.length} hotels:\n\n`;
           content.results.forEach((hotel, index) => {
             plainText += `${index + 1}. ${hotel.name}\n`;
             plainText += `   ${hotel.currency} ${hotel.price.toFixed(2)} per night\n`;

@@ -338,7 +338,7 @@ describe('MessageRepository', () => {
       const message = await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -360,7 +360,7 @@ describe('MessageRepository', () => {
       const message1 = await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -371,7 +371,7 @@ describe('MessageRepository', () => {
       const message2 = await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -391,7 +391,7 @@ describe('MessageRepository', () => {
       const created = await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -413,7 +413,7 @@ describe('MessageRepository', () => {
       await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-1',
+        correlationId: '00000000-0000-4000-8000-000000000001',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -424,7 +424,7 @@ describe('MessageRepository', () => {
       await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-2',
+        correlationId: '00000000-0000-4000-8000-000000000002',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -444,7 +444,7 @@ describe('MessageRepository', () => {
       const message = await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -473,7 +473,7 @@ describe('MessageRepository', () => {
       const message = await messageRepo.createMessage({
         sessionId: session.sessionId,
         userId: user.userId,
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         fromNumber: '+1234567890',
         toNumber: '+0987654321',
         messageType: 'text',
@@ -520,7 +520,7 @@ describe('BookingRepository', () => {
       const booking = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.INITIATED,
         serviceType: 'hotel',
         serviceDetails: { hotelName: 'Grand Hotel', nights: 2 },
@@ -546,7 +546,7 @@ describe('BookingRepository', () => {
       const booking1 = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.INITIATED,
         serviceType: 'hotel',
         serviceDetails: { hotelName: 'Grand Hotel' },
@@ -555,7 +555,7 @@ describe('BookingRepository', () => {
       const booking2 = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.CONFIRMED,
         serviceType: 'hotel',
         serviceDetails: { hotelName: 'Different Hotel' },
@@ -573,7 +573,7 @@ describe('BookingRepository', () => {
       const created = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.INITIATED,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -592,7 +592,7 @@ describe('BookingRepository', () => {
       const booking = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.INITIATED,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -623,7 +623,7 @@ describe('BookingRepository', () => {
       await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-1',
+        correlationId: '00000000-0000-4000-8000-000000001001',
         state: BookingState.INITIATED,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -632,7 +632,7 @@ describe('BookingRepository', () => {
       await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-2',
+        correlationId: '00000000-0000-4000-8000-000000001002',
         state: BookingState.CONFIRMED,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -661,7 +661,7 @@ describe('PaymentRepository', () => {
       const booking = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.PAYMENT_PENDING,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -670,7 +670,7 @@ describe('PaymentRepository', () => {
       const payment = await paymentRepo.createPayment({
         bookingId: booking.bookingId,
         userId: user.userId,
-        correlationId: 'payment-123',
+        correlationId: '00000000-0000-4000-8000-000000002123',
         state: PaymentState.INITIATED,
         amount: 200,
         currency: 'USD',
@@ -695,7 +695,7 @@ describe('PaymentRepository', () => {
       const booking = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.PAYMENT_PENDING,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -704,7 +704,7 @@ describe('PaymentRepository', () => {
       const payment1 = await paymentRepo.createPayment({
         bookingId: booking.bookingId,
         userId: user.userId,
-        correlationId: 'payment-123',
+        correlationId: '00000000-0000-4000-8000-000000002123',
         state: PaymentState.INITIATED,
         amount: 200,
         currency: 'USD',
@@ -715,7 +715,7 @@ describe('PaymentRepository', () => {
       const payment2 = await paymentRepo.createPayment({
         bookingId: booking.bookingId,
         userId: user.userId,
-        correlationId: 'payment-123',
+        correlationId: '00000000-0000-4000-8000-000000002123',
         state: PaymentState.SUCCEEDED,
         amount: 300,
         currency: 'EUR',
@@ -736,7 +736,7 @@ describe('PaymentRepository', () => {
       const booking = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.PAYMENT_PENDING,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -745,7 +745,7 @@ describe('PaymentRepository', () => {
       const created = await paymentRepo.createPayment({
         bookingId: booking.bookingId,
         userId: user.userId,
-        correlationId: 'payment-123',
+        correlationId: '00000000-0000-4000-8000-000000002123',
         state: PaymentState.INITIATED,
         amount: 200,
         currency: 'USD',
@@ -766,7 +766,7 @@ describe('PaymentRepository', () => {
       const booking = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.PAYMENT_PENDING,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -775,7 +775,7 @@ describe('PaymentRepository', () => {
       const payment = await paymentRepo.createPayment({
         bookingId: booking.bookingId,
         userId: user.userId,
-        correlationId: 'payment-123',
+        correlationId: '00000000-0000-4000-8000-000000002123',
         state: PaymentState.INITIATED,
         amount: 200,
         currency: 'USD',
@@ -807,7 +807,7 @@ describe('PaymentRepository', () => {
       const booking = await bookingRepo.createBooking({
         userId: user.userId,
         sessionId: session.sessionId,
-        correlationId: 'booking-123',
+        correlationId: '00000000-0000-4000-8000-000000001123',
         state: BookingState.PAYMENT_PENDING,
         serviceType: 'hotel',
         serviceDetails: {},
@@ -816,7 +816,7 @@ describe('PaymentRepository', () => {
       await paymentRepo.createPayment({
         bookingId: booking.bookingId,
         userId: user.userId,
-        correlationId: 'payment-1',
+        correlationId: '00000000-0000-4000-8000-000000002001',
         state: PaymentState.INITIATED,
         amount: 200,
         currency: 'USD',
@@ -1028,7 +1028,7 @@ describe('ToolRepository', () => {
       });
 
       const run = await toolRepo.createRun({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         toolName: 'search_hotels',
         inputParams: { location: 'Paris', check_in: '2024-01-01' },
         outputData: { hotels: [] },
@@ -1045,7 +1045,7 @@ describe('ToolRepository', () => {
 
     it('should be idempotent - return existing run with same correlation ID and attempt', async () => {
       const run1 = await toolRepo.createRun({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         toolName: 'search_hotels',
         inputParams: { location: 'Paris' },
         executionStatus: 'success',
@@ -1053,7 +1053,7 @@ describe('ToolRepository', () => {
       });
 
       const run2 = await toolRepo.createRun({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         toolName: 'search_hotels',
         inputParams: { location: 'London' },
         executionStatus: 'failure',
@@ -1066,7 +1066,7 @@ describe('ToolRepository', () => {
 
     it('should allow different attempts for same correlation ID', async () => {
       const run1 = await toolRepo.createRun({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         toolName: 'search_hotels',
         inputParams: {},
         executionStatus: 'failure',
@@ -1074,7 +1074,7 @@ describe('ToolRepository', () => {
       });
 
       const run2 = await toolRepo.createRun({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         toolName: 'search_hotels',
         inputParams: {},
         executionStatus: 'success',
@@ -1089,7 +1089,7 @@ describe('ToolRepository', () => {
   describe('findRunsByCorrelationId', () => {
     it('should find tool runs by correlation ID', async () => {
       await toolRepo.createRun({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         toolName: 'search_hotels',
         inputParams: {},
         executionStatus: 'failure',
@@ -1097,14 +1097,14 @@ describe('ToolRepository', () => {
       });
 
       await toolRepo.createRun({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         toolName: 'search_hotels',
         inputParams: {},
         executionStatus: 'success',
         attemptNumber: 2,
       });
 
-      const runs = await toolRepo.findRunsByCorrelationId('corr-123');
+      const runs = await toolRepo.findRunsByCorrelationId('00000000-0000-4000-8000-000000000123');
       expect(runs).toHaveLength(2);
     });
   });
@@ -1144,7 +1144,7 @@ describe('AuditRepository', () => {
       const session = await sessionRepo.createSession(user.userId, '+1234567890');
 
       const log = await auditRepo.createAuditLog({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         sessionId: session.sessionId,
         userId: user.userId,
         actionType: 'tool_execution',
@@ -1154,14 +1154,14 @@ describe('AuditRepository', () => {
       });
 
       expect(log.logId).toBeDefined();
-      expect(log.correlationId).toBe('corr-123');
+      expect(log.correlationId).toBe('00000000-0000-4000-8000-000000000123');
       expect(log.actionType).toBe('tool_execution');
       expect(log.executionStatus).toBe('success');
     });
 
     it('should create audit log with error information', async () => {
       const log = await auditRepo.createAuditLog({
-        correlationId: 'corr-456',
+        correlationId: '00000000-0000-4000-8000-000000000456',
         actionType: 'provider_call',
         providerUsed: 'booking_api',
         executionStatus: 'failure',
@@ -1179,18 +1179,18 @@ describe('AuditRepository', () => {
   describe('findByCorrelationId', () => {
     it('should find audit logs by correlation ID', async () => {
       await auditRepo.createAuditLog({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         actionType: 'webhook_received',
         executionStatus: 'success',
       });
 
       await auditRepo.createAuditLog({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         actionType: 'tool_execution',
         executionStatus: 'success',
       });
 
-      const logs = await auditRepo.findByCorrelationId('corr-123');
+      const logs = await auditRepo.findByCorrelationId('00000000-0000-4000-8000-000000000123');
       expect(logs).toHaveLength(2);
     });
   });
@@ -1198,13 +1198,13 @@ describe('AuditRepository', () => {
   describe('findByActionType', () => {
     it('should find audit logs by action type', async () => {
       await auditRepo.createAuditLog({
-        correlationId: 'corr-1',
+        correlationId: '00000000-0000-4000-8000-000000000001',
         actionType: 'tool_execution',
         executionStatus: 'success',
       });
 
       await auditRepo.createAuditLog({
-        correlationId: 'corr-2',
+        correlationId: '00000000-0000-4000-8000-000000000002',
         actionType: 'tool_execution',
         executionStatus: 'failure',
       });
@@ -1215,13 +1215,13 @@ describe('AuditRepository', () => {
 
     it('should filter by execution status', async () => {
       await auditRepo.createAuditLog({
-        correlationId: 'corr-3',
+        correlationId: '00000000-0000-4000-8000-000000000003',
         actionType: 'provider_call',
         executionStatus: 'success',
       });
 
       await auditRepo.createAuditLog({
-        correlationId: 'corr-4',
+        correlationId: '00000000-0000-4000-8000-000000000004',
         actionType: 'provider_call',
         executionStatus: 'failure',
       });
@@ -1240,7 +1240,7 @@ describe('AuditRepository', () => {
       const session = await sessionRepo.createSession(user.userId, '+1234567890');
 
       const decision = await auditRepo.createDecisionLog({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         sessionId: session.sessionId,
         userId: user.userId,
         intent: 'book_hotel',
@@ -1263,7 +1263,7 @@ describe('AuditRepository', () => {
       const session = await sessionRepo.createSession(user.userId, '+1234567890');
 
       const decision1 = await auditRepo.createDecisionLog({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         sessionId: session.sessionId,
         userId: user.userId,
         intent: 'book_hotel',
@@ -1272,7 +1272,7 @@ describe('AuditRepository', () => {
       });
 
       const decision2 = await auditRepo.createDecisionLog({
-        correlationId: 'corr-123',
+        correlationId: '00000000-0000-4000-8000-000000000123',
         sessionId: session.sessionId,
         userId: user.userId,
         intent: 'search_hotel',
@@ -1291,7 +1291,7 @@ describe('AuditRepository', () => {
       const session = await sessionRepo.createSession(user.userId, '+1234567890');
 
       await auditRepo.createDecisionLog({
-        correlationId: 'corr-1',
+        correlationId: '00000000-0000-4000-8000-000000000001',
         sessionId: session.sessionId,
         userId: user.userId,
         intent: 'book_hotel',
@@ -1300,7 +1300,7 @@ describe('AuditRepository', () => {
       });
 
       await auditRepo.createDecisionLog({
-        correlationId: 'corr-2',
+        correlationId: '00000000-0000-4000-8000-000000000002',
         sessionId: session.sessionId,
         userId: user.userId,
         intent: 'search_hotel',

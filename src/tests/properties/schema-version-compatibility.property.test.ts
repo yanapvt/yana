@@ -297,8 +297,8 @@ describe('Property 6: Schema Version Compatibility', () => {
   });
 
   it('should allow sessions to continue using their referenced schema version after schema update', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         schemaDefinitionArb,
         sessionIdArb,
         userIdArb,
@@ -372,8 +372,8 @@ describe('Property 6: Schema Version Compatibility', () => {
   });
 
   it('should maintain schema version isolation: sessions with different versions operate independently', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         schemaDefinitionArb,
         sessionIdArb,
         sessionIdArb,
@@ -437,12 +437,17 @@ describe('Property 6: Schema Version Compatibility', () => {
   });
 
   it('should preserve schema version reference through session state updates', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         schemaDefinitionArb,
         sessionIdArb,
         userIdArb,
         async (originalSchema, sessionId, userId) => {
+          vi.mocked(mockStateStore.getSessionState).mockReset();
+          vi.mocked(mockStateStore.setSessionState).mockClear();
+          vi.mocked(mockSessionRepository.updateState).mockResolvedValue(undefined);
+          vi.mocked(mockSessionRepository.updateLastActivity).mockResolvedValue(undefined);
+
           // Given: A session with a schema version reference
           const initialState = await fc.sample(
             sessionStateWithSchemaArb(originalSchema),
@@ -469,7 +474,8 @@ describe('Property 6: Schema Version Compatibility', () => {
 
           // Then: The schema version reference should be preserved
           expect(mockStateStore.setSessionState).toHaveBeenCalled();
-          const setStateCall = vi.mocked(mockStateStore.setSessionState).mock.calls[0];
+          const setStateCalls = vi.mocked(mockStateStore.setSessionState).mock.calls;
+          const setStateCall = setStateCalls[setStateCalls.length - 1];
           const savedState = setStateCall[1];
 
           // Verify schema version is preserved in the saved state
@@ -482,8 +488,8 @@ describe('Property 6: Schema Version Compatibility', () => {
   });
 
   it('should allow schema validation to succeed for sessions using older schema versions', () => {
-    fc.assert(
-      fc.property(schemaDefinitionArb, async (originalSchema) => {
+    return fc.assert(
+      fc.asyncProperty(schemaDefinitionArb, async (originalSchema) => {
         // Given: A session that has collected all required fields for an older schema version
         const collectedFields: Record<string, unknown> = {};
         originalSchema.requiredFields.forEach((fieldName) => {
@@ -515,8 +521,8 @@ describe('Property 6: Schema Version Compatibility', () => {
   });
 
   it('should allow field prompts to be generated for sessions using older schema versions', () => {
-    fc.assert(
-      fc.property(schemaDefinitionArb, async (originalSchema) => {
+    return fc.assert(
+      fc.asyncProperty(schemaDefinitionArb, async (originalSchema) => {
         fc.pre(originalSchema.requiredFields.length > 0);
 
         // Given: A session referencing an older schema version with missing fields
@@ -546,8 +552,8 @@ describe('Property 6: Schema Version Compatibility', () => {
   });
 
   it('should maintain schema version compatibility across session resume operations', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         schemaDefinitionArb,
         sessionIdArb,
         userIdArb,
@@ -640,8 +646,8 @@ describe('Property 6: Schema Version Compatibility', () => {
   });
 
   it('should not invalidate active sessions when schema version is deactivated but still referenced', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         schemaDefinitionArb,
         sessionIdArb,
         async (originalSchema, sessionId) => {

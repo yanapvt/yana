@@ -1,11 +1,12 @@
 /**
  * Migration Validation Script
- * 
+ *
  * Validates that all required tables and indexes are present in migration files.
  * Requirements: 16.2, 16.4, 16.5, 16.6, 23.5
  */
 
 import { readFile } from 'fs/promises';
+import { fileURLToPath } from 'url';
 import { join } from 'path';
 
 const REQUIRED_TABLES = [
@@ -37,20 +38,14 @@ const REQUIRED_TABLES = [
 ];
 
 const REQUIRED_INDEX_TYPES = {
-  'session_lookup': [
+  session_lookup: [
     'idx_sessions_user_id',
     'idx_sessions_phone_number',
     'idx_sessions_last_activity',
   ],
-  'user_lookup': [
-    'idx_users_phone_number',
-    'idx_users_phone_hash',
-  ],
-  'booking_payment_state': [
-    'idx_bookings_state',
-    'idx_payments_state',
-  ],
-  'correlation_id': [
+  user_lookup: ['idx_users_phone_number', 'idx_users_phone_hash'],
+  booking_payment_state: ['idx_bookings_state', 'idx_payments_state'],
+  correlation_id: [
     'idx_messages_correlation_id',
     'idx_tool_runs_correlation_id',
     'idx_bookings_correlation_id',
@@ -63,7 +58,7 @@ const REQUIRED_INDEX_TYPES = {
 
 async function validateMigrations(): Promise<void> {
   console.log('Validating migration files...\n');
-  
+
   // Read all migration files
   const migrationsDir = join(process.cwd(), 'src', 'db', 'migrations');
   const migrationFiles = [
@@ -81,14 +76,14 @@ async function validateMigrations(): Promise<void> {
     '012_create_audit_logs.sql',
     '013_create_tts_assets.sql',
   ];
-  
+
   let allContent = '';
   for (const file of migrationFiles) {
     const filepath = join(migrationsDir, file);
     const content = await readFile(filepath, 'utf-8');
     allContent += content + '\n';
   }
-  
+
   // Validate tables
   console.log('Checking required tables:');
   const missingTables: string[] = [];
@@ -101,7 +96,7 @@ async function validateMigrations(): Promise<void> {
       missingTables.push(table);
     }
   }
-  
+
   // Validate indexes
   console.log('\nChecking required indexes:');
   const missingIndexes: string[] = [];
@@ -117,7 +112,7 @@ async function validateMigrations(): Promise<void> {
       }
     }
   }
-  
+
   // Summary
   console.log('\n' + '='.repeat(60));
   if (missingTables.length === 0 && missingIndexes.length === 0) {
@@ -137,6 +132,6 @@ async function validateMigrations(): Promise<void> {
 }
 
 // CLI entry point
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   validateMigrations().catch(console.error);
 }

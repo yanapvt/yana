@@ -46,9 +46,11 @@ export function normalizeInboundMessage(
     type: content.type === 'text' ? 'text' : 
           content.type === 'audio' ? 'audio' :
           content.type === 'interactive' ? 'interactive' : 'media',
+    inputType: content.type === 'audio' ? 'voice' : content.type,
     content,
     metadata: {
       rawPayload: payload,
+      media: extractMediaMetadata(payload),
     },
   };
 }
@@ -76,6 +78,13 @@ function extractMessageContent(payload: TwilioWebhookPayload): MessageContent {
     };
   }
 
+  if (payload.Body?.trim()) {
+    return {
+      type: 'text',
+      body: payload.Body,
+    };
+  }
+
   // Check for media messages
   const numMedia = parseInt(payload.NumMedia || '0', 10);
   if (numMedia > 0 && payload.MediaUrl0) {
@@ -85,6 +94,7 @@ function extractMessageContent(payload: TwilioWebhookPayload): MessageContent {
       return {
         type: 'audio',
         audioUrl: payload.MediaUrl0,
+        contentType: payload.MediaContentType0,
       };
     }
 
@@ -103,6 +113,19 @@ function extractMessageContent(payload: TwilioWebhookPayload): MessageContent {
   };
 }
 
+function extractMediaMetadata(payload: TwilioWebhookPayload): Record<string, string> | undefined {
+  const numMedia = parseInt(payload.NumMedia || '0', 10);
+  if (numMedia <= 0) {
+    return undefined;
+  }
+
+  return {
+    numMedia: String(numMedia),
+    mediaUrl0: payload.MediaUrl0 || '',
+    mediaContentType0: payload.MediaContentType0 || '',
+  };
+}
+
 /**
  * Determines media type from MIME type
  */
@@ -116,6 +139,9 @@ function getMediaType(
     return 'video';
   }
   if (contentType.startsWith('audio/')) {
+    return 'audio';
+  }
+  if (/ogg|opus/i.test(contentType)) {
     return 'audio';
   }
   return 'document';

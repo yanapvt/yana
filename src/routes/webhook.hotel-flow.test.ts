@@ -21,6 +21,8 @@ const selectHotelMock = vi.fn();
 const clearHotelSearchSessionMock = vi.fn();
 const sendWhatsAppTextMock = vi.fn();
 const twilioOutboundConfiguredMock = vi.fn();
+const llmDecideMock = vi.fn();
+const transcribeMock = vi.fn();
 
 vi.mock('../services/HotelIntakeService.js', () => ({
   getHotelIntakeService: () => ({
@@ -79,7 +81,7 @@ vi.mock('../services/profileService.js', () => ({
 
 vi.mock('../services/LLMService.js', () => ({
   getLLMService: () => ({
-    decide: vi.fn(),
+    decide: llmDecideMock,
   }),
   LLMServiceError: class LLMServiceError extends Error {
     code = 'TEST';
@@ -87,7 +89,30 @@ vi.mock('../services/LLMService.js', () => ({
   },
 }));
 
-import { processInboundMessage } from './webhook.js';
+vi.mock('../services/SpeechToTextService.js', () => {
+  class SpeechToTextServiceError extends Error {
+    constructor(
+      message: string,
+      public readonly code: string,
+      public readonly retryable = false
+    ) {
+      super(message);
+      this.name = 'SpeechToTextServiceError';
+    }
+  }
+
+  return {
+    getSpeechToTextService: () => ({
+      transcribe: transcribeMock,
+    }),
+    isSupportedVoiceContentType: (contentType?: string) =>
+      Boolean(contentType && (/^audio\//i.test(contentType) || /ogg|opus/i.test(contentType))),
+    SpeechToTextServiceError,
+  };
+});
+
+import { SpeechToTextServiceError } from '../services/SpeechToTextService.js';
+import { processInboundMessage, processWebhookPayload } from './webhook.js';
 
 describe('webhook hotel search flow', () => {
   beforeEach(() => {
@@ -111,6 +136,19 @@ describe('webhook hotel search flow', () => {
     sendWhatsAppTextMock.mockResolvedValue(true);
     twilioOutboundConfiguredMock.mockReturnValue(true);
     buildBrowseResultsPageReplyMock.mockReturnValue('Next page reply');
+    transcribeMock.mockResolvedValue({
+      transcript: 'hello',
+      contentType: 'audio/ogg',
+      bytes: 1234,
+      model: 'gpt-4o-mini-transcribe',
+    });
+    llmDecideMock.mockResolvedValue({
+      intent: 'unknown',
+      parameters: {},
+      missingFields: [],
+      suggestedAction: 'clarify',
+      confidence: 0.3,
+    });
   });
 
   it('delegates completed hotel intake to the hotel search flow', async () => {
@@ -327,7 +365,7 @@ describe('webhook hotel search flow', () => {
     expect(handleBrowseSearchMock).not.toHaveBeenCalled();
   });
 
-  it('acknowledges immediately and saves background results when async Twilio outbound is unavailable', async () => {
+  it('returns hotel results in the same response when async Twilio outbound is unavailable', async () => {
     twilioOutboundConfiguredMock.mockReturnValue(false);
     sendWhatsAppTextMock.mockResolvedValue(false);
     getHotelSearchSessionMock.mockResolvedValue({
@@ -356,36 +394,27 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('beachfront'), 'corr-webhook-15');
 
-    expect(reply).toContain('Just a moment while I check the best matches');
-    expect(reply).toContain('reply "status"');
-    expect(reply).not.toContain('Top 3 Google Places hotels');
-
-    await vi.waitFor(() => {
-      expect(handleBrowseSearchMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          location: 'Galle Fort',
-          additionalPreferences: 'beachfront',
-        }),
-        expect.objectContaining({
-          correlationId: 'corr-webhook-15',
-          sessionId: 'whatsapp:+15550009999',
-        })
-      );
-    });
-    await vi.waitFor(() => {
-      expect(saveResultsMock).toHaveBeenCalledWith(
-        'whatsapp:+15550009999',
-        expect.objectContaining({
-          additionalPreferences: 'beachfront',
-        }),
-        expect.arrayContaining([expect.objectContaining({ name: 'Hotel 1' })]),
-        0
-      );
-      expect(sendWhatsAppTextMock).toHaveBeenCalledWith(
-        'whatsapp:+15550009999',
-        'Top 3 Google Places hotels'
-      );
-    });
+    expect(reply).toBe('Top 3 Google Places hotels');
+    expect(reply).not.toContain('reply "status"');
+    expect(handleBrowseSearchMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        location: 'Galle Fort',
+        additionalPreferences: 'beachfront',
+      }),
+      expect.objectContaining({
+        correlationId: 'corr-webhook-15',
+        sessionId: 'whatsapp:+15550009999',
+      })
+    );
+    expect(saveResultsMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({
+        additionalPreferences: 'beachfront',
+      }),
+      expect.arrayContaining([expect.objectContaining({ name: 'Hotel 1' })]),
+      3
+    );
+    expect(sendWhatsAppTextMock).not.toHaveBeenCalled();
   });
 
   it('keeps the user updated while hotel search is still running', async () => {
@@ -437,6 +466,237 @@ describe('webhook hotel search flow', () => {
       results,
       6
     );
+  });
+
+  it('transcribes a voice note and routes restart my hotel booking through the same pipeline', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    transcribeMock.mockResolvedValue({
+      transcript: 'restart my hotel booking',
+      contentType: 'audio/ogg',
+      bytes: 2048,
+      model: 'gpt-4o-mini-transcribe',
+    });
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      stage: 'results',
+      criteria: { location: 'Colombo' },
+      results: [{ name: 'Old Colombo Hotel' }],
+      nextOffset: 3,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const result = await processWebhookPayload(
+      buildAudioPayload('https://api.twilio.com/2010-04-01/Accounts/AC/Messages/SM/Media/ME'),
+      'corr-webhook-22'
+    );
+
+    expect(result.inboundMessage.inputType).toBe('voice');
+    expect(result.inboundMessage.content).toEqual({
+      type: 'text',
+      body: 'restart my hotel booking',
+    });
+    expect(result.reply).toContain('I heard: "restart my hotel booking"');
+    expect(result.reply).toContain('start a fresh hotel search');
+    expect(result.reply).toContain('https://forms.yana.example/forms/hotel/');
+    expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
+  });
+
+  it('transcribes a voice note saying next and paginates saved hotel results', async () => {
+    transcribeMock.mockResolvedValue({
+      transcript: 'next',
+      contentType: 'audio/ogg',
+      bytes: 2048,
+      model: 'gpt-4o-mini-transcribe',
+    });
+    const results = [
+      { name: 'Hotel 1' },
+      { name: 'Hotel 2' },
+      { name: 'Hotel 3' },
+      { name: 'Hotel 4' },
+      { name: 'Hotel 5' },
+      { name: 'Hotel 6' },
+    ];
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      stage: 'results',
+      criteria: { location: 'Galle Fort' },
+      results,
+      nextOffset: 3,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-23');
+
+    expect(result.reply).toContain('I heard: "next"');
+    expect(result.reply).toContain('Next page reply');
+    expect(buildBrowseResultsPageReplyMock).toHaveBeenCalledWith(
+      { location: 'Galle Fort' },
+      [{ name: 'Hotel 4' }, { name: 'Hotel 5' }, { name: 'Hotel 6' }],
+      6,
+      6
+    );
+  });
+
+  it('returns a friendly error for unsupported inbound media', async () => {
+    const result = await processWebhookPayload(
+      {
+        MessageSid: 'SMmedia001',
+        From: 'whatsapp:+15550009999',
+        To: 'whatsapp:+15550000000',
+        NumMedia: '1',
+        MediaUrl0: 'https://api.twilio.com/image.jpg',
+        MediaContentType0: 'image/jpeg',
+      },
+      'corr-webhook-24'
+    );
+
+    expect(result.reply).toContain('I can only read text and WhatsApp voice notes');
+    expect(transcribeMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a friendly error when transcription fails', async () => {
+    transcribeMock.mockRejectedValue(
+      new SpeechToTextServiceError('provider failed', 'transcription_failed', true)
+    );
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-25');
+
+    expect(result.reply).toContain("couldn't clearly read that voice note");
+  });
+
+  it('returns a friendly webhook error when voice transcription is not configured', async () => {
+    transcribeMock.mockRejectedValue(
+      new SpeechToTextServiceError('OPENAI_API_KEY is required', 'missing_api_key')
+    );
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-26');
+
+    expect(result.reply).toContain('transcription is not configured yet');
+    expect(result.reply).toContain('OPENAI_API_KEY');
+  });
+
+  it('returns a Twilio setup error when voice media cannot be downloaded without real credentials', async () => {
+    transcribeMock.mockRejectedValue(
+      new SpeechToTextServiceError('Twilio credentials are required', 'missing_twilio_credentials')
+    );
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-27');
+
+    expect(result.reply).toContain('cannot download WhatsApp audio');
+    expect(result.reply).toContain('TWILIO_ACCOUNT_SID');
+    expect(result.reply).toContain('TWILIO_AUTH_TOKEN');
+  });
+
+  it('returns a retry message when Twilio media download fails', async () => {
+    transcribeMock.mockRejectedValue(
+      new SpeechToTextServiceError('Twilio media returned 500', 'download_failed', true)
+    );
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-28');
+
+    expect(result.reply).toContain("couldn't download that voice note");
+  });
+
+  it('returns a size-specific message when a voice note is too large', async () => {
+    transcribeMock.mockRejectedValue(
+      new SpeechToTextServiceError('Voice note is too large', 'media_too_large')
+    );
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-29');
+
+    expect(result.reply).toContain('too large');
+  });
+
+  it('starts a fresh hotel form instead of replaying old results for a natural restart request', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      stage: 'results',
+      criteria: {
+        location: 'Colombo',
+        additionalPreferences: 'a sea view',
+      },
+      results: [{ name: 'Old Colombo Hotel' }],
+      nextOffset: 3,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('i want to restart my hotel booking'),
+      'corr-webhook-19'
+    );
+
+    expect(reply).toContain('start a fresh hotel search');
+    expect(reply).toContain('Please complete this quick hotel request form');
+    expect(reply).toContain('https://forms.yana.example/forms/hotel/');
+    expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(saveHotelFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'i want to restart my hotel booking',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
+  });
+
+  it('starts a new hotel search when a hotel request arrives during old results', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      stage: 'results',
+      criteria: { location: 'Colombo' },
+      results: [{ name: 'Old Colombo Hotel' }],
+      nextOffset: 3,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('i need a hotel in Kandy now'),
+      'corr-webhook-20'
+    );
+
+    expect(reply).toContain('start a fresh hotel search');
+    expect(reply).toContain('https://forms.yana.example/forms/hotel/');
+    expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
+  });
+
+  it('can use the LLM router signal to switch away from stale hotel results', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      stage: 'results',
+      criteria: { location: 'Colombo' },
+      results: [{ name: 'Old Colombo Hotel' }],
+      nextOffset: 3,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
+    llmDecideMock.mockResolvedValue({
+      intent: 'search_hotels',
+      parameters: { location: 'Kandy' },
+      missingFields: ['checkin_date', 'checkout_date'],
+      suggestedAction: 'ask_missing',
+      confidence: 0.88,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('actually lets do Kandy instead'),
+      'corr-webhook-21'
+    );
+
+    expect(reply).toContain('start a fresh hotel search');
+    expect(reply).toContain('https://forms.yana.example/forms/hotel/');
+    expect(llmDecideMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userMessage: 'actually lets do Kandy instead',
+        sessionState: expect.objectContaining({
+          currentIntent: 'hotel_search',
+          activeSchema: 'search_hotels',
+        }),
+      })
+    );
+    expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
   });
 
   it('returns details for a hotel from the latest displayed batch', async () => {
@@ -672,5 +932,17 @@ function buildTextMessage(body: string): InboundMessage {
         ProfileName: 'Test Traveler',
       },
     },
+  };
+}
+
+function buildAudioPayload(mediaUrl = 'https://api.twilio.com/audio.ogg') {
+  return {
+    MessageSid: 'SMvoice001',
+    From: 'whatsapp:+15550009999',
+    To: 'whatsapp:+15550000000',
+    NumMedia: '1',
+    MediaUrl0: mediaUrl,
+    MediaContentType0: 'audio/ogg; codecs=opus',
+    ProfileName: 'Test Traveler',
   };
 }

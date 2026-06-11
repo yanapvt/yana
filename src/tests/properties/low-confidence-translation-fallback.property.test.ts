@@ -122,8 +122,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should apply multilingual fallback for any translation below confidence threshold', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation that will have low confidence
@@ -165,8 +165,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should flag message for operator review when confidence is below threshold', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -207,8 +207,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should NOT proceed with low-confidence execution', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -253,8 +253,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should respect the configured confidence threshold boundary', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         confidenceThresholdArb,
         translationContextArb,
         async (threshold, context) => {
@@ -308,8 +308,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should trigger fallback when confidence is even slightly below threshold', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         confidenceThresholdArb,
         translationContextArb,
         async (threshold, context) => {
@@ -361,8 +361,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should NOT trigger fallback when confidence meets or exceeds threshold', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Clear mocks for this property run
@@ -399,8 +399,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should apply multilingual fallback that preserves original text', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -442,8 +442,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should create handoff with correct triggering condition', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -490,8 +490,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should include confidence information in handoff session summary', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -539,8 +539,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should handle missing HumanHandoffRepository gracefully', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A TranslationService without HumanHandoffRepository
@@ -579,8 +579,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should produce consistent fallback behavior for the same low-confidence translation', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A specific low-confidence translation
@@ -638,8 +638,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should validate Requirement 10.8: apply multilingual fallback for low confidence', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -679,8 +679,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should validate Requirement 10.8: flag message for operator review for low confidence', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -720,8 +720,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should validate Requirement 10.8: do not proceed with low-confidence execution', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with low confidence
@@ -766,8 +766,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   // ==========================================================================
 
   it('should handle confidence of 0 correctly', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with zero confidence (worst case)
@@ -808,8 +808,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should handle confidence of 1 correctly', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         translationContextArb,
         async (context) => {
           // Given: A translation with maximum confidence
@@ -837,8 +837,8 @@ describe('Property 22: Low-Confidence Translation Fallback', () => {
   });
 
   it('should handle empty text gracefully', () => {
-    fc.assert(
-      fc.property(
+    return fc.assert(
+      fc.asyncProperty(
         fc.constantFrom('', '   ', '\t', '\n'),
         translationContextArb,
         async (emptyText, context) => {
