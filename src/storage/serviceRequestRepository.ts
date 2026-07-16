@@ -208,7 +208,15 @@ function isPersistedServiceRequest(value: unknown): value is PersistedServiceReq
 }
 
 function isServiceFormType(value: unknown): value is ServiceFormType {
-  return value === 'hotel' || value === 'restaurant' || value === 'logistics';
+  return (
+    value === 'hotel' ||
+    value === 'restaurant' ||
+    value === 'itinerary' ||
+    value === 'excursion' ||
+    value === 'excursion_booking' ||
+    value === 'logistics' ||
+    value === 'logistics_booking'
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

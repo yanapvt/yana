@@ -9,7 +9,8 @@ export type FormFieldType =
   | 'number'
   | 'select'
   | 'textarea'
-  | 'checkbox';
+  | 'checkbox'
+  | 'checkboxGroup';
 
 export interface FormFieldOption {
   value: string;
@@ -35,6 +36,12 @@ export interface FormPageDefinition {
   description: string;
   fields: FormFieldDefinition[];
   submitLabel: string;
+}
+
+export interface SuccessPageOptions {
+  whatsappReturnUrl?: string;
+  whatsappReturnLabel?: string;
+  outboundSent?: boolean;
 }
 
 export function renderFormPage(
@@ -66,12 +73,29 @@ export function renderFormPage(
   );
 }
 
-export function renderSuccessPage(title: string, message: string): string {
+export function renderSuccessPage(
+  title: string,
+  message: string,
+  options: SuccessPageOptions = {}
+): string {
+  const returnButton = options.whatsappReturnUrl
+    ? `<a class="return-button" href="${escapeHtml(options.whatsappReturnUrl)}">${escapeHtml(
+        options.whatsappReturnLabel ?? 'Return to WhatsApp'
+      )}</a>`
+    : '';
+  const hint = options.outboundSent
+    ? 'I have also sent the next message to your WhatsApp chat.'
+    : options.whatsappReturnUrl
+      ? 'Tap below to return to WhatsApp and continue the same conversation.'
+      : 'You can now return to WhatsApp.';
+
   return renderDocument(
     title,
     `<section class="success"><span class="brand">YANA</span><div class="check">&#10003;</div><h1>${escapeHtml(
       title
-    )}</h1><p>${escapeHtml(message)}</p><p class="hint">You can now return to WhatsApp.</p></section>`
+    )}</h1><p>${escapeHtml(message)}</p>${returnButton}<p class="hint">${escapeHtml(
+      hint
+    )}</p></section>`
   );
 }
 
@@ -85,6 +109,11 @@ export function renderExpiredPage(): string {
 function renderField(field: FormFieldDefinition, rawValue: unknown, error?: string): string {
   const value =
     typeof rawValue === 'string' || typeof rawValue === 'number' ? String(rawValue) : '';
+  const values = Array.isArray(rawValue)
+    ? rawValue.map(String)
+    : typeof rawValue === 'string'
+      ? [rawValue]
+      : [];
   const fieldId = `field-${field.name}`;
   const required = field.required ? ' required' : '';
   const invalid = error ? ' aria-invalid="true"' : '';
@@ -96,6 +125,21 @@ function renderField(field: FormFieldDefinition, rawValue: unknown, error?: stri
     control = `<label class="check-row"><input type="checkbox" ${common}${checked}> <span>${escapeHtml(
       field.label
     )}</span></label>`;
+  } else if (field.type === 'checkboxGroup') {
+    const options = (field.options ?? [])
+      .map((option, index) => {
+        const optionId = `${fieldId}-${index}`;
+        const checked = values.includes(option.value) ? ' checked' : '';
+        return `<label class="chip-option" for="${optionId}"><input type="checkbox" id="${optionId}" name="${escapeHtml(
+          field.name
+        )}" value="${escapeHtml(option.value)}"${checked}${invalid}> <span>${escapeHtml(
+          option.label
+        )}</span></label>`;
+      })
+      .join('');
+    control = `<fieldset class="choice-group"${error ? ' aria-invalid="true"' : ''}><legend>${escapeHtml(
+      field.label
+    )}${requiredMark(field)}</legend><div class="chip-grid">${options}</div></fieldset>`;
   } else if (field.type === 'textarea') {
     control = `<label for="${fieldId}">${escapeHtml(field.label)}${requiredMark(field)}</label><textarea ${common}${placeholder(
       field
@@ -129,7 +173,9 @@ function renderField(field: FormFieldDefinition, rawValue: unknown, error?: stri
     ? `<span class="helper">${escapeHtml(field.helperText)}</span>`
     : '';
   const errorMessage = error ? `<span class="field-error">${escapeHtml(error)}</span>` : '';
-  return `<div class="field${field.type === 'checkbox' ? ' checkbox' : ''}">${control}${helper}${errorMessage}</div>`;
+  return `<div class="field${field.type === 'checkbox' ? ' checkbox' : ''}${
+    field.type === 'checkboxGroup' ? ' choice-field' : ''
+  }">${control}${helper}${errorMessage}</div>`;
 }
 
 function requiredMark(field: FormFieldDefinition): string {
@@ -163,22 +209,40 @@ function renderDocument(title: string, body: string): string {
     textarea { min-height:86px; resize:vertical; }
     input:focus, textarea:focus, select:focus { outline:2px solid rgba(174,138,82,.3); border-color:var(--gold); }
     input[aria-invalid=true], textarea[aria-invalid=true], select[aria-invalid=true] { border-color:var(--error); }
+    fieldset { border:0; padding:0; margin:0; }
+    legend { display:block; font-size:.92rem; font-weight:600; margin:0 0 10px; padding:0; }
     .check-row { display:flex; align-items:flex-start; gap:11px; line-height:1.45; font-size:.94rem; }
     .check-row input { flex:none; width:20px; height:20px; accent-color:var(--gold); margin-top:1px; }
+    .chip-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .chip-option { position:relative; display:flex; align-items:center; justify-content:center; min-height:44px; border:1px solid var(--line); border-radius:12px; padding:10px 9px; text-align:center; font-size:.88rem; font-weight:650; color:var(--ink); background:#fff; }
+    .chip-option input { position:absolute; opacity:0; inset:0; cursor:pointer; }
+    .chip-option:has(input:checked) { border-color:var(--gold); background:#f6efe3; box-shadow:inset 0 0 0 1px rgba(174,138,82,.35); }
     .helper, .field-error { display:block; font-size:.82rem; margin-top:6px; color:var(--muted); }
     .field-error { color:var(--error); }
     .error-summary { border-radius:12px; padding:12px; margin:0 0 16px; color:var(--error); background:#fff1ed; font-size:.92rem; }
     button { border:0; width:100%; min-height:52px; border-radius:14px; margin-top:25px; padding:14px; background:var(--ink); color:#fff; font-size:1rem; font-weight:600; cursor:pointer; }
     button:active { transform:translateY(1px); }
+    .return-button { display:block; width:100%; min-height:52px; border-radius:14px; margin:22px 0 0; padding:15px 14px; background:#25d366; color:#092319; font-size:1rem; font-weight:700; text-decoration:none; }
+    .return-button:active { transform:translateY(1px); }
     .privacy { text-align:center; margin:17px 4px 0; color:var(--muted); font-size:.79rem; line-height:1.45; }
     .success { text-align:center; margin-top:12vh; padding:36px 22px; }
     .success .brand { margin-bottom:18px; }
     .check { color:var(--gold); font-size:2rem; margin-bottom:14px; }
     .success .hint { margin:18px 0 0; font-size:.9rem; }
-    @media (min-width:560px) { main { padding-top:48px; } form { padding:30px; } .fields { grid-template-columns:1fr 1fr; } .field.checkbox, .field:has(textarea) { grid-column:1 / -1; } }
+    @media (min-width:560px) { main { padding-top:48px; } form { padding:30px; } .fields { grid-template-columns:1fr 1fr; } .field.checkbox, .field.choice-field, .field:has(textarea) { grid-column:1 / -1; } .chip-grid { grid-template-columns:repeat(3, 1fr); } }
   </style>
 </head>
-<body><main>${body}</main></body>
+<body><main>${body}</main><script>
+document.addEventListener('submit', function (event) {
+  var form = event.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  var button = form.querySelector('button[type="submit"]');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Submitting...';
+  }
+});
+</script></body>
 </html>`;
 }
 

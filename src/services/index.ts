@@ -64,6 +64,24 @@ export type {
   ValidatedDecision,
 } from './Orchestrator.js';
 
+export { CoreSystemV2, getCoreSystemV2, initCoreSystemV2 } from './CoreSystemV2.js';
+export type {
+  CoreV2Action,
+  CoreV2ActionType,
+  CoreV2Flow,
+  CoreV2Input,
+  CoreV2Intent,
+  CoreV2Plan,
+  CoreV2UserContext,
+} from './CoreSystemV2.js';
+
+export {
+  ConversationManager,
+  getConversationManager,
+  initConversationManager,
+} from './ConversationManager.js';
+export type { ConversationManagerUserContext } from './ConversationManager.js';
+
 export { ToolRegistry } from './ToolRegistry.js';
 export type {
   ToolDefinition,

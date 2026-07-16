@@ -256,7 +256,7 @@ export class HotelSearchSessionService {
       return normalizeSession(redisSession);
     }
 
-    const durableSession = await this.repository.findLatestActiveByUserId(userId);
+    const durableSession = await this.findDurableSession(userId);
     if (!durableSession) {
       return null;
     }
@@ -269,7 +269,11 @@ export class HotelSearchSessionService {
   async clear(userId: string): Promise<void> {
     await this.store.deleteKey(this.getKey(userId));
     await this.clearLegacyHotelIntakeState(userId);
-    await this.repository.clearActiveByUserId(userId);
+    try {
+      await this.repository.clearActiveByUserId(userId);
+    } catch (error) {
+      console.warn('[HotelSearchSessionService] Durable session clear failed:', error);
+    }
   }
 
   private async save(session: HotelSearchSession): Promise<void> {
@@ -280,8 +284,21 @@ export class HotelSearchSessionService {
       normalized,
       HOTEL_SEARCH_SESSION_TTL_SECONDS
     );
-    await this.repository.upsert(normalized);
+    try {
+      await this.repository.upsert(normalized);
+    } catch (error) {
+      console.warn('[HotelSearchSessionService] Durable session save failed:', error);
+    }
     this.scheduleReminder(normalized);
+  }
+
+  private async findDurableSession(userId: string): Promise<HotelSearchSession | null> {
+    try {
+      return await this.repository.findLatestActiveByUserId(userId);
+    } catch (error) {
+      console.warn('[HotelSearchSessionService] Durable session lookup failed:', error);
+      return null;
+    }
   }
 
   private baseSession(

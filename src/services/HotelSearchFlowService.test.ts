@@ -42,7 +42,7 @@ describe('HotelSearchFlowService', () => {
 
     expect(result.status).toBe('provider_not_connected');
     expect(result.reply).toContain('location Galle');
-    expect(result.reply).toContain('live property browsing is not configured');
+    expect(result.reply).toContain('I cannot complete the hotel check at this moment');
     expect(mcpInterface.executeToolCall).not.toHaveBeenCalled();
   });
 

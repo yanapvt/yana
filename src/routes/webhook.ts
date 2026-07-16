@@ -22,33 +22,104 @@ import {
   getHotelSearchSessionService,
   type HotelSearchSession,
 } from '../services/hotelSearchSessionService.js';
+import {
+  getRestaurantSearchSessionService,
+  type RestaurantSearchSession,
+} from '../services/restaurantSearchSessionService.js';
+import {
+  getExcursionSearchSessionService,
+  type ExcursionSearchSession,
+} from '../services/excursionSearchSessionService.js';
+import {
+  getLogisticsSearchSessionService,
+  type LogisticsSearchSession,
+} from '../services/logisticsSearchSessionService.js';
+import {
+  getItinerarySessionService,
+  type ItinerarySession,
+} from '../services/itinerarySessionService.js';
+import {
+  getItineraryPlannerService,
+  type GeneratedItinerary,
+  type DailyItineraryPlan,
+} from '../services/ItineraryPlannerService.js';
+import {
+  getRestaurantSearchFlowService,
+  type RestaurantSearchFlowResult,
+} from '../services/RestaurantSearchFlowService.js';
+import {
+  getExcursionSearchFlowService,
+  type ExcursionSearchFlowResult,
+} from '../services/ExcursionSearchFlowService.js';
+import {
+  getLogisticsSearchFlowService,
+  type LogisticsSearchFlowResult,
+} from '../services/LogisticsSearchFlowService.js';
 import { getFormTokenService } from '../services/formTokenService.js';
 import { mapHotelRequestFormToCriteria } from '../services/hotelRequestMapper.js';
+import {
+  mapRestaurantRequestFormToCriteria,
+  type RestaurantSearchCriteria,
+} from '../services/restaurantRequestMapper.js';
+import {
+  mapExcursionRequestFormToCriteria,
+  type ExcursionSearchCriteria,
+} from '../services/excursionRequestMapper.js';
+import {
+  mapLogisticsRequestFormToCriteria,
+  type LogisticsSearchCriteria,
+} from '../services/logisticsRequestMapper.js';
+import {
+  mapItineraryRequestFormToCriteria,
+  type ItineraryCriteria,
+} from '../services/itineraryRequestMapper.js';
 import { getPendingRequestService } from '../services/pendingRequestService.js';
 import { getProfileGate } from '../services/profileGate.js';
 import { getProfileService } from '../services/profileService.js';
-import { getTwilioOutboundService } from '../services/twilioOutboundService.js';
+import {
+  getTwilioOutboundService,
+  splitWhatsAppText,
+  type WhatsAppOutboundMessage,
+} from '../services/twilioOutboundService.js';
+import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
+import { getConversationManager } from '../services/ConversationManager.js';
 import {
   getSpeechToTextService,
   isSupportedVoiceContentType,
   SpeechToTextServiceError,
 } from '../services/SpeechToTextService.js';
+import { getTextToSpeechService, isTextToSpeechEnabled } from '../services/TextToSpeechService.js';
 import {
   buildHotelCollectionResponse,
   buildHotelFormLink,
+  buildItineraryCollectionResponse,
+  buildItineraryFormLink,
+  buildExcursionBookingCollectionResponse,
+  buildExcursionBookingFormLink,
+  buildExcursionCollectionResponse,
+  buildExcursionFormLink,
+  buildLogisticsBookingCollectionResponse,
+  buildLogisticsBookingFormLink,
+  buildLogisticsCollectionResponse,
+  buildLogisticsFormLink,
   buildProfileCollectionResponse,
   buildProfileFormLink,
+  buildRestaurantCollectionResponse,
+  buildRestaurantFormLink,
 } from '../utils/formResponses.js';
-import type { HotelRequestForm } from '../types/forms.js';
+import type { ExcursionRequestForm, HotelRequestForm, ItineraryRequestForm, LogisticsRequestForm, RestaurantRequestForm } from '../types/forms.js';
 import type { InboundMessage } from '../types/core.js';
 import type { HotelSearchCriteria } from '../services/HotelIntakeService.js';
 import type { HotelBrowseResult } from '../services/GooglePlacesHotelBrowsingService.js';
+import type { RestaurantBrowseResult } from '../services/GooglePlacesRestaurantBrowsingService.js';
+import type { ExcursionBrowseResult } from '../services/GooglePlacesExcursionBrowsingService.js';
+import type { TransportOption } from '../services/TransportProvider.js';
 
 const router = Router();
 const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
   "Sorry, I couldn't clearly read that voice note. Could you send it again or type your request?";
 const VOICE_OPENAI_CONFIG_ERROR_MESSAGE =
-  'Voice notes are almost ready, but transcription is not configured yet. Please add OPENAI_API_KEY, or type your request for now.';
+  'Voice notes are almost ready, but transcription is not configured yet. Please add TRANSCRIPTION_API_KEY or LLM_API_KEY, and TRANSCRIPTION_MODEL, then try again. You can type your request for now.';
 const VOICE_TWILIO_CONFIG_ERROR_MESSAGE =
   'Voice notes are almost ready, but I cannot download WhatsApp audio until real Twilio credentials are configured. Please add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN, or type your request for now.';
 const VOICE_DOWNLOAD_ERROR_MESSAGE =
@@ -102,8 +173,30 @@ router.post(
         correlationId,
         inboundMessage
       );
-      const whatsappReply = await enrichHotelResultsForWhatsApp(normalizedInput.from, reply);
-      res.type('text/xml').status(200).send(toTwiml(whatsappReply));
+      const whatsappReply = await buildWebhookReply(
+        normalizedInput.from,
+        reply,
+        normalizedInput.inputType === 'voice'
+      );
+      const twiml = toTwiml(whatsappReply);
+      const deliveredAsync = await deliverWebhookReplyThroughTwilio(
+        normalizedInput.from,
+        normalizedInput.to,
+        whatsappReply,
+        correlationId
+      );
+      if (deliveredAsync) {
+        console.log(
+          `[${correlationId}] Sent WhatsApp reply through Twilio REST; returning empty TwiML`
+        );
+        res.type('text/xml').status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+        return;
+      }
+
+      console.log(
+        `[${correlationId}] Sending WhatsApp TwiML reply (${twiml.length} chars)`
+      );
+      res.type('text/xml').status(200).send(twiml);
     } catch (error) {
       // Log the error but still return 200 to Twilio
       // We don't want Twilio to retry on our internal errors
@@ -112,9 +205,12 @@ router.post(
         error
       );
       
-      // If we haven't sent a response yet, send 200
+      // If we haven't sent a response yet, send a friendly message instead of a blank 200.
       if (!res.headersSent) {
-        res.status(200).send('');
+        res
+          .type('text/xml')
+          .status(200)
+          .send(toTwiml("Sorry, I hit a temporary issue while replying. Please send that again and I'll pick it up."));
       }
     }
   }
@@ -134,7 +230,9 @@ export async function processWebhookPayload(
     };
   }
 
-  const reply = await processInboundMessage(voiceInput.inboundMessage, correlationId);
+  const reply = await processInboundMessage(voiceInput.inboundMessage, correlationId, {
+    voicePreferred: Boolean(voiceInput.transcript),
+  });
   if (voiceInput.transcript) {
     return {
       inboundMessage: voiceInput.inboundMessage,
@@ -150,7 +248,8 @@ export async function processWebhookPayload(
 
 export async function processInboundMessage(
   inboundMessage: InboundMessage,
-  correlationId: string
+  correlationId: string,
+  options: { voicePreferred?: boolean } = {}
 ): Promise<string> {
   const profileGateResult = await getProfileGate().check(inboundMessage.from);
 
@@ -198,6 +297,115 @@ export async function processInboundMessage(
     correlationId
   );
 
+  const activeItinerarySession = await getItinerarySessionService().get(inboundMessage.from);
+  const activeItineraryReply = await handleActiveItinerarySession(
+    inboundMessage.from,
+    userMessage,
+    inboundText,
+    correlationId,
+    activeItinerarySession
+  );
+
+  if (activeItineraryReply) {
+    return activeItineraryReply;
+  }
+
+  const itineraryFormReply = await handleItineraryFormGate(
+    inboundMessage.from,
+    userMessage,
+    inboundText
+  );
+
+  if (itineraryFormReply) {
+    return itineraryFormReply;
+  }
+
+  const latestItineraryContinuationReply = await handleLatestItineraryRequestContinuation(
+    inboundMessage.from,
+    userMessage,
+    inboundText,
+    correlationId
+  );
+
+  if (latestItineraryContinuationReply) {
+    return latestItineraryContinuationReply;
+  }
+
+  const activeRestaurantSession = await getRestaurantSearchSessionService().get(inboundMessage.from);
+  const activeRestaurantSearchReply = await handleActiveRestaurantSearchSession(
+    inboundMessage.from,
+    inboundMessage.to,
+    userMessage,
+    inboundText,
+    correlationId,
+    activeRestaurantSession,
+    options
+  );
+
+  if (activeRestaurantSearchReply) {
+    return activeRestaurantSearchReply;
+  }
+
+  const restaurantFormReply = await handleRestaurantFormGate(
+    inboundMessage.from,
+    userMessage,
+    inboundText
+  );
+
+  if (restaurantFormReply) {
+    return restaurantFormReply;
+  }
+
+  const activeExcursionSession = await getExcursionSearchSessionService().get(inboundMessage.from);
+  const activeExcursionSearchReply = await handleActiveExcursionSearchSession(
+    inboundMessage.from,
+    inboundMessage.to,
+    userMessage,
+    inboundText,
+    correlationId,
+    activeExcursionSession,
+    options
+  );
+
+  if (activeExcursionSearchReply) {
+    return activeExcursionSearchReply;
+  }
+
+  const excursionFormReply = await handleExcursionFormGate(
+    inboundMessage.from,
+    userMessage,
+    inboundText
+  );
+
+  if (excursionFormReply) {
+    return excursionFormReply;
+  }
+
+  const activeLogisticsSession = await getLogisticsSearchSessionService().get(inboundMessage.from);
+  const activeLogisticsSearchReply = await handleActiveLogisticsSearchSession(
+    inboundMessage.from,
+    inboundMessage.to,
+    userMessage,
+    inboundText,
+    correlationId,
+    activeLogisticsSession,
+    options
+  );
+
+  if (activeLogisticsSearchReply) {
+    return activeLogisticsSearchReply;
+  }
+
+  const logisticsFormReply = await handleLogisticsFormGate(
+    inboundMessage.from,
+    userMessage,
+    inboundText
+  );
+
+  if (logisticsFormReply) {
+    return logisticsFormReply;
+  }
+
   const activeHotelSession = await getHotelSearchSessionService().get(inboundMessage.from);
   const conversationRoute = await routeActiveConversation(
     userMessage,
@@ -215,9 +423,11 @@ export async function processInboundMessage(
 
   const activeHotelSearchReply = await handleActiveHotelSearchSession(
     inboundMessage.from,
+    inboundMessage.to,
     inboundText,
     correlationId,
-    activeHotelSession
+    activeHotelSession,
+    options
   );
 
   if (activeHotelSearchReply) {
@@ -292,10 +502,72 @@ export async function processInboundMessage(
         return buildWelcomeMessage(userContext);
       }
 
-      return `I can help with ${decision.intent}. Please share: ${decision.missingFields.join(', ')}.`;
+      return (await getConversationManager().createMessage({
+        userInput: userMessage,
+        profile: userContext,
+        interpretation: {
+          intent: decision.intent,
+          entities: decision.parameters,
+          confidence: decision.confidence,
+        },
+        decision,
+        missingFields: decision.missingFields,
+      })).text;
     }
 
     if (decision.suggestedAction === 'execute_tool') {
+      if (isItineraryRelatedIntent(decision.intent) || isItineraryRequestMessage(userMessage)) {
+        await clearCompetingSearchSessions(inboundMessage.from, 'itinerary');
+        const token = getFormTokenService().createToken(inboundMessage.from, 'itinerary');
+        const itineraryFormResponse = buildItineraryCollectionResponse(buildItineraryFormLink(token));
+        const profile = await getProfileService().getProfile(inboundMessage.from);
+        await getItinerarySessionService().saveFormSent(
+          inboundMessage.from,
+          userMessage,
+          profile?.form
+        );
+        return itineraryFormResponse;
+      }
+
+      if (isRestaurantRelatedIntent(decision.intent) || isRestaurantRequestMessage(userMessage)) {
+        await clearCompetingSearchSessions(inboundMessage.from, 'restaurant');
+        const token = getFormTokenService().createToken(inboundMessage.from, 'restaurant');
+        const restaurantFormResponse = buildRestaurantCollectionResponse(buildRestaurantFormLink(token));
+        const profile = await getProfileService().getProfile(inboundMessage.from);
+        await getRestaurantSearchSessionService().saveRestaurantFormSent(
+          inboundMessage.from,
+          userMessage,
+          profile?.form
+        );
+        return restaurantFormResponse;
+      }
+
+      if (isExcursionRelatedIntent(decision.intent) || isExcursionRequestMessage(userMessage)) {
+        await clearCompetingSearchSessions(inboundMessage.from, 'excursion');
+        const token = getFormTokenService().createToken(inboundMessage.from, 'excursion');
+        const excursionFormResponse = buildExcursionCollectionResponse(buildExcursionFormLink(token));
+        const profile = await getProfileService().getProfile(inboundMessage.from);
+        await getExcursionSearchSessionService().saveExcursionFormSent(
+          inboundMessage.from,
+          userMessage,
+          profile?.form
+        );
+        return excursionFormResponse;
+      }
+
+      if (isLogisticsRelatedIntent(decision.intent) || isLogisticsRequestMessage(userMessage)) {
+        await clearCompetingSearchSessions(inboundMessage.from, 'logistics');
+        const token = getFormTokenService().createToken(inboundMessage.from, 'logistics');
+        const logisticsFormResponse = buildLogisticsCollectionResponse(buildLogisticsFormLink(token));
+        const profile = await getProfileService().getProfile(inboundMessage.from);
+        await getLogisticsSearchSessionService().saveTransportFormSent(
+          inboundMessage.from,
+          userMessage,
+          profile?.form
+        );
+        return logisticsFormResponse;
+      }
+
       if (decision.intent === 'search_hotels') {
         return buildHotelSearchReply(decision.parameters);
       }
@@ -304,14 +576,46 @@ export async function processInboundMessage(
         return 'I picked that up as part of a hotel search, but I do not have enough saved hotel details to run it cleanly. Please start with the city or area you want to stay in.';
       }
 
-      return `Got it. I understood this as ${decision.intent}. This build is currently wired for hotel search first, so please tell me the city or area where you want to stay.`;
+      if (isGeneralInquiryIntent(decision.intent) || isLowConfidenceDecision(decision)) {
+        return (await getConversationManager().createMessage({
+          userInput: userMessage,
+          profile: userContext,
+          interpretation: {
+            intent: decision.intent,
+            entities: decision.parameters,
+            confidence: decision.confidence,
+          },
+          decision,
+          missingFields: decision.missingFields,
+        })).text;
+      }
+
+      return 'I can help with travel planning, but I need a little more detail before I can guide this properly.';
     }
 
     if (decision.suggestedAction === 'handoff') {
-      return 'Thanks. I think this needs a human handoff, but handoff routing is not wired yet.';
+      return 'Thanks. This may need a human concierge to step in, but handoff routing is not connected yet.';
     }
 
-    return `I received your message and understood this as ${decision.intent}. Could you share a little more detail?`;
+    if (
+      isGeneralInquiryIntent(decision.intent) ||
+      isLowConfidenceDecision(decision) ||
+      isTripPlanningPrompt(userMessage)
+    ) {
+      return (await getConversationManager().createMessage({
+        userInput: userMessage,
+        profile: userContext,
+        interpretation: {
+          intent: decision.intent,
+          entities: decision.parameters,
+          confidence: decision.confidence,
+        },
+        decision,
+        missingFields: decision.missingFields,
+      })).text;
+    }
+
+    return 'I can help with that. Could you tell me a little more about what you need for this trip?';
   } catch (error) {
     if (error instanceof LLMServiceError) {
       console.error(
@@ -431,6 +735,7 @@ async function handleHotelFormGate(
   }
 
   if (isHotelRequestMessage(userMessage)) {
+    await clearCompetingSearchSessions(userId, 'hotel');
     const token = getFormTokenService().createToken(userId, 'hotel');
     const hotelFormResponse = buildHotelCollectionResponse(buildHotelFormLink(token));
     const profile = await getProfileService().getProfile(userId);
@@ -450,11 +755,482 @@ async function handleHotelFormGate(
   return null;
 }
 
-async function handleActiveHotelSearchSession(
+async function handleItineraryFormGate(
   userId: string,
+  userMessage: string,
+  inboundText: string
+): Promise<string | null> {
+  if (isResumeConversationCue(inboundText)) {
+    const restoredItineraryRequest = await restoreLatestItineraryRequest(userId);
+    if (restoredItineraryRequest) return restoredItineraryRequest;
+  }
+
+  if (isItineraryRequestMessage(userMessage)) {
+    await clearCompetingSearchSessions(userId, 'itinerary');
+    const token = getFormTokenService().createToken(userId, 'itinerary');
+    const itineraryFormResponse = buildItineraryCollectionResponse(buildItineraryFormLink(token));
+    const profile = await getProfileService().getProfile(userId);
+    await getItinerarySessionService().saveFormSent(userId, userMessage, profile?.form);
+    return itineraryFormResponse;
+  }
+
+  return null;
+}
+
+async function handleActiveItinerarySession(
+  userId: string,
+  userMessage: string,
   inboundText: string,
   correlationId: string,
-  activeSession?: HotelSearchSession | null
+  activeSession?: ItinerarySession | null
+): Promise<string | null> {
+  const sessionService = getItinerarySessionService();
+  const session = activeSession ?? (await sessionService.get(userId));
+
+  if (!session || isGreeting(inboundText)) return null;
+
+  if (isResetCue(inboundText)) {
+    await sessionService.clear(userId);
+    return 'I have cleared the itinerary plan. Tell me when you want to start planning again.';
+  }
+
+  if (session.state === 'planning') {
+    return 'I am still building the itinerary. I will send the day-by-day plan here as soon as it is ready.';
+  }
+
+  if (session.state === 'showing_itinerary' || session.state === 'editing_itinerary') {
+    if (!session.itinerary) return null;
+
+    const daySelection = parseDayCue(inboundText);
+    if (daySelection) {
+      await sessionService.setCurrentDay(userId, daySelection);
+      return buildItineraryDayReply(session.itinerary, daySelection);
+    }
+
+    if (isNextDayCue(inboundText)) {
+      const nextDay = Math.min((session.currentDay ?? 1) + 1, session.itinerary.days.length);
+      await sessionService.setCurrentDay(userId, nextDay);
+      return buildItineraryDayReply(session.itinerary, nextDay);
+    }
+
+    if (isItineraryEditCue(inboundText)) {
+      const criteria = {
+        ...session.criteria,
+        additionalPreferences: [session.criteria.additionalPreferences, userMessage]
+          .filter(Boolean)
+          .join('; '),
+      };
+      const itinerary = await getItineraryPlannerService().plan(criteria);
+      await sessionService.saveEditing(userId, criteria, itinerary);
+      return buildItineraryReply(
+        itinerary,
+        await createItineraryWorkspaceLink(userId, itinerary, criteria, 'Edited from WhatsApp')
+      );
+    }
+
+    if (isBookingIntentCue(inboundText)) {
+      return 'Of course. Tell me which part you want to book first: hotels, transport, excursions, or restaurants.';
+    }
+
+    if (isResumeConversationCue(inboundText)) {
+      return buildItineraryReply(session.itinerary);
+    }
+
+    if (isResumeCue(inboundText)) {
+      return buildItineraryReply(session.itinerary);
+    }
+
+    return null;
+  }
+
+  if (session.state !== 'awaiting_preferences' && session.state !== 'itinerary_form_completed') {
+    return null;
+  }
+
+  if (!hasCompleteItineraryCriteria(session.criteria)) {
+    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+      return restoreLatestItineraryRequest(userId);
+    }
+    return null;
+  }
+
+  if (isResumeConversationCue(inboundText)) {
+    return buildItineraryPreferencePrompt(session.criteria);
+  }
+
+  const criteria = {
+    ...session.criteria,
+    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
+  };
+  await sessionService.savePlanning(userId, criteria);
+
+  const itinerary = await planItinerary(userId, criteria, correlationId);
+  await sessionService.saveItinerary(userId, criteria, itinerary);
+  return buildItineraryReply(
+    itinerary,
+    await createItineraryWorkspaceLink(userId, itinerary, criteria, 'Generated from WhatsApp')
+  );
+}
+
+async function handleLatestItineraryRequestContinuation(
+  userId: string,
+  userMessage: string,
+  inboundText: string,
+  correlationId: string
+): Promise<string | null> {
+  if (
+    !isNoExtraPreferenceCue(inboundText) &&
+    !isResumeCue(inboundText) &&
+    !isItineraryEditCue(inboundText) &&
+    !isTripPlanningPrompt(userMessage)
+  ) {
+    return null;
+  }
+
+  const latestItineraryRequest = await getProfileService().getLatestServiceRequest(
+    userId,
+    'itinerary'
+  );
+
+  if (latestItineraryRequest?.type !== 'itinerary') {
+    return null;
+  }
+
+  const criteria = mapItineraryRequestFormToCriteria(
+    latestItineraryRequest.form as ItineraryRequestForm
+  );
+
+  if (!hasCompleteItineraryCriteria(criteria)) {
+    return null;
+  }
+
+  if (isTripPlanningPrompt(userMessage) && !isResumeCue(inboundText)) {
+    await getItinerarySessionService().saveAwaitingPreferences(userId, criteria);
+    return buildItineraryPreferencePrompt(criteria);
+  }
+
+  const criteriaWithPreferences = {
+    ...criteria,
+    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
+  };
+  await getItinerarySessionService().savePlanning(userId, criteriaWithPreferences);
+
+  const itinerary = await planItinerary(userId, criteriaWithPreferences, correlationId);
+  await getItinerarySessionService().saveItinerary(userId, criteriaWithPreferences, itinerary);
+  return buildItineraryReply(
+    itinerary,
+    await createItineraryWorkspaceLink(
+      userId,
+      itinerary,
+      criteriaWithPreferences,
+      'Generated from latest trip form'
+    )
+  );
+}
+
+async function handleRestaurantFormGate(
+  userId: string,
+  userMessage: string,
+  inboundText: string
+): Promise<string | null> {
+  if (isResumeCue(inboundText)) {
+    const restoredRestaurantRequest = await restoreLatestRestaurantRequest(userId);
+    if (restoredRestaurantRequest) {
+      return restoredRestaurantRequest;
+    }
+  }
+
+  if (isRestaurantRequestMessage(userMessage)) {
+    await clearCompetingSearchSessions(userId, 'restaurant');
+    const token = getFormTokenService().createToken(userId, 'restaurant');
+    const restaurantFormResponse = buildRestaurantCollectionResponse(buildRestaurantFormLink(token));
+    const profile = await getProfileService().getProfile(userId);
+    await getRestaurantSearchSessionService().saveRestaurantFormSent(
+      userId,
+      userMessage,
+      profile?.form
+    );
+
+    return restaurantFormResponse;
+  }
+
+  return null;
+}
+
+async function handleActiveRestaurantSearchSession(
+  userId: string,
+  outboundFrom: string,
+  userMessage: string,
+  inboundText: string,
+  correlationId: string,
+  activeSession?: RestaurantSearchSession | null,
+  options: { voicePreferred?: boolean } = {}
+): Promise<string | null> {
+  const sessionService = getRestaurantSearchSessionService();
+  const session = activeSession ?? (await sessionService.get(userId));
+
+  if (!session || isGreeting(inboundText)) {
+    return null;
+  }
+
+  if (isResetCue(inboundText)) {
+    await sessionService.clear(userId);
+    return 'I have cleared the restaurant search. Tell me what kind of dining experience you want next.';
+  }
+
+  if (session.stage === 'reservation_pending' || session.state === 'reservation_pending') {
+    return session.selectedRestaurant
+      ? buildReservationProviderBoundaryReply(session.selectedRestaurant.selectedRestaurantSnapshot.name)
+      : 'I have your restaurant selection saved. The table availability and reservation check is the next step.';
+  }
+
+  if (session.stage === 'results') {
+    const bookSelection = parseNumberedCue(inboundText, 'book');
+    if (bookSelection) {
+      const selectedRestaurant = await sessionService.selectRestaurant(userId, bookSelection);
+      if (!selectedRestaurant) {
+        return 'Please choose from the latest list only: book 1, book 2, or book 3.';
+      }
+
+      return buildReservationProviderBoundaryReply(
+        selectedRestaurant.selectedRestaurantSnapshot.name
+      );
+    }
+
+    const detailsSelection = parseNumberedCue(inboundText, 'details');
+    if (detailsSelection) {
+      const detailsReply = buildRestaurantDetailsReply(session, detailsSelection);
+      return detailsReply ?? 'Please choose from the latest list only: details 1, details 2, or details 3.';
+    }
+
+    if (isNextCue(inboundText)) {
+      const resultBatches = getRestaurantSessionResultBatches(session);
+      const latestDisplayedBatchIndex =
+        typeof session.latestDisplayedBatchIndex === 'number'
+          ? session.latestDisplayedBatchIndex
+          : session.nextOffset
+            ? Math.ceil(session.nextOffset / 3) - 1
+            : -1;
+      const nextBatchIndex = latestDisplayedBatchIndex + 1;
+      const page = resultBatches[nextBatchIndex] ?? [];
+      if (page.length === 0) {
+        return 'I have shown all 9 restaurant suggestions for this search. Which restaurant would you like me to reserve for you? Reply book 1, book 2, or book 3 from the latest list.';
+      }
+
+      const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
+      await sessionService.saveResults(userId, session.criteria, session.results, nextOffset);
+
+      return getRestaurantSearchFlowService().buildBrowseResultsPageReply(
+        session.criteria,
+        page,
+        nextOffset,
+        session.results.length
+      );
+    }
+
+    if (isResumeConversationCue(inboundText)) {
+      return replayRestaurantResults(userId, session);
+    }
+
+    return null;
+  }
+
+  if (session.stage === 'searching') {
+    return 'I am still checking the best restaurant matches for you. I will send the options here as soon as they are ready.';
+  }
+
+  if (session.stage !== 'awaiting_preferences') {
+    return null;
+  }
+
+  if (!hasCompleteRestaurantCriteria(session.criteria)) {
+    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+      return restoreLatestRestaurantRequest(userId);
+    }
+
+    return null;
+  }
+
+  if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+    return buildRestaurantPreferencePrompt(session.criteria);
+  }
+
+  const criteria = {
+    ...session.criteria,
+    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
+  };
+  await sessionService.saveSearching(userId, criteria);
+
+  const acknowledgement =
+    'Let me check on that and get back to you. I am searching the best restaurant matches now and will send the options here shortly.';
+
+  if (getTwilioOutboundService().isConfigured()) {
+    void searchRestaurantsAndNotify(userId, outboundFrom, criteria, correlationId, options);
+    return acknowledgement;
+  }
+
+  const restaurantSearchResult = await searchRestaurants(userId, criteria, correlationId);
+  const nextOffset = restaurantSearchResult.browseResponse?.results.length
+    ? Math.min(3, restaurantSearchResult.browseResponse.results.length)
+    : 0;
+  await saveRestaurantSearchResults(userId, criteria, restaurantSearchResult, nextOffset);
+  return restaurantSearchResult.reply;
+}
+
+async function handleExcursionFormGate(
+  userId: string,
+  userMessage: string,
+  inboundText: string
+): Promise<string | null> {
+  if (isResumeCue(inboundText)) {
+    const restoredExcursionRequest = await restoreLatestExcursionRequest(userId);
+    if (restoredExcursionRequest) {
+      return restoredExcursionRequest;
+    }
+  }
+
+  if (isExcursionRequestMessage(userMessage)) {
+    await clearCompetingSearchSessions(userId, 'excursion');
+    const token = getFormTokenService().createToken(userId, 'excursion');
+    const excursionFormResponse = buildExcursionCollectionResponse(buildExcursionFormLink(token));
+    const profile = await getProfileService().getProfile(userId);
+    await getExcursionSearchSessionService().saveExcursionFormSent(
+      userId,
+      userMessage,
+      profile?.form
+    );
+
+    return excursionFormResponse;
+  }
+
+  return null;
+}
+
+async function handleActiveExcursionSearchSession(
+  userId: string,
+  outboundFrom: string,
+  userMessage: string,
+  inboundText: string,
+  correlationId: string,
+  activeSession?: ExcursionSearchSession | null,
+  options: { voicePreferred?: boolean } = {}
+): Promise<string | null> {
+  const sessionService = getExcursionSearchSessionService();
+  const session = activeSession ?? (await sessionService.get(userId));
+
+  if (!session || isGreeting(inboundText)) return null;
+
+  if (isResetCue(inboundText)) {
+    await sessionService.clear(userId);
+    return 'I have cleared the excursion search. Tell me what kind of experience you want next.';
+  }
+
+  if (session.stage === 'provider_pending' || session.state === 'provider_pending') {
+    return "I've prepared your booking request. I'll now contact the experience provider and confirm availability before completing your booking.";
+  }
+
+  if (session.stage === 'booking_form' || session.state === 'booking_form') {
+    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+      return "I'm waiting for the booking request form. Please complete it, then return here and type \"done\".";
+    }
+  }
+
+  if (session.stage === 'results') {
+    const bookSelection = parseNumberedCue(inboundText, 'book');
+    if (bookSelection) {
+      const selectedExperience = await sessionService.selectExperience(userId, bookSelection);
+      if (!selectedExperience) {
+        return 'Please choose from the latest list only: book 1, book 2, or book 3.';
+      }
+
+      const token = getFormTokenService().createToken(userId, 'excursion_booking');
+      return buildExcursionBookingCollectionResponse(buildExcursionBookingFormLink(token));
+    }
+
+    const detailsSelection = parseNumberedCue(inboundText, 'details');
+    if (detailsSelection) {
+      return buildExcursionDetailsReply(session, detailsSelection) ??
+        'Please choose from the latest list only: details 1, details 2, or details 3.';
+    }
+
+    if (isNextCue(inboundText)) {
+      const resultBatches = getExcursionSessionResultBatches(session);
+      const latestDisplayedBatchIndex =
+        typeof session.latestDisplayedBatchIndex === 'number'
+          ? session.latestDisplayedBatchIndex
+          : session.nextOffset
+            ? Math.ceil(session.nextOffset / 3) - 1
+            : -1;
+      const nextBatchIndex = latestDisplayedBatchIndex + 1;
+      const page = resultBatches[nextBatchIndex] ?? [];
+      if (page.length === 0) {
+        return 'I have shown all 9 experience suggestions for this search. Which experience would you like me to help you book? Reply book 1, book 2, or book 3 from the latest list.';
+      }
+
+      const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
+      await sessionService.saveResults(userId, session.criteria, session.results, nextOffset);
+
+      return getExcursionSearchFlowService().buildBrowseResultsPageReply(
+        session.criteria,
+        page,
+        nextOffset,
+        session.results.length
+      );
+    }
+
+    if (isResumeConversationCue(inboundText)) {
+      return replayExcursionResults(userId, session);
+    }
+
+    return null;
+  }
+
+  if (session.stage === 'searching') {
+    return 'I am still checking the best experience matches for you. I will send the options here as soon as they are ready.';
+  }
+
+  if (session.stage !== 'awaiting_preferences') return null;
+
+  if (!hasCompleteExcursionCriteria(session.criteria)) {
+    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+      return restoreLatestExcursionRequest(userId);
+    }
+    return null;
+  }
+
+  if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+    return buildExcursionPreferencePrompt(session.criteria);
+  }
+
+  const criteria = {
+    ...session.criteria,
+    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
+  };
+  await sessionService.saveSearching(userId, criteria);
+
+  const acknowledgement =
+    'Let me check on that and get back to you. I am searching the best experience matches now and will send the options here shortly.';
+
+  if (getTwilioOutboundService().isConfigured()) {
+    void searchExcursionsAndNotify(userId, outboundFrom, criteria, correlationId, options);
+    return acknowledgement;
+  }
+
+  const excursionSearchResult = await searchExcursions(userId, criteria, correlationId);
+  const nextOffset = excursionSearchResult.browseResponse?.results.length
+    ? Math.min(3, excursionSearchResult.browseResponse.results.length)
+    : 0;
+  await saveExcursionSearchResults(userId, criteria, excursionSearchResult, nextOffset);
+  return excursionSearchResult.reply;
+}
+
+async function handleActiveHotelSearchSession(
+  userId: string,
+  outboundFrom: string,
+  inboundText: string,
+  correlationId: string,
+  activeSession?: HotelSearchSession | null,
+  options: { voicePreferred?: boolean } = {}
 ): Promise<string | null> {
   const sessionService = getHotelSearchSessionService();
   const session = activeSession ?? (await sessionService.get(userId));
@@ -464,6 +1240,23 @@ async function handleActiveHotelSearchSession(
   }
 
   if (isGreeting(inboundText)) {
+    return null;
+  }
+
+  if (session.state === 'profile_required') {
+    return null;
+  }
+
+  if (session.state === 'hotel_form_sent') {
+    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+      const restoredHotelRequest = await restoreLatestHotelRequest(userId);
+      if (restoredHotelRequest) {
+        return restoredHotelRequest;
+      }
+
+      return 'I am still waiting for the hotel request form details. Please complete the hotel form link I sent, then return here and type "done".';
+    }
+
     return null;
   }
 
@@ -543,6 +1336,17 @@ async function handleActiveHotelSearchSession(
     return null;
   }
 
+  if (!hasCompleteHotelCriteria(session.criteria)) {
+    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+      const restoredHotelRequest = await restoreLatestHotelRequest(userId);
+      if (restoredHotelRequest) {
+        return restoredHotelRequest;
+      }
+    }
+
+    return null;
+  }
+
   if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
     return buildHotelPreferencePrompt(session.criteria);
   }
@@ -554,10 +1358,10 @@ async function handleActiveHotelSearchSession(
   await sessionService.saveSearching(userId, criteria);
 
   const acknowledgement =
-    'Just a moment while I check the best matches for you. I will send the top options here shortly.';
+    'Let me check on that and get back to you. I am searching the best hotel matches now and will send the options here shortly.';
 
   if (getTwilioOutboundService().isConfigured()) {
-    void searchHotelsAndNotify(userId, criteria, correlationId);
+    void searchHotelsAndNotify(userId, outboundFrom, criteria, correlationId, options);
     return acknowledgement;
   }
 
@@ -655,6 +1459,153 @@ async function routeActiveConversationWithLlm(
   return null;
 }
 
+async function handleLogisticsFormGate(
+  userId: string,
+  userMessage: string,
+  inboundText: string
+): Promise<string | null> {
+  if (isResumeCue(inboundText)) {
+    const restoredLogisticsRequest = await restoreLatestLogisticsRequest(userId);
+    if (restoredLogisticsRequest) {
+      return restoredLogisticsRequest;
+    }
+  }
+
+  if (isLogisticsRequestMessage(userMessage)) {
+    await clearCompetingSearchSessions(userId, 'logistics');
+    const token = getFormTokenService().createToken(userId, 'logistics');
+    const logisticsFormResponse = buildLogisticsCollectionResponse(buildLogisticsFormLink(token));
+    const profile = await getProfileService().getProfile(userId);
+    await getLogisticsSearchSessionService().saveTransportFormSent(
+      userId,
+      userMessage,
+      profile?.form
+    );
+
+    return logisticsFormResponse;
+  }
+
+  return null;
+}
+
+async function handleActiveLogisticsSearchSession(
+  userId: string,
+  outboundFrom: string,
+  userMessage: string,
+  inboundText: string,
+  correlationId: string,
+  activeSession?: LogisticsSearchSession | null,
+  options: { voicePreferred?: boolean } = {}
+): Promise<string | null> {
+  const sessionService = getLogisticsSearchSessionService();
+  const session = activeSession ?? (await sessionService.get(userId));
+
+  if (!session || isGreeting(inboundText)) return null;
+
+  if (isResetCue(inboundText)) {
+    await sessionService.clear(userId);
+    return 'I have cleared the transport search. Tell me what journey you want next.';
+  }
+
+  if (session.stage === 'provider_pending' || session.state === 'provider_pending') {
+    return "I've prepared your transport booking. The next step is to check live availability and confirm pricing with the transport provider.";
+  }
+
+  if (session.stage === 'booking_form') {
+    return 'I have your transport option selected. Please complete the booking request form so I can prepare the provider availability check.';
+  }
+
+  if (session.stage === 'results') {
+    const bookSelection = parseNumberedCue(inboundText, 'book');
+    if (bookSelection) {
+      const selectedOption = await sessionService.selectOption(userId, bookSelection);
+      if (!selectedOption) {
+        return 'Please choose from the latest list only: book 1, book 2, or book 3.';
+      }
+
+      const token = getFormTokenService().createToken(userId, 'logistics_booking');
+      return buildLogisticsBookingCollectionResponse(buildLogisticsBookingFormLink(token));
+    }
+
+    const detailsSelection = parseNumberedCue(inboundText, 'details');
+    if (detailsSelection) {
+      return buildLogisticsDetailsReply(session, detailsSelection) ??
+        'Please choose from the latest list only: details 1, details 2, or details 3.';
+    }
+
+    if (isNextCue(inboundText)) {
+      const resultBatches = getLogisticsSessionResultBatches(session);
+      const latestDisplayedBatchIndex =
+        typeof session.latestDisplayedBatchIndex === 'number'
+          ? session.latestDisplayedBatchIndex
+          : session.nextOffset
+            ? Math.ceil(session.nextOffset / 3) - 1
+            : -1;
+      const nextBatchIndex = latestDisplayedBatchIndex + 1;
+      const page = resultBatches[nextBatchIndex] ?? [];
+      if (page.length === 0) {
+        return 'I have shown all 9 transport suggestions for this search. Which transport option would you like me to arrange? Reply book 1, book 2, or book 3 from the latest list.';
+      }
+
+      const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
+      await sessionService.saveResults(userId, session.criteria, session.results, nextOffset);
+
+      return getLogisticsSearchFlowService().buildOptionsPageReply(
+        session.criteria,
+        page,
+        nextOffset,
+        session.results.length
+      );
+    }
+
+    if (isResumeConversationCue(inboundText)) {
+      return replayLogisticsResults(userId, session);
+    }
+
+    return null;
+  }
+
+  if (session.stage === 'searching') {
+    return 'I am still checking the best transport matches for you. I will send the options here as soon as they are ready.';
+  }
+
+  if (session.stage !== 'awaiting_preferences') {
+    return null;
+  }
+
+  if (!hasCompleteLogisticsCriteria(session.criteria)) {
+    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+      return restoreLatestLogisticsRequest(userId);
+    }
+    return null;
+  }
+
+  if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+    return buildLogisticsPreferencePrompt(session.criteria);
+  }
+
+  const criteria = {
+    ...session.criteria,
+    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
+  };
+  await sessionService.saveSearching(userId, criteria);
+
+  const acknowledgement =
+    'Let me check on that and get back to you. I am searching the best transport matches now and will send the options here shortly.';
+
+  if (getTwilioOutboundService().isConfigured()) {
+    void searchLogisticsAndNotify(userId, outboundFrom, criteria, correlationId, options);
+    return acknowledgement;
+  }
+
+  const logisticsSearchResult = await searchLogistics(userId, criteria, correlationId);
+  const nextOffset = logisticsSearchResult.options?.length
+    ? Math.min(3, logisticsSearchResult.options.length)
+    : 0;
+  await saveLogisticsSearchResults(userId, criteria, logisticsSearchResult, nextOffset);
+  return logisticsSearchResult.reply;
+}
+
 function shouldAskLlmToRouteActiveMessage(
   message: string,
   activeHotelSession: HotelSearchSession
@@ -691,6 +1642,7 @@ function shouldTreatHotelRequestAsNewSearch(
 
 async function startFreshHotelSearch(userId: string, userMessage: string): Promise<string> {
   await getHotelSearchSessionService().clear(userId);
+  await clearCompetingSearchSessions(userId, 'hotel');
   await getPendingRequestService().clearProfileGateRequest(userId);
 
   const token = getFormTokenService().createToken(userId, 'hotel');
@@ -705,11 +1657,36 @@ async function startFreshHotelSearch(userId: string, userMessage: string): Promi
   return `Of course. I'll start a fresh hotel search.\n\n${hotelFormResponse}`;
 }
 
+async function clearCompetingSearchSessions(
+  userId: string,
+  activeType: 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary'
+): Promise<void> {
+  if (activeType !== 'hotel') {
+    await getHotelSearchSessionService().clear(userId);
+  }
+  if (activeType !== 'restaurant') {
+    await getRestaurantSearchSessionService().clear(userId);
+  }
+  if (activeType !== 'excursion') {
+    await getExcursionSearchSessionService().clear(userId);
+  }
+  if (activeType !== 'logistics') {
+    await getLogisticsSearchSessionService().clear(userId);
+  }
+  if (activeType !== 'itinerary') {
+    await getItinerarySessionService().clear(userId);
+  }
+}
+
 async function resetConversation(
   userId: string,
   userContext: InboundUserContext
 ): Promise<string> {
   await getHotelSearchSessionService().clear(userId);
+  await getRestaurantSearchSessionService().clear(userId);
+  await getExcursionSearchSessionService().clear(userId);
+  await getLogisticsSearchSessionService().clear(userId);
+  await getItinerarySessionService().clear(userId);
   await getPendingRequestService().clearProfileGateRequest(userId);
 
   return `${buildWelcomeMessage(userContext)}\n\nI have cleared the active request. Tell me what you would like to do next, or say "resume" if you want me to check for a saved request.`;
@@ -723,6 +1700,10 @@ async function resumeConversation(userId: string): Promise<string | null> {
   }
 
   if (hotelSession.stage === 'awaiting_preferences') {
+    if (!hasCompleteHotelCriteria(hotelSession.criteria)) {
+      return restoreLatestHotelRequest(userId);
+    }
+
     return buildHotelPreferencePrompt(hotelSession.criteria);
   }
 
@@ -763,18 +1744,88 @@ async function restoreLatestHotelRequest(userId: string): Promise<string | null>
   return buildHotelPreferencePrompt(criteria);
 }
 
+async function restoreLatestRestaurantRequest(userId: string): Promise<string | null> {
+  const latestRestaurantRequest = await getProfileService().getLatestServiceRequest(
+    userId,
+    'restaurant'
+  );
+
+  if (latestRestaurantRequest?.type !== 'restaurant') {
+    return null;
+  }
+
+  const criteria = mapRestaurantRequestFormToCriteria(
+    latestRestaurantRequest.form as RestaurantRequestForm
+  );
+  await getRestaurantSearchSessionService().saveAwaitingPreferences(userId, criteria);
+  return buildRestaurantPreferencePrompt(criteria);
+}
+
+async function restoreLatestItineraryRequest(userId: string): Promise<string | null> {
+  const latestItineraryRequest = await getProfileService().getLatestServiceRequest(
+    userId,
+    'itinerary'
+  );
+
+  if (latestItineraryRequest?.type !== 'itinerary') return null;
+
+  const criteria = mapItineraryRequestFormToCriteria(
+    latestItineraryRequest.form as ItineraryRequestForm
+  );
+  await getItinerarySessionService().saveAwaitingPreferences(userId, criteria);
+  return buildItineraryPreferencePrompt(criteria);
+}
+
+async function restoreLatestExcursionRequest(userId: string): Promise<string | null> {
+  const latestExcursionRequest = await getProfileService().getLatestServiceRequest(
+    userId,
+    'excursion'
+  );
+
+  if (latestExcursionRequest?.type !== 'excursion') {
+    return null;
+  }
+
+  const criteria = mapExcursionRequestFormToCriteria(
+    latestExcursionRequest.form as ExcursionRequestForm
+  );
+  await getExcursionSearchSessionService().saveAwaitingPreferences(userId, criteria);
+  return buildExcursionPreferencePrompt(criteria);
+}
+
+async function restoreLatestLogisticsRequest(userId: string): Promise<string | null> {
+  const latestLogisticsRequest = await getProfileService().getLatestServiceRequest(
+    userId,
+    'logistics'
+  );
+
+  if (latestLogisticsRequest?.type !== 'logistics') {
+    return null;
+  }
+
+  const criteria = mapLogisticsRequestFormToCriteria(
+    latestLogisticsRequest.form as LogisticsRequestForm
+  );
+  await getLogisticsSearchSessionService().saveAwaitingPreferences(userId, criteria);
+  return buildLogisticsPreferencePrompt(criteria);
+}
+
 async function searchHotelsAndNotify(
   userId: string,
+  outboundFrom: string,
   criteria: HotelSearchCriteria,
-  correlationId: string
+  correlationId: string,
+  options: { voicePreferred?: boolean } = {}
 ): Promise<void> {
   try {
     const hotelSearchResult = await searchHotels(userId, criteria, correlationId);
 
     if (hotelSearchResult.browseResponse?.results.length) {
-      const delivered = await getTwilioOutboundService().sendWhatsAppText(
+      const firstPage = hotelSearchResult.browseResponse.results.slice(0, 3);
+      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
         userId,
-        hotelSearchResult.reply
+        buildHotelResultCardReply(criteria, firstPage, hotelSearchResult.reply),
+        { voice: options.voicePreferred, from: outboundFrom }
       );
       await saveHotelSearchResults(
         userId,
@@ -785,12 +1836,17 @@ async function searchHotelsAndNotify(
       return;
     }
 
-    await getTwilioOutboundService().sendWhatsAppText(userId, hotelSearchResult.reply);
+    await getTwilioOutboundService().sendWhatsAppReply(
+      userId,
+      hotelSearchResult.reply,
+      { voice: options.voicePreferred, from: outboundFrom }
+    );
   } catch (error) {
     console.error(`[${correlationId}] Hotel search failed after async acknowledgement:`, error);
-    await getTwilioOutboundService().sendWhatsAppText(
+    await getTwilioOutboundService().sendWhatsAppReply(
       userId,
-      'I am sorry, the hotel search failed while I was checking options. Your form details are saved, so please type "search again" and I will retry.'
+      'I am sorry, the hotel search failed while I was checking options. Your form details are saved, so please type "search again" and I will retry.',
+      { voice: options.voicePreferred, from: outboundFrom }
     );
   }
 }
@@ -801,6 +1857,173 @@ function searchHotels(
   correlationId: string
 ): Promise<HotelSearchFlowResult> {
   return getHotelSearchFlowService().handleBrowseSearch(criteria, {
+    correlationId,
+    sessionId: userId,
+    userLanguage: 'en',
+  });
+}
+
+async function planItinerary(
+  _userId: string,
+  criteria: ItineraryCriteria,
+  _correlationId: string
+): Promise<GeneratedItinerary> {
+  return getItineraryPlannerService().plan(criteria);
+}
+
+async function searchRestaurantsAndNotify(
+  userId: string,
+  outboundFrom: string,
+  criteria: RestaurantSearchCriteria,
+  correlationId: string,
+  options: { voicePreferred?: boolean } = {}
+): Promise<void> {
+  try {
+    const restaurantSearchResult = await searchRestaurants(userId, criteria, correlationId);
+
+    if (restaurantSearchResult.browseResponse?.results.length) {
+      const firstPage = restaurantSearchResult.browseResponse.results.slice(0, 3);
+      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
+        userId,
+        buildRestaurantResultCardReply(criteria, firstPage),
+        { voice: options.voicePreferred, from: outboundFrom }
+      );
+      await saveRestaurantSearchResults(
+        userId,
+        criteria,
+        restaurantSearchResult,
+        delivered ? Math.min(3, restaurantSearchResult.browseResponse.results.length) : 0
+      );
+      return;
+    }
+
+    await getTwilioOutboundService().sendWhatsAppReply(
+      userId,
+      restaurantSearchResult.reply,
+      { voice: options.voicePreferred, from: outboundFrom }
+    );
+  } catch (error) {
+    console.error(`[${correlationId}] Restaurant search failed after async acknowledgement:`, error);
+    await getTwilioOutboundService().sendWhatsAppReply(
+      userId,
+      'I am sorry, the restaurant search failed while I was checking options. Your dining details are saved, so please type "search again" and I will retry.',
+      { voice: options.voicePreferred, from: outboundFrom }
+    );
+  }
+}
+
+function searchRestaurants(
+  userId: string,
+  criteria: RestaurantSearchCriteria,
+  correlationId: string
+): Promise<RestaurantSearchFlowResult> {
+  return getRestaurantSearchFlowService().handleBrowseSearch(criteria, {
+    correlationId,
+    sessionId: userId,
+    userLanguage: 'en',
+  });
+}
+
+async function searchExcursionsAndNotify(
+  userId: string,
+  outboundFrom: string,
+  criteria: ExcursionSearchCriteria,
+  correlationId: string,
+  options: { voicePreferred?: boolean } = {}
+): Promise<void> {
+  try {
+    const excursionSearchResult = await searchExcursions(userId, criteria, correlationId);
+
+    if (excursionSearchResult.browseResponse?.results.length) {
+      const firstPage = excursionSearchResult.browseResponse.results.slice(0, 3);
+      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
+        userId,
+        buildExcursionResultCardReply(criteria, firstPage),
+        { voice: options.voicePreferred, from: outboundFrom }
+      );
+      await saveExcursionSearchResults(
+        userId,
+        criteria,
+        excursionSearchResult,
+        delivered ? Math.min(3, excursionSearchResult.browseResponse.results.length) : 0
+      );
+      return;
+    }
+
+    await getTwilioOutboundService().sendWhatsAppReply(
+      userId,
+      excursionSearchResult.reply,
+      { voice: options.voicePreferred, from: outboundFrom }
+    );
+  } catch (error) {
+    console.error(`[${correlationId}] Excursion search failed after async acknowledgement:`, error);
+    await getTwilioOutboundService().sendWhatsAppReply(
+      userId,
+      'I am sorry, the experience search failed while I was checking options. Your excursion details are saved, so please type "search again" and I will retry.',
+      { voice: options.voicePreferred, from: outboundFrom }
+    );
+  }
+}
+
+function searchExcursions(
+  userId: string,
+  criteria: ExcursionSearchCriteria,
+  correlationId: string
+): Promise<ExcursionSearchFlowResult> {
+  return getExcursionSearchFlowService().handleBrowseSearch(criteria, {
+    correlationId,
+    sessionId: userId,
+    userLanguage: 'en',
+  });
+}
+
+async function searchLogisticsAndNotify(
+  userId: string,
+  outboundFrom: string,
+  criteria: LogisticsSearchCriteria,
+  correlationId: string,
+  options: { voicePreferred?: boolean } = {}
+): Promise<void> {
+  try {
+    const logisticsSearchResult = await searchLogistics(userId, criteria, correlationId);
+
+    if (logisticsSearchResult.options?.length) {
+      const firstPage = logisticsSearchResult.options.slice(0, 3);
+      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
+        userId,
+        buildLogisticsResultCardReply(criteria, firstPage),
+        { voice: options.voicePreferred, from: outboundFrom }
+      );
+      await saveLogisticsSearchResults(
+        userId,
+        criteria,
+        logisticsSearchResult,
+        delivered ? Math.min(3, logisticsSearchResult.options.length) : 0
+      );
+      return;
+    }
+
+    await getTwilioOutboundService().sendWhatsAppReply(
+      userId,
+      logisticsSearchResult.reply,
+      { voice: options.voicePreferred, from: outboundFrom }
+    );
+  } catch (error) {
+    console.error(`[${correlationId}] Transport search failed after async acknowledgement:`, error);
+    await getTwilioOutboundService().sendWhatsAppReply(
+      userId,
+      'I am sorry, the transport search failed while I was checking options. Your transport details are saved, so please type "search again" and I will retry.',
+      { voice: options.voicePreferred, from: outboundFrom }
+    );
+  }
+}
+
+function searchLogistics(
+  userId: string,
+  criteria: LogisticsSearchCriteria,
+  correlationId: string
+): Promise<LogisticsSearchFlowResult> {
+  return getLogisticsSearchFlowService().handleProviderSearch(criteria, {
     correlationId,
     sessionId: userId,
     userLanguage: 'en',
@@ -818,6 +2041,54 @@ async function saveHotelSearchResults(
       userId,
       criteria,
       hotelSearchResult.browseResponse.results,
+      nextOffset
+    );
+  }
+}
+
+async function saveRestaurantSearchResults(
+  userId: string,
+  criteria: RestaurantSearchCriteria,
+  restaurantSearchResult: RestaurantSearchFlowResult,
+  nextOffset: number
+): Promise<void> {
+  if (restaurantSearchResult.browseResponse?.results.length) {
+    await getRestaurantSearchSessionService().saveResults(
+      userId,
+      criteria,
+      restaurantSearchResult.browseResponse.results,
+      nextOffset
+    );
+  }
+}
+
+async function saveExcursionSearchResults(
+  userId: string,
+  criteria: ExcursionSearchCriteria,
+  excursionSearchResult: ExcursionSearchFlowResult,
+  nextOffset: number
+): Promise<void> {
+  if (excursionSearchResult.browseResponse?.results.length) {
+    await getExcursionSearchSessionService().saveResults(
+      userId,
+      criteria,
+      excursionSearchResult.browseResponse.results,
+      nextOffset
+    );
+  }
+}
+
+async function saveLogisticsSearchResults(
+  userId: string,
+  criteria: LogisticsSearchCriteria,
+  logisticsSearchResult: LogisticsSearchFlowResult,
+  nextOffset: number
+): Promise<void> {
+  if (logisticsSearchResult.options?.length) {
+    await getLogisticsSearchSessionService().saveResults(
+      userId,
+      criteria,
+      logisticsSearchResult.options,
       nextOffset
     );
   }
@@ -977,8 +2248,29 @@ function parseNumberedCue(message: string, action: 'book' | 'details'): number |
   return match ? Number(match[1]) : null;
 }
 
+function parseDayCue(message: string): number | null {
+  const match = message.toLowerCase().trim().match(/^(?:show\s*)?day\s*([1-9][0-9]?)$/);
+  return match ? Number(match[1]) : null;
+}
+
+function isNextDayCue(message: string): boolean {
+  return /^(next day|tomorrow|show next day)$/i.test(message.trim());
+}
+
+function isItineraryEditCue(message: string): boolean {
+  return /\b(change|more|less|add|remove|replace|avoid|luxury|budget|beach|safari|hiking|driving|hotel|restaurant|transport|activity|family friendly|sunrise)\b/i.test(
+    message
+  );
+}
+
+function isBookingIntentCue(message: string): boolean {
+  return /\b(book hotels?|book transport|book excursions?|book restaurants?|reserve|booking)\b/i.test(
+    message
+  );
+}
+
 function isNoExtraPreferenceCue(message: string): boolean {
-  return /^(no|none|nothing|nope|no extra|no preferences|nothing else|search|start search|go ahead)$/i.test(
+  return /^(no|no thanks|none|nothing|nope|no extra|no preferences|nothing else|search|start search|start planning|plan it|go ahead|go ahead and plan)$/i.test(
     message.trim()
   );
 }
@@ -987,8 +2279,64 @@ function isHotelRequestMessage(message: string): boolean {
   return /\b(hotel|stay|accommodation|room|resort|bnb|b&b)\b/i.test(message);
 }
 
+function isRestaurantRequestMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /\b(hungry|food|restaurant|eat|place to eat|where can we eat|where should we eat|breakfast|lunch|dinner|brunch|coffee|cafe|fine dining|seafood|pizza|burger|romantic dinner|romantic place|family dinner|vegetarian|vegan|buffet|steak|sushi|indian food|chinese food|sri lankan food|italian|mexican|thai|bbq|somewhere for dinner|good seafood|romantic restaurant|somewhere nice|craving)\b/i.test(
+    normalized
+  );
+}
+
+function isItineraryRequestMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /\b(plan my trip|plan my holiday|plan my itinerary|travel around|7 day itinerary|10 day itinerary|where should i go|things to see|tour sri lanka|family holiday|honeymoon|backpacking|road trip|vacation|holiday planning|travel plan|trip planner|planning my trip|visiting sri lanka|visit sri lanka|i'?ll be here for a week|travelling around sri lanka|traveling around sri lanka|need help planning|full itinerary|itinerary)\b/i.test(
+    normalized
+  );
+}
+
+function isExcursionRequestMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /\b(things to do|activities|excursions?|tour|tour guide|day trip|experience|adventure|historic places|history|temples?|forts?|museum|culture|culture tour|nature|wildlife|national park|safari|elephants?|leopards?|bird watching|whale watching|dolphins?|beach|surfing|snorkell?ing|scuba diving|diving|kayaking|rafting|hiking|trekking|mountain|waterfall|camping|cycling|shopping|markets?|gem shopping|tea factory|tea plantation|train ride|ella train|photography|sunrise|sunset|wellness|spa|yoga|meditation|nightlife|festival|concert|event|family activities|kids activities|romantic experiences|private tour|group tour|best things|visit historic|go surfing|wife loves wildlife|looking for adventure)\b/i.test(
+    normalized
+  );
+}
+
+function isLogisticsRequestMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /\b(taxi|uber|pick me up|ride|transport|driver|chauffeur|airport transfer|airport pickup|airport drop|car|rent a car|vehicle|van|minibus|bus|train|book transport|take me|need a ride|pickup|pick up|drop off|dropoff|travel from|go to|how do i get there|transfer|private driver|luxury transfer|family transport|coach|boat transfer|ferry|motorbike rental|bike rental|airport|arrange a van|chauffeur for the day|transport for six|transport for 6)\b/i.test(
+    normalized
+  );
+}
+
 function isHotelRelatedIntent(intent: string): boolean {
   return /hotel|stay|check_?in|check_?out|guest|pax|meal|board|budget|room/i.test(intent);
+}
+
+function isRestaurantRelatedIntent(intent: string): boolean {
+  return /restaurant|dining|dinner|lunch|breakfast|brunch|food|cuisine|cafe|coffee|reservation/i.test(intent);
+}
+
+function isItineraryRelatedIntent(intent: string): boolean {
+  return /itinerary|trip_?planning|travel_?planning|holiday|vacation|road_?trip|tour_plan|planner/i.test(intent);
+}
+
+function isExcursionRelatedIntent(intent: string): boolean {
+  return /excursion|activity|experience|tour|adventure|safari|wildlife|culture|history|temple|museum|surf|diving|hiking|shopping|wellness|nightlife|event/i.test(intent);
+}
+
+function isLogisticsRelatedIntent(intent: string): boolean {
+  return /logistics|transport|transfer|taxi|ride|driver|chauffeur|airport|pickup|drop|vehicle|car|van|bus|train|ferry|uber|bolt|pickme/i.test(intent);
+}
+
+function isGeneralInquiryIntent(intent: string): boolean {
+  return /general|inquiry|trip|itinerary|travel_planning/i.test(intent);
+}
+
+function isLowConfidenceDecision(decision: { confidence: number; intent: string }): boolean {
+  return decision.confidence < 0.5 || /\b(unknown|unclear)\b/i.test(decision.intent);
+}
+
+function isTripPlanningPrompt(message: string): boolean {
+  return isItineraryRequestMessage(message) || /\b(plan|planning|itinerary|trip|holiday|vacation)\b/i.test(message);
 }
 
 function buildWelcomeMessage(context: InboundUserContext): string {
@@ -1012,14 +2360,18 @@ async function buildPostProfileGreeting(
 }
 
 function buildHotelPreferencePrompt(criteria: HotelSearchCriteria): string {
+  if (!hasCompleteHotelCriteria(criteria)) {
+    return 'I do not have the completed hotel search form details yet. Please complete the hotel form link I sent, or tell me the destination, dates, guests, rooms, and budget so I can continue.';
+  }
+
   return [
     "Great! I've gathered the following details from your search form:",
     '',
-    `Destination: ${criteria.location ?? 'Not provided'}`,
-    `Check-in: ${criteria.checkinDate ?? 'Not provided'}`,
-    `Check-out: ${criteria.checkoutDate ?? 'Not provided'}`,
-    `Guests: ${criteria.guests ?? 'Not provided'}`,
-    `Rooms: ${criteria.rooms ?? 'Not provided'}`,
+    `Destination: ${criteria.location}`,
+    `Check-in: ${criteria.checkinDate}`,
+    `Check-out: ${criteria.checkoutDate}`,
+    `Guests: ${criteria.guests}`,
+    `Rooms: ${criteria.rooms}`,
     `Meal Plan: ${criteria.boardBasis ? formatBoardBasisForUser(criteria.boardBasis) : 'No preference'}`,
     `Preferred Rating: ${criteria.starRating ?? 'No preference'}`,
     `Budget Per Night: ${criteria.budgetPerNight ? `${criteria.budgetPerNight.currency} ${criteria.budgetPerNight.amount}` : 'Not provided'}`,
@@ -1034,6 +2386,192 @@ function buildHotelPreferencePrompt(criteria: HotelSearchCriteria): string {
     '',
     'Reply with your preferences, or type "no" and I will start searching.',
   ].join('\n');
+}
+
+function buildRestaurantPreferencePrompt(criteria: RestaurantSearchCriteria): string {
+  if (!hasCompleteRestaurantCriteria(criteria)) {
+    return 'I do not have the completed restaurant search details yet. Please complete the restaurant form link I sent, or tell me the location, date, time, guests, cuisine, and budget so I can continue.';
+  }
+
+  return [
+    'Great!',
+    '',
+    "I've gathered the following dining preferences:",
+    '',
+    `Location: ${criteria.location}`,
+    `Date: ${criteria.diningDate}`,
+    `Time: ${criteria.diningTime}`,
+    `Guests: ${criteria.guests}`,
+    `Cuisine: ${criteria.cuisine ?? 'No preference'}`,
+    `Setting: ${criteria.diningStyle ?? 'No preference'}`,
+    `Budget: ${criteria.priceRange ?? 'No preference'}`,
+    `Seating: ${criteria.indoorOutdoor ?? 'No preference'}`,
+    '',
+    "Before I start searching, is there anything else you'd like me to consider?",
+    '',
+    'For example:',
+    '',
+    'live music',
+    'ocean view',
+    'family friendly',
+    'quiet atmosphere',
+    'child friendly',
+    'pet friendly',
+    'wine selection',
+    'sunset dining',
+    '',
+    'Reply with your preferences, or type "no" and I will start searching.',
+  ].join('\n');
+}
+
+function buildItineraryPreferencePrompt(criteria: ItineraryCriteria): string {
+  if (!hasCompleteItineraryCriteria(criteria)) {
+    return 'I do not have the completed trip planning details yet. Please complete the itinerary form link I sent, or tell me your arrival, departure, guests, budget, transport, and main interests.';
+  }
+
+  const guestParts = [
+    criteria.adults ? `${criteria.adults} Adults` : undefined,
+    criteria.children ? `${criteria.children} Children` : undefined,
+  ].filter(Boolean);
+
+  return [
+    'Wonderful!',
+    '',
+    "I've gathered the following:",
+    '',
+    `Arrival date: ${criteria.arrivalDate}`,
+    `Departure date: ${criteria.departureDate}`,
+    `Guests: ${guestParts.join(', ') || 'Not specified'}`,
+    '',
+    'Interests:',
+    ...(criteria.interests?.length ? criteria.interests : ['Mixed']),
+    '',
+    `Budget: ${criteria.budget ?? 'No preference'}`,
+    `Preferred Transport: ${criteria.preferredTransport ?? 'No preference'}`,
+    '',
+    'I will map this as a round trip from BIA and bring you back close to the airport before departure.',
+    '',
+    'You can still edit it after I send the plan: more beach time, less driving, add safari, remove nightlife, change day 3, or book hotels.',
+  ].join('\n');
+}
+
+function buildExcursionPreferencePrompt(criteria: ExcursionSearchCriteria): string {
+  if (!hasCompleteExcursionCriteria(criteria)) {
+    return 'I do not have the completed excursion details yet. Please complete the excursion form link I sent, or tell me the destination, date, time, guests, activity type, and budget so I can continue.';
+  }
+
+  return [
+    'Great!',
+    '',
+    "I've gathered the following excursion preferences:",
+    '',
+    `Destination: ${criteria.destination}`,
+    `Date: ${criteria.preferredDate}`,
+    `Time: ${criteria.preferredTime}`,
+    `Guests: ${criteria.guests}`,
+    `Experience: ${criteria.category ?? 'No preference'}`,
+    `Duration: ${criteria.duration ?? 'No preference'}`,
+    `Pickup: ${criteria.pickupLocation ?? 'No preference'}`,
+    `Budget: ${criteria.budget ?? 'No preference'}`,
+    '',
+    "Before I start searching, is there anything else you'd like me to consider?",
+    '',
+    'Examples:',
+    '',
+    'beginner friendly',
+    'private guide',
+    'photography spots',
+    'less crowded',
+    'sunset experience',
+    'wildlife focus',
+    'local culture',
+    '',
+    'Reply with your preferences, or type "no" and I will start searching.',
+  ].join('\n');
+}
+
+function buildLogisticsPreferencePrompt(criteria: LogisticsSearchCriteria): string {
+  if (!hasCompleteLogisticsCriteria(criteria)) {
+    return 'I do not have the completed transport details yet. Please complete the transport form link I sent, or tell me the pickup, destination, date, time, passengers, and vehicle preference so I can continue.';
+  }
+
+  return [
+    'Great!',
+    '',
+    "I've gathered your transport details:",
+    '',
+    `Pickup: ${criteria.pickupLocation}`,
+    `Destination: ${criteria.destination}`,
+    `Date: ${criteria.pickupDate}`,
+    `Time: ${criteria.pickupTime}`,
+    `Passengers: ${criteria.passengers}`,
+    `Vehicle: ${criteria.vehicleType ?? 'No preference'}`,
+    `Luggage: ${criteria.luggage ?? 'No preference'}`,
+    '',
+    "Before I start looking for the best transport option, is there anything else you'd like me to consider?",
+    '',
+    'Examples:',
+    '',
+    'child seat',
+    'luxury vehicle',
+    'English-speaking driver',
+    'multiple stops',
+    'pet friendly',
+    '',
+    'Reply with your preferences, or type "no" and I will start searching.',
+  ].join('\n');
+}
+
+function hasCompleteHotelCriteria(criteria: HotelSearchCriteria): boolean {
+  return Boolean(
+    criteria.location &&
+      criteria.checkinDate &&
+      criteria.checkoutDate &&
+      criteria.guests &&
+      criteria.rooms
+  );
+}
+
+function hasCompleteRestaurantCriteria(criteria: RestaurantSearchCriteria): boolean {
+  return Boolean(
+    criteria.location &&
+      criteria.diningDate &&
+      criteria.diningTime &&
+      criteria.guests &&
+      criteria.priceRange
+  );
+}
+
+function hasCompleteItineraryCriteria(criteria: ItineraryCriteria): boolean {
+  return Boolean(
+    criteria.arrivalDate?.trim() &&
+      criteria.arrivalTime?.trim() &&
+      criteria.departureDate?.trim() &&
+      criteria.departureTime?.trim() &&
+      criteria.adults &&
+      criteria.budget &&
+      criteria.travelStyle
+  );
+}
+
+function hasCompleteExcursionCriteria(criteria: ExcursionSearchCriteria): boolean {
+  return Boolean(
+    criteria.destination &&
+      criteria.preferredDate &&
+      criteria.preferredTime &&
+      criteria.guests &&
+      criteria.budget
+  );
+}
+
+function hasCompleteLogisticsCriteria(criteria: LogisticsSearchCriteria): boolean {
+  return Boolean(
+    criteria.pickupLocation?.trim() &&
+      criteria.destination?.trim() &&
+      criteria.pickupDate?.trim() &&
+      criteria.pickupTime?.trim() &&
+      criteria.passengers
+  );
 }
 
 function buildHotelDetailsReply(
@@ -1072,6 +2610,205 @@ function buildHotelDetailsReply(
   return lines.join('\n');
 }
 
+function buildRestaurantDetailsReply(
+  session: RestaurantSearchSession,
+  displayNumber: number
+): string | null {
+  const latestDisplayedBatchIndex =
+    typeof session.latestDisplayedBatchIndex === 'number'
+      ? session.latestDisplayedBatchIndex
+      : session.nextOffset
+        ? Math.ceil(session.nextOffset / 3) - 1
+        : -1;
+
+  if (!session || latestDisplayedBatchIndex < 0) {
+    return null;
+  }
+
+  const restaurant = getRestaurantSessionResultBatches(session)[latestDisplayedBatchIndex]?.[
+    displayNumber - 1
+  ];
+  if (!restaurant) {
+    return null;
+  }
+
+  const lines = [
+    `${displayNumber}. ${restaurant.name}`,
+    restaurant.rating
+      ? `Rating: ${restaurant.rating.toFixed(1)}/5${restaurant.reviewCount ? ` (${restaurant.reviewCount} reviews)` : ''}`
+      : undefined,
+    restaurant.priceRange ? `Price level: ${restaurant.priceRange}` : 'Price level: confirm locally',
+    restaurant.cuisine ? `Cuisine: ${restaurant.cuisine}` : undefined,
+    restaurant.address ? `Address: ${restaurant.address}` : undefined,
+    restaurant.googleMapsUri ? `Map: ${restaurant.googleMapsUri}` : undefined,
+    '',
+    `Reply "book ${displayNumber}" if you would like me to prepare the reservation check for this restaurant.`,
+  ].filter((line): line is string => typeof line === 'string');
+
+  return lines.join('\n');
+}
+
+function buildExcursionDetailsReply(
+  session: ExcursionSearchSession,
+  displayNumber: number
+): string | null {
+  const latestDisplayedBatchIndex =
+    typeof session.latestDisplayedBatchIndex === 'number'
+      ? session.latestDisplayedBatchIndex
+      : session.nextOffset
+        ? Math.ceil(session.nextOffset / 3) - 1
+        : -1;
+
+  if (!session || latestDisplayedBatchIndex < 0) return null;
+
+  const experience = getExcursionSessionResultBatches(session)[latestDisplayedBatchIndex]?.[
+    displayNumber - 1
+  ];
+  if (!experience) return null;
+
+  const lines = [
+    `${displayNumber}. ${experience.name}`,
+    experience.category ? `Category: ${experience.category}` : undefined,
+    experience.rating
+      ? `Rating: ${experience.rating.toFixed(1)}/5${experience.reviewCount ? ` (${experience.reviewCount} reviews)` : ''}`
+      : undefined,
+    experience.priceRange ? `Estimated price: ${experience.priceRange}` : 'Estimated price: confirm locally',
+    experience.shortDescription,
+    experience.address ? `Address: ${experience.address}` : undefined,
+    experience.googleMapsUri ? `Map: ${experience.googleMapsUri}` : undefined,
+    '',
+    `Reply "book ${displayNumber}" if you would like me to prepare the booking request for this experience.`,
+  ].filter((line): line is string => typeof line === 'string');
+
+  return lines.join('\n');
+}
+
+function buildLogisticsDetailsReply(
+  session: LogisticsSearchSession,
+  displayNumber: number
+): string | null {
+  const latestDisplayedBatchIndex =
+    typeof session.latestDisplayedBatchIndex === 'number'
+      ? session.latestDisplayedBatchIndex
+      : session.nextOffset
+        ? Math.ceil(session.nextOffset / 3) - 1
+        : -1;
+
+  if (!session || latestDisplayedBatchIndex < 0) return null;
+
+  const option = getLogisticsSessionResultBatches(session)[latestDisplayedBatchIndex]?.[
+    displayNumber - 1
+  ];
+  if (!option) return null;
+
+  const lines = [
+    `${displayNumber}. ${option.provider}`,
+    `Vehicle: ${option.vehicle}`,
+    `Estimated price: ${option.estimatedPrice}`,
+    `Vehicle type: ${option.vehicleType}`,
+    `Capacity: ${option.capacity}`,
+    `Luggage: ${option.luggageCapacity}`,
+    `Estimated duration: ${option.estimatedDuration}`,
+    option.notes,
+    '',
+    `Reply "book ${displayNumber}" if you would like me to prepare the transport booking request for this option.`,
+  ].filter((line): line is string => typeof line === 'string' && line.length > 0);
+
+  return lines.join('\n');
+}
+
+function buildItineraryReply(itinerary: GeneratedItinerary, workspaceLink?: string): string {
+  return [
+    'Wonderful, I have prepared your itinerary.',
+    '',
+    `Route: ${formatCompactRoute(itinerary.mapSummary)}`,
+    `Length: ${itinerary.days.length} days`,
+    `Budget: ${itinerary.budgetEstimate}`,
+    '',
+    workspaceLink ? `Open your interactive itinerary: ${workspaceLink}` : 'Reply "workspace" and I will send the interactive itinerary link.',
+    '',
+    'You can edit it there, or reply here with changes like "more beach time", "less driving", "change day 3", or "book hotels".',
+  ].filter(Boolean).join('\n');
+}
+
+async function createItineraryWorkspaceLink(
+  userId: string,
+  itinerary: GeneratedItinerary,
+  criteria: ItineraryCriteria,
+  note: string
+): Promise<string> {
+  const workspace = await getItineraryWorkspaceService().createOrUpdateWorkspace(
+    userId,
+    itinerary,
+    criteria,
+    note
+  );
+  return buildItineraryWorkspaceLink(workspace.shareToken);
+}
+
+function buildItineraryWorkspaceLink(shareToken: string): string {
+  const publicBaseUrl =
+    process.env.FORM_PUBLIC_BASE_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    'http://localhost:3000';
+  return `${publicBaseUrl.replace(/\/$/, '')}/itinerary/${encodeURIComponent(shareToken)}`;
+}
+
+function formatRouteMap(mapSummary: string): string {
+  return mapSummary
+    .split(/\s*->\s*/)
+    .filter(Boolean)
+    .map((stop, index, stops) => {
+      const prefix = index === 0 ? 'Start' : index === stops.length - 1 ? 'Finish' : `Stop ${index}`;
+      return `${prefix}: ${stop}`;
+    })
+    .join('\n');
+}
+
+function formatCompactRoute(mapSummary: string): string {
+  const stops = mapSummary.split(/\s*->\s*/).filter(Boolean);
+  if (stops.length <= 5) {
+    return stops.join(' -> ');
+  }
+
+  return [
+    stops[0],
+    ...stops.slice(1, 4),
+    `+${stops.length - 5} stops`,
+    stops[stops.length - 1],
+  ].join(' -> ');
+}
+
+function buildItineraryDayReply(itinerary: GeneratedItinerary, dayNumber: number): string {
+  const day = itinerary.days[dayNumber - 1];
+  if (!day) {
+    return `I only have ${itinerary.days.length} days in this itinerary. Reply "day 1" through "day ${itinerary.days.length}".`;
+  }
+
+  return [
+    `Day ${day.day} - ${day.date} - ${day.location}`,
+    formatDailyPlan(day),
+    '',
+    'Reply "next day" to continue, or tell me what to change for this day.',
+  ].join('\n');
+}
+
+function formatDailyPlan(day: DailyItineraryPlan): string {
+  return [
+    '',
+    `Day ${day.day}: ${day.date} - ${day.location}`,
+    `Morning: ${day.morning}`,
+    `Afternoon: ${day.afternoon}`,
+    `Evening: ${day.evening}`,
+    `Hotel: ${day.hotel}`,
+    `Restaurants: ${day.restaurantSuggestions.join('; ')}`,
+    `Experiences: ${day.experiences.join('; ')}`,
+    `Transport: ${day.transport}`,
+    `Estimated Travel Time: ${day.estimatedTravelTime}`,
+    `Approximate Cost: ${day.approximateCost}`,
+  ].join('\n');
+}
+
 async function enrichHotelResultsForWhatsApp(
   userId: string,
   fallbackMessage: string
@@ -1097,12 +2834,171 @@ async function enrichHotelResultsForWhatsApp(
   return buildHotelResultCardReply(session.criteria, latestBatch, fallbackMessage);
 }
 
+async function enrichSearchResultsForWhatsApp(
+  userId: string,
+  fallbackMessage: string
+): Promise<TwilioReply> {
+  const restaurantReply = await enrichRestaurantResultsForWhatsApp(userId, fallbackMessage);
+  if (restaurantReply !== fallbackMessage) {
+    return restaurantReply;
+  }
+
+  const excursionReply = await enrichExcursionResultsForWhatsApp(userId, fallbackMessage);
+  if (excursionReply !== fallbackMessage) {
+    return excursionReply;
+  }
+
+  const logisticsReply = await enrichLogisticsResultsForWhatsApp(userId, fallbackMessage);
+  if (logisticsReply !== fallbackMessage) {
+    return logisticsReply;
+  }
+
+  return enrichHotelResultsForWhatsApp(userId, fallbackMessage);
+}
+
+async function enrichRestaurantResultsForWhatsApp(
+  userId: string,
+  fallbackMessage: string
+): Promise<TwilioReply> {
+  const session = await getRestaurantSearchSessionService().get(userId);
+
+  if (!session || session.stage !== 'results') {
+    return fallbackMessage;
+  }
+
+  const latestDisplayedBatchIndex =
+    typeof session.latestDisplayedBatchIndex === 'number'
+      ? session.latestDisplayedBatchIndex
+      : session.nextOffset
+        ? Math.ceil(session.nextOffset / 3) - 1
+        : -1;
+
+  const latestBatch = getRestaurantSessionResultBatches(session)[latestDisplayedBatchIndex] ?? [];
+  if (latestBatch.length === 0 || !fallbackMessage.startsWith('I found these restaurant matches')) {
+    return fallbackMessage;
+  }
+
+  return buildRestaurantResultCardReply(session.criteria, latestBatch);
+}
+
+async function enrichExcursionResultsForWhatsApp(
+  userId: string,
+  fallbackMessage: string
+): Promise<TwilioReply> {
+  const session = await getExcursionSearchSessionService().get(userId);
+
+  if (!session || session.stage !== 'results') {
+    return fallbackMessage;
+  }
+
+  const latestDisplayedBatchIndex =
+    typeof session.latestDisplayedBatchIndex === 'number'
+      ? session.latestDisplayedBatchIndex
+      : session.nextOffset
+        ? Math.ceil(session.nextOffset / 3) - 1
+        : -1;
+
+  const latestBatch = getExcursionSessionResultBatches(session)[latestDisplayedBatchIndex] ?? [];
+  if (latestBatch.length === 0 || !fallbackMessage.startsWith('I found these experience matches')) {
+    return fallbackMessage;
+  }
+
+  return buildExcursionResultCardReply(session.criteria, latestBatch);
+}
+
+async function enrichLogisticsResultsForWhatsApp(
+  userId: string,
+  fallbackMessage: string
+): Promise<TwilioReply> {
+  const session = await getLogisticsSearchSessionService().get(userId);
+
+  if (!session || session.stage !== 'results') {
+    return fallbackMessage;
+  }
+
+  const latestDisplayedBatchIndex =
+    typeof session.latestDisplayedBatchIndex === 'number'
+      ? session.latestDisplayedBatchIndex
+      : session.nextOffset
+        ? Math.ceil(session.nextOffset / 3) - 1
+        : -1;
+
+  const latestBatch = getLogisticsSessionResultBatches(session)[latestDisplayedBatchIndex] ?? [];
+  if (latestBatch.length === 0 || !fallbackMessage.startsWith('I found these transport options')) {
+    return fallbackMessage;
+  }
+
+  return buildLogisticsResultCardReply(session.criteria, latestBatch);
+}
+
+async function buildWebhookReply(
+  userId: string,
+  reply: string,
+  voicePreferred: boolean
+): Promise<TwilioReply> {
+  const enrichedReply = await enrichSearchResultsForWhatsApp(userId, reply);
+
+  if (!voicePreferred || !isTextToSpeechEnabled()) {
+    return enrichedReply;
+  }
+
+  const text = typeof enrichedReply === 'string'
+    ? enrichedReply
+    : enrichedReply.map((message) => message.body).join('\n\n');
+
+  try {
+    const audio = await getTextToSpeechService().synthesize(text);
+    if (!audio) {
+      return enrichedReply;
+    }
+
+    return [
+      { body: text },
+      {
+        body: 'Voice reply',
+        mediaUrl: audio.mediaUrl,
+      },
+    ];
+  } catch (error) {
+    console.error('[webhook] TTS failed for voice reply; sending text fallback:', error);
+    return enrichedReply;
+  }
+}
+
 interface TwilioMessage {
   body: string;
   mediaUrl?: string;
 }
 
 type TwilioReply = string | TwilioMessage[];
+
+async function deliverWebhookReplyThroughTwilio(
+  to: string,
+  from: string,
+  reply: TwilioReply,
+  correlationId: string
+): Promise<boolean> {
+  const outbound = getTwilioOutboundService();
+  if (!outbound.isConfigured()) {
+    return false;
+  }
+
+  try {
+    const delivered =
+      typeof reply === 'string'
+        ? await outbound.sendWhatsAppReply(to, reply, { from })
+        : await outbound.sendWhatsAppMessages(to, reply, { from });
+
+    if (!delivered) {
+      console.warn(`[${correlationId}] Twilio REST reply was not delivered; falling back to TwiML`);
+    }
+
+    return delivered;
+  } catch (error) {
+    console.error(`[${correlationId}] Twilio REST reply failed; falling back to TwiML:`, error);
+    return false;
+  }
+}
 
 function buildHotelResultCardReply(
   criteria: HotelSearchCriteria,
@@ -1121,6 +3017,54 @@ function buildHotelResultCardReply(
   ];
 }
 
+function buildRestaurantResultCardReply(
+  criteria: RestaurantSearchCriteria,
+  restaurants: RestaurantBrowseResult[]
+): TwilioMessage[] {
+  const intro = [
+    `I found these restaurant matches for ${criteria.location ?? 'your search'}.`,
+    criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
+    'Reply "next" for more options, "details 1", or "book 1".',
+  ].filter((line): line is string => typeof line === 'string');
+
+  return [
+    { body: intro.join('\n') },
+    ...restaurants.map((restaurant, index) => buildRestaurantResultCard(index + 1, restaurant)),
+  ];
+}
+
+function buildExcursionResultCardReply(
+  criteria: ExcursionSearchCriteria,
+  experiences: ExcursionBrowseResult[]
+): TwilioMessage[] {
+  const intro = [
+    `I found these experience matches for ${criteria.destination ?? 'your search'}.`,
+    criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
+    'Reply "next" for more options, "details 1", or "book 1".',
+  ].filter((line): line is string => typeof line === 'string');
+
+  return [
+    { body: intro.join('\n') },
+    ...experiences.map((experience, index) => buildExcursionResultCard(index + 1, experience)),
+  ];
+}
+
+function buildLogisticsResultCardReply(
+  criteria: LogisticsSearchCriteria,
+  options: TransportOption[]
+): TwilioMessage[] {
+  const intro = [
+    `I found these transport options from ${criteria.pickupLocation ?? 'your pickup'} to ${criteria.destination ?? 'your destination'}.`,
+    criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
+    'Reply "next" for more options, "details 1", or "book 1".',
+  ].filter((line): line is string => typeof line === 'string');
+
+  return [
+    { body: intro.join('\n') },
+    ...options.map((option, index) => buildLogisticsResultCard(index + 1, option)),
+  ];
+}
+
 function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): TwilioMessage {
   const rating =
     typeof hotel.rating === 'number'
@@ -1132,6 +3076,7 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
     rating,
     hotel.priceRange ? `Price signal: ${hotel.priceRange}` : 'Price signal: confirm live rate',
     hotel.address,
+    `Why Yana picked it: ${buildHotelRecommendationReason(hotel)}`,
     mapsLink ? `View on Google Maps: ${mapsLink}` : undefined,
     `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
@@ -1140,6 +3085,133 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
     body: lines.join('\n'),
     mediaUrl: isPublicHttpsUrl(hotel.thumbnailUrl) ? hotel.thumbnailUrl : undefined,
   };
+}
+
+function buildRestaurantResultCard(
+  displayNumber: number,
+  restaurant: RestaurantBrowseResult
+): TwilioMessage {
+  const rating =
+    typeof restaurant.rating === 'number'
+      ? `${restaurant.rating.toFixed(1)}/5${restaurant.reviewCount ? ` (${restaurant.reviewCount} reviews)` : ''}`
+      : 'Rating not listed';
+  const mapsLink = buildGoogleMapsShortLink(restaurant);
+  const lines = [
+    `${displayNumber}. ${restaurant.name}`,
+    rating,
+    restaurant.priceRange ? `Price level: ${restaurant.priceRange}` : 'Price level: confirm locally',
+    restaurant.cuisine ? `Cuisine: ${restaurant.cuisine}` : undefined,
+    restaurant.address,
+    `Why Yana picked it: ${buildRestaurantRecommendationReason(restaurant)}`,
+    mapsLink ? `View on Google Maps: ${mapsLink}` : undefined,
+    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+  ].filter((line): line is string => typeof line === 'string' && line.length > 0);
+
+  return {
+    body: lines.join('\n'),
+    mediaUrl: isPublicHttpsUrl(restaurant.thumbnailUrl) ? restaurant.thumbnailUrl : undefined,
+  };
+}
+
+function buildExcursionResultCard(
+  displayNumber: number,
+  experience: ExcursionBrowseResult
+): TwilioMessage {
+  const rating =
+    typeof experience.rating === 'number'
+      ? `${experience.rating.toFixed(1)}/5${experience.reviewCount ? ` (${experience.reviewCount} reviews)` : ''}`
+      : 'Rating not listed';
+  const mapsLink = buildGoogleMapsShortLink(experience);
+  const lines = [
+    `${displayNumber}. ${experience.name}`,
+    experience.category ? `Category: ${experience.category}` : undefined,
+    rating,
+    experience.priceRange ? `Estimated price: ${experience.priceRange}` : 'Estimated price: confirm locally',
+    experience.shortDescription,
+    experience.address,
+    `Why Yana picked it: ${buildExcursionRecommendationReason(experience)}`,
+    mapsLink ? `View on Google Maps: ${mapsLink}` : undefined,
+    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+  ].filter((line): line is string => typeof line === 'string' && line.length > 0);
+
+  return {
+    body: lines.join('\n'),
+    mediaUrl: isPublicHttpsUrl(experience.thumbnailUrl) ? experience.thumbnailUrl : undefined,
+  };
+}
+
+function buildLogisticsResultCard(
+  displayNumber: number,
+  option: TransportOption
+): TwilioMessage {
+  const lines = [
+    `${displayNumber}. ${option.provider}`,
+    `Vehicle: ${option.vehicle}`,
+    `Estimated price: ${option.estimatedPrice}`,
+    `Vehicle type: ${option.vehicleType}`,
+    `Capacity: ${option.capacity}`,
+    `Estimated duration: ${option.estimatedDuration}`,
+    `Why Yana picked it: ${buildLogisticsRecommendationReason(option)}`,
+    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+  ];
+
+  return { body: lines.join('\n') };
+}
+
+function buildHotelRecommendationReason(hotel: HotelBrowseResult): string {
+  if (typeof hotel.rating === 'number' && typeof hotel.reviewCount === 'number' && hotel.reviewCount > 0) {
+    return `strong guest rating with ${hotel.reviewCount} reviews and a useful location signal.`;
+  }
+
+  if (typeof hotel.rating === 'number') {
+    return `strong guest rating and a useful location signal.`;
+  }
+
+  return 'it looks relevant to your location and stay preferences.';
+}
+
+function buildRestaurantRecommendationReason(restaurant: RestaurantBrowseResult): string {
+  if (restaurant.cuisine && typeof restaurant.rating === 'number') {
+    return `it matches the dining style with a ${restaurant.rating.toFixed(1)}/5 guest rating.`;
+  }
+
+  if (restaurant.cuisine) {
+    return `it matches the cuisine and dining preferences from your form.`;
+  }
+
+  if (typeof restaurant.rating === 'number') {
+    return `it has a strong ${restaurant.rating.toFixed(1)}/5 rating and fits the area.`;
+  }
+
+  return 'it fits the area and dining preferences you shared.';
+}
+
+function buildExcursionRecommendationReason(experience: ExcursionBrowseResult): string {
+  if (experience.category && typeof experience.rating === 'number') {
+    return `it matches the experience type with a ${experience.rating.toFixed(1)}/5 visitor rating.`;
+  }
+
+  if (experience.category) {
+    return `it matches the experience type and destination you asked for.`;
+  }
+
+  if (typeof experience.rating === 'number') {
+    return `it has a strong ${experience.rating.toFixed(1)}/5 visitor rating and fits the destination.`;
+  }
+
+  return 'it fits the destination and activity preferences you shared.';
+}
+
+function buildLogisticsRecommendationReason(option: TransportOption): string {
+  if (typeof option.rating === 'number' && option.capacity > 4) {
+    return `it has a strong provider rating and enough capacity for passengers or luggage.`;
+  }
+
+  if (typeof option.rating === 'number') {
+    return `it has a strong ${option.rating.toFixed(1)}/5 provider signal and fits the journey.`;
+  }
+
+  return 'it fits the journey details and transport preferences you shared.';
 }
 
 function buildGoogleMapsShortLink(hotel: HotelBrowseResult): string | undefined {
@@ -1175,6 +3247,117 @@ function getSessionResultBatches(session: HotelSearchSession) {
   return batches;
 }
 
+function getRestaurantSessionResultBatches(session: RestaurantSearchSession) {
+  if (session.resultBatches?.length) {
+    return session.resultBatches;
+  }
+
+  const batches = [];
+  for (let index = 0; index < session.results.length; index += 3) {
+    batches.push(session.results.slice(index, index + 3));
+  }
+  return batches;
+}
+
+function getExcursionSessionResultBatches(session: ExcursionSearchSession) {
+  if (session.resultBatches?.length) {
+    return session.resultBatches;
+  }
+
+  const batches = [];
+  for (let index = 0; index < session.results.length; index += 3) {
+    batches.push(session.results.slice(index, index + 3));
+  }
+  return batches;
+}
+
+function getLogisticsSessionResultBatches(session: LogisticsSearchSession) {
+  if (session.resultBatches?.length) {
+    return session.resultBatches;
+  }
+
+  const batches = [];
+  for (let index = 0; index < session.results.length; index += 3) {
+    batches.push(session.results.slice(index, index + 3));
+  }
+  return batches;
+}
+
+async function replayRestaurantResults(
+  userId: string,
+  session: RestaurantSearchSession
+): Promise<string> {
+  const firstPage = session.results.slice(0, 3);
+  if (firstPage.length === 0) {
+    return 'I finished checking, but I did not find usable restaurant matches for this search. Please share a new location, cuisine, or budget and I will try again.';
+  }
+
+  const nextOffset = Math.min(3, session.results.length);
+  await getRestaurantSearchSessionService().saveResults(
+    userId,
+    session.criteria,
+    session.results,
+    nextOffset
+  );
+
+  return getRestaurantSearchFlowService().buildBrowseResultsPageReply(
+    session.criteria,
+    firstPage,
+    nextOffset,
+    session.results.length
+  );
+}
+
+async function replayExcursionResults(
+  userId: string,
+  session: ExcursionSearchSession
+): Promise<string> {
+  const firstPage = session.results.slice(0, 3);
+  if (firstPage.length === 0) {
+    return 'I finished checking, but I did not find usable experience matches for this search. Please share a new destination, activity type, or budget and I will try again.';
+  }
+
+  const nextOffset = Math.min(3, session.results.length);
+  await getExcursionSearchSessionService().saveResults(
+    userId,
+    session.criteria,
+    session.results,
+    nextOffset
+  );
+
+  return getExcursionSearchFlowService().buildBrowseResultsPageReply(
+    session.criteria,
+    firstPage,
+    nextOffset,
+    session.results.length
+  );
+}
+
+async function replayLogisticsResults(
+  userId: string,
+  session: LogisticsSearchSession
+): Promise<string> {
+  const firstPage = session.results.slice(0, 3);
+  if (firstPage.length === 0) {
+    return 'I finished checking, but I did not find usable transport matches for this search. Please share a new pickup, destination, vehicle type, or passenger count and I will try again.';
+  }
+
+  const nextOffset = Math.min(3, session.results.length);
+  await getLogisticsSearchSessionService().saveResults(
+    userId,
+    session.criteria,
+    session.results,
+    nextOffset
+  );
+
+  return getLogisticsSearchFlowService().buildOptionsPageReply(
+    session.criteria,
+    firstPage,
+    nextOffset,
+    session.results.length
+  );
+}
+
 function buildBookingProviderBoundaryReply(hotelName: string): string {
   return [
     `Perfect — I've selected ${hotelName} for you.`,
@@ -1182,6 +3365,18 @@ function buildBookingProviderBoundaryReply(hotelName: string): string {
     "I'll now check live room availability, final rates, cancellation terms, and booking options for your dates.",
     '',
     "This booking check will be connected to our hotel booking providers next, such as Hotelbeds or LiteAPI. For now, I've saved your selected hotel and booking request so we can continue from here.",
+  ].join('\n');
+}
+
+function buildReservationProviderBoundaryReply(restaurantName: string): string {
+  return [
+    'Perfect!',
+    '',
+    `I've selected ${restaurantName}.`,
+    '',
+    'The next step is to check table availability and reservation options.',
+    '',
+    "I'll connect this to our reservation provider in the next stage.",
   ].join('\n');
 }
 
@@ -1253,7 +3448,18 @@ function buildHotelSearchReply(parameters: Record<string, unknown>): string {
 
   const criteriaText = criteria.length > 0 ? ` for ${criteria.join(', ')}` : '';
 
-  return `I found your hotel search${criteriaText}. I am ready to search live property matches once Google Places is configured for this environment.`;
+  if (location && checkin && checkout) {
+    return [
+      `Got it. I will look for stays in ${location} from ${checkin} to ${checkout}.`,
+      'Before I check options properly, how many guests and rooms should I plan for?',
+    ].join('\n');
+  }
+
+  if (location) {
+    return `Got it. I can help find stays in ${location}. What dates, number of guests, rooms, and budget should I use?`;
+  }
+
+  return 'I can help with that. Tell me the destination, dates, number of guests, rooms, and budget, and I will start checking suitable stays.';
 }
 
 function getStringParam(
@@ -1294,16 +3500,19 @@ function getBudgetParam(parameters: Record<string, unknown>): string | null {
 function toTwiml(reply: TwilioReply): string {
   const messages =
     typeof reply === 'string'
-      ? [`<Message>${escapeXml(reply)}</Message>`]
-      : reply.map((message) => {
+      ? splitWhatsAppText(reply).map((part) => `<Message>${escapeXml(part)}</Message>`)
+      : reply.flatMap((message) => {
+          const bodyParts = splitWhatsAppText(message.body);
+          return bodyParts.map((body, index) => {
           const parts = [
             '<Message>',
-            `<Body>${escapeXml(message.body)}</Body>`,
-            message.mediaUrl ? `<Media>${escapeXml(message.mediaUrl)}</Media>` : undefined,
+              `<Body>${escapeXml(body)}</Body>`,
+              index === 0 && message.mediaUrl ? `<Media>${escapeXml(message.mediaUrl)}</Media>` : undefined,
             '</Message>',
           ].filter((part): part is string => typeof part === 'string');
 
           return parts.join('');
+          });
         });
 
   return [

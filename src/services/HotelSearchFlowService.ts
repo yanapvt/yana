@@ -328,7 +328,7 @@ export class HotelSearchFlowService {
   }
 
   private buildProviderNotConnectedReply(criteria: HotelSearchCriteria): string {
-    return `Perfect, I have the hotel search details: ${this.formatCriteria(criteria)}. I am ready to search, but live property browsing is not configured in this environment yet. Once Google Places is enabled, I will return the top 3 matches with thumbnails, quick details, and a booking option.`;
+    return `Perfect, I have the hotel search details: ${this.formatCriteria(criteria)}. I cannot complete the hotel check at this moment, but I have saved the request. Please send "search again" in a moment and I will retry.`;
   }
 
   private buildBrowseResultsReply(
@@ -339,7 +339,7 @@ export class HotelSearchFlowService {
     const hasMore = pagination.nextOffset < pagination.totalResults;
     const lines = [
       `I found these hotel matches for ${this.formatCriteria(criteria)}.`,
-      'Price range is estimated from Google Places signals where available. Please confirm live rates and availability before booking.',
+      'Price range is estimated where available. Please confirm live rates and availability before booking.',
       '',
       ...results.map((hotel, index) => {
         const rating =

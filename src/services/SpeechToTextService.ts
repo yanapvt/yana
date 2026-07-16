@@ -32,6 +32,9 @@ export class SpeechToTextServiceError extends Error {
 }
 
 interface SpeechToTextServiceConfig {
+  provider?: string;
+  apiKey?: string;
+  baseUrl?: string;
   openAiApiKey?: string;
   transcriptionModel?: string;
   maxBytes?: number;
@@ -45,34 +48,47 @@ interface DownloadedAudio {
   contentType: string;
 }
 
-const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
-
 export class SpeechToTextService {
-  private readonly openAiApiKey: string;
+  private readonly provider: string;
+  private readonly apiKey: string;
   private readonly transcriptionModel: string;
   private readonly maxBytes: number;
   private readonly twilioAccountSid: string;
   private readonly twilioAuthToken: string;
-  private readonly openAiBaseUrl: string;
+  private readonly baseUrl: string;
 
   constructor(config: SpeechToTextServiceConfig = {}) {
-    const configuredOpenAiApiKey =
-      config.openAiApiKey ?? env.voice.openAiApiKey ?? env.llm.apiKey ?? '';
-    this.openAiApiKey = configuredOpenAiApiKey === 'dev_api_key' ? '' : configuredOpenAiApiKey;
-    this.transcriptionModel =
-      config.transcriptionModel ??
-      env.voice.transcriptionModel ??
-      DEFAULT_TRANSCRIPTION_MODEL;
+    this.provider = (config.provider ?? env.voice.provider ?? env.llm.provider).toLowerCase();
+    const configuredApiKey =
+      config.apiKey ??
+      config.openAiApiKey ??
+      env.voice.apiKey ??
+      env.voice.openAiApiKey ??
+      env.llm.apiKey ??
+      '';
+    this.apiKey = configuredApiKey === 'dev_api_key' ? '' : configuredApiKey;
+    this.transcriptionModel = config.transcriptionModel ?? env.voice.transcriptionModel;
     this.maxBytes = config.maxBytes ?? Math.floor(env.voice.maxMb * 1024 * 1024);
     this.twilioAccountSid = config.twilioAccountSid ?? env.twilio.accountSid;
     this.twilioAuthToken = config.twilioAuthToken ?? env.twilio.authToken;
-    this.openAiBaseUrl = config.openAiBaseUrl ?? 'https://api.openai.com/v1';
+    this.baseUrl =
+      config.baseUrl ??
+      config.openAiBaseUrl ??
+      env.voice.baseUrl ??
+      defaultTranscriptionBaseUrl(this.provider);
   }
 
   async transcribe(input: SpeechToTextInput): Promise<SpeechToTextResult> {
-    if (!this.openAiApiKey) {
+    if (!this.apiKey) {
       throw new SpeechToTextServiceError(
-        'OPENAI_API_KEY is required for voice-note transcription',
+        'A transcription API key is required for voice-note transcription',
+        'missing_api_key'
+      );
+    }
+
+    if (!this.transcriptionModel) {
+      throw new SpeechToTextServiceError(
+        'TRANSCRIPTION_MODEL is required for voice-note transcription',
         'missing_api_key'
       );
     }
@@ -97,7 +113,7 @@ export class SpeechToTextService {
     }
 
     const audio = await this.downloadAudio(input.mediaUrl, input.contentType);
-    const transcript = await this.transcribeWithOpenAi(audio, input.messageSid);
+    const transcript = await this.transcribeWithProvider(audio, input.messageSid);
 
     return {
       transcript,
@@ -145,7 +161,7 @@ export class SpeechToTextService {
     return { bytes, contentType };
   }
 
-  private async transcribeWithOpenAi(audio: DownloadedAudio, messageSid: string): Promise<string> {
+  private async transcribeWithProvider(audio: DownloadedAudio, messageSid: string): Promise<string> {
     const formData = new FormData();
     formData.append('model', this.transcriptionModel);
     formData.append('response_format', 'json');
@@ -155,17 +171,17 @@ export class SpeechToTextService {
       `${messageSid}.${extensionForContentType(audio.contentType)}`
     );
 
-    const response = await fetch(`${this.openAiBaseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
+    const response = await fetch(`${this.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.openAiApiKey}`,
+        Authorization: `Bearer ${this.apiKey}`,
       },
       body: formData,
     });
 
     if (!response.ok) {
       throw new SpeechToTextServiceError(
-        `OpenAI transcription failed with ${response.status}: ${await response.text()}`,
+        `${this.provider} transcription failed with ${response.status}: ${await response.text()}`,
         'transcription_failed',
         response.status >= 500 || response.status === 429
       );
@@ -174,10 +190,23 @@ export class SpeechToTextService {
     const data = (await response.json()) as { text?: unknown };
     const transcript = typeof data.text === 'string' ? data.text.trim() : '';
     if (!transcript) {
-      throw new SpeechToTextServiceError('OpenAI returned an empty transcript', 'transcription_failed');
+      throw new SpeechToTextServiceError(
+        `${this.provider} returned an empty transcript`,
+        'transcription_failed'
+      );
     }
 
     return transcript;
+  }
+}
+
+function defaultTranscriptionBaseUrl(provider: string): string {
+  switch (provider) {
+    case 'groq':
+      return 'https://api.groq.com/openai/v1';
+    case 'openai':
+    default:
+      return 'https://api.openai.com/v1';
   }
 }
 

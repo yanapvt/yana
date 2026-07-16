@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { getTextToSpeechService } from '../services/TextToSpeechService.js';
 
 const router = Router();
 
@@ -52,6 +53,25 @@ router.get('/media/google-place-photo', async (req: Request, res: Response) => {
     res.send(image);
   } catch {
     res.status(502).send('Unable to load image');
+  }
+});
+
+router.get('/media/tts/:hash.mp3', async (req: Request, res: Response) => {
+  try {
+    const audio = await getTextToSpeechService().readAudio(req.params.hash);
+
+    if (!audio) {
+      res.status(404).send('Not found');
+      return;
+    }
+
+    res.set({
+      'Cache-Control': 'public, max-age=86400',
+      'Content-Type': 'audio/mpeg',
+    });
+    res.send(audio);
+  } catch {
+    res.status(502).send('Unable to load audio');
   }
 });
 

@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "yana-places",
+  "private_key_id": "7f1fc914d0ceae4bf9ccf9965d92628cef5c73b1",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDADM0sLnSk5ZP/\nfu55ZKQySFZqRc/qjRJ6mruRharQvF5XBb8D7wJgSOhA+WfJCWwFSg6TEIYbqq90\nXUp6zElvjXHUV9JtpZTuE54ZRkISEi0rY/iSKRtll7zKmDYKlnM81u1OcIPwjZK+\nqzWSK3WOwNIepN/iDNG8O7kA+lb/2J9RxW1NbYT/4zbLZBf7mREg2X7x6Re5fA3N\nIslfWXBHsCvkxtXTCIjnh9xcUOTOk3mBk8iR2quy2ygHQHaqU9bpf40h1Nfz08ig\nlTAqljgd2h1BkiXqhDbg7hqOXDD4V3CdTdVhMD8zKTsThrh4Thu+L/8LVqzZ8nrn\niurIc8U5AgMBAAECggEAJhpEGKhs3wxndRDvamlDxHAiqPoJ2ry7dlS9sw0Ei15c\nD0LmF3czjvvYDJAO/c1fP5tmUdo86T9PiTQ7IyrlxPqYo2r7JmLsLeH5g4UzdZdi\nm9G9Tu5V762PuNhDHI2l9mOj+GSNYMwN2cNpIQN7UuPBrG/EtXoaoJBuz5lbam3s\n536FVqQYdPseBC3uJ7eVBrUs9to6RdKzCacZeVVZPqk3onHZbpQaomRRRm+haAsk\n6hlTW5CjJcrjz0i1A+6L/mozj6hpgQaH8QpydOYJuYfMYXS+SrB4zuuAOg7ZnWRa\nUvaNkOYKDuKnscroYACn3IGTEOXUkpGgVeQcEww9SQKBgQD6ZQJzkFAh8gUkPGKd\nq/UH+wIjtvyVlnagMIOwHgbyBTETlf0ld+1aKYq99D2QeNzA+YMV/bSGikAr0f1z\n4siREebYqsYKWYSwVn0MDRgkjBfBKcrXrEUjlwOOVYc7m8eY+UoHnvtyHndxknXf\nwRjlQ3Prq4VAWUSERzCkeYAD7QKBgQDEWWyOWrZ+J2bq6PGpS3tYOJcwJrCsJq8O\nr78FZo6Fn4F7NbmEZxYAFJbzpd6qbeZtTAArf3dgNLQJbOu+1ObG1RAMIYgKt5hO\nqu86dveSZsdaPztdVfI4o9ZiQTe49lb3wZvvtmGX5M7L7Ugg7NGwpL3MCJIHAqO6\nLCRoU7r0/QKBgQDGHNd0shEE2qWAxxpLoDtuBgbqVSTCAlt3YQtAdHGQWdU7pue1\nFo9AUDALHUz8mvQm5wP1iVelP4uIYExFvYBtb5mTgoLQu4VFtBiaSV35xLIizjtE\nq3PEtf5FRpyJ6DZjbZJKN1rBLyPYQ0ZqNDDLbLQyGfKDOF4CvwTYjZ1g/QKBgQCS\nUzIbRG8LxMFl/wNZbu8U59eEAtFW+d0rzL1GgQ9ldWFBOOBwU4KJvM5h9RLjX9OB\nUEowIGYORDiHbayiInd5Zf73i2We1wOiXLC7mT0W1ZFrKARNomdI3pA92Ox14t8c\n9CQJmJlSYSnbv5EpOFNsmNj43Mo2fzkU3SCkvwFs4QKBgDv40Ve7m3q4P4VhTjLV\nKhkKck5zgaVGkX2lxzXxHnlBywdhCu0ujS+eFyaINDH7/eBUNhK/UlJJJshMrgh0\ngV86Pl8Im8VjTiUW5tNPVrWEkynFVo0MXmYdtNIOKHyT4uJuYOSVxzEuj4oLBjCC\nvZvw/NDYc/QWJvEP9O4XvUrm\n-----END PRIVATE KEY-----\n",
+  "client_email": "yana-tts@yana-places.iam.gserviceaccount.com",
+  "client_id": "104760395816160675768",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/yana-tts%40yana-places.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

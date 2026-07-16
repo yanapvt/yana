@@ -183,7 +183,7 @@ export class HotelIntakeService {
   ): Promise<string> {
     const summary = this.formatCriteria(criteria);
 
-    return `Perfect, I have the hotel search details: ${summary}. I am ready to search live property matches once Google Places is configured for this environment.`;
+    return `Perfect, I have the hotel search details: ${summary}. I will use these to check suitable stays and come back with the best options I can find.`;
   }
 
   private buildProgressReply(

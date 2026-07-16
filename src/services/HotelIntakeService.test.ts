@@ -78,7 +78,7 @@ describe('HotelIntakeService', () => {
     expect(finalResult.reply).toContain('check-out 2026-06-15');
     expect(finalResult.reply).toContain('2 guests');
     expect(finalResult.reply).toContain('budget USD 120 per night');
-    expect(finalResult.reply).toContain('ready to search live property matches');
+    expect(finalResult.reply).toContain('come back with the best options');
 
     await expect(
       store.getJson('traveler:+15550000002:hotel-intake')

@@ -19,9 +19,50 @@ const saveSearchingMock = vi.fn();
 const saveResultsMock = vi.fn();
 const selectHotelMock = vi.fn();
 const clearHotelSearchSessionMock = vi.fn();
+const getRestaurantSearchSessionMock = vi.fn();
+const saveRestaurantFormSentMock = vi.fn();
+const saveRestaurantAwaitingPreferencesMock = vi.fn();
+const saveRestaurantSearchingMock = vi.fn();
+const saveRestaurantResultsMock = vi.fn();
+const selectRestaurantMock = vi.fn();
+const clearRestaurantSearchSessionMock = vi.fn();
+const handleRestaurantBrowseSearchMock = vi.fn();
+const buildRestaurantBrowseResultsPageReplyMock = vi.fn();
+const getExcursionSearchSessionMock = vi.fn();
+const saveExcursionFormSentMock = vi.fn();
+const saveExcursionAwaitingPreferencesMock = vi.fn();
+const saveExcursionSearchingMock = vi.fn();
+const saveExcursionResultsMock = vi.fn();
+const selectExperienceMock = vi.fn();
+const saveProviderPendingMock = vi.fn();
+const clearExcursionSearchSessionMock = vi.fn();
+const handleExcursionBrowseSearchMock = vi.fn();
+const buildExcursionBrowseResultsPageReplyMock = vi.fn();
+const getLogisticsSearchSessionMock = vi.fn();
+const saveTransportFormSentMock = vi.fn();
+const saveLogisticsAwaitingPreferencesMock = vi.fn();
+const saveLogisticsSearchingMock = vi.fn();
+const saveLogisticsResultsMock = vi.fn();
+const selectTransportOptionMock = vi.fn();
+const saveLogisticsProviderPendingMock = vi.fn();
+const clearLogisticsSearchSessionMock = vi.fn();
+const handleLogisticsProviderSearchMock = vi.fn();
+const buildLogisticsOptionsPageReplyMock = vi.fn();
+const getItinerarySessionMock = vi.fn();
+const saveItineraryFormSentMock = vi.fn();
+const saveItineraryAwaitingPreferencesMock = vi.fn();
+const saveItineraryPlanningMock = vi.fn();
+const saveItineraryMock = vi.fn();
+const saveItineraryEditingMock = vi.fn();
+const setItineraryCurrentDayMock = vi.fn();
+const clearItinerarySessionMock = vi.fn();
+const planItineraryMock = vi.fn();
 const sendWhatsAppTextMock = vi.fn();
+const sendWhatsAppReplyMock = vi.fn();
+const sendWhatsAppMessagesMock = vi.fn();
 const twilioOutboundConfiguredMock = vi.fn();
 const llmDecideMock = vi.fn();
+const generateUIContentMock = vi.fn();
 const transcribeMock = vi.fn();
 
 vi.mock('../services/HotelIntakeService.js', () => ({
@@ -51,9 +92,89 @@ vi.mock('../services/hotelSearchSessionService.js', () => ({
   }),
 }));
 
+vi.mock('../services/restaurantSearchSessionService.js', () => ({
+  getRestaurantSearchSessionService: () => ({
+    get: getRestaurantSearchSessionMock,
+    saveRestaurantFormSent: saveRestaurantFormSentMock,
+    saveAwaitingPreferences: saveRestaurantAwaitingPreferencesMock,
+    saveSearching: saveRestaurantSearchingMock,
+    saveResults: saveRestaurantResultsMock,
+    selectRestaurant: selectRestaurantMock,
+    clear: clearRestaurantSearchSessionMock,
+  }),
+}));
+
+vi.mock('../services/RestaurantSearchFlowService.js', () => ({
+  getRestaurantSearchFlowService: () => ({
+    handleBrowseSearch: handleRestaurantBrowseSearchMock,
+    buildBrowseResultsPageReply: buildRestaurantBrowseResultsPageReplyMock,
+  }),
+}));
+
+vi.mock('../services/excursionSearchSessionService.js', () => ({
+  getExcursionSearchSessionService: () => ({
+    get: getExcursionSearchSessionMock,
+    saveExcursionFormSent: saveExcursionFormSentMock,
+    saveAwaitingPreferences: saveExcursionAwaitingPreferencesMock,
+    saveSearching: saveExcursionSearchingMock,
+    saveResults: saveExcursionResultsMock,
+    selectExperience: selectExperienceMock,
+    saveProviderPending: saveProviderPendingMock,
+    clear: clearExcursionSearchSessionMock,
+  }),
+}));
+
+vi.mock('../services/ExcursionSearchFlowService.js', () => ({
+  getExcursionSearchFlowService: () => ({
+    handleBrowseSearch: handleExcursionBrowseSearchMock,
+    buildBrowseResultsPageReply: buildExcursionBrowseResultsPageReplyMock,
+  }),
+}));
+
+vi.mock('../services/logisticsSearchSessionService.js', () => ({
+  getLogisticsSearchSessionService: () => ({
+    get: getLogisticsSearchSessionMock,
+    saveTransportFormSent: saveTransportFormSentMock,
+    saveAwaitingPreferences: saveLogisticsAwaitingPreferencesMock,
+    saveSearching: saveLogisticsSearchingMock,
+    saveResults: saveLogisticsResultsMock,
+    selectOption: selectTransportOptionMock,
+    saveProviderPending: saveLogisticsProviderPendingMock,
+    clear: clearLogisticsSearchSessionMock,
+  }),
+}));
+
+vi.mock('../services/LogisticsSearchFlowService.js', () => ({
+  getLogisticsSearchFlowService: () => ({
+    handleProviderSearch: handleLogisticsProviderSearchMock,
+    buildOptionsPageReply: buildLogisticsOptionsPageReplyMock,
+  }),
+}));
+
+vi.mock('../services/itinerarySessionService.js', () => ({
+  getItinerarySessionService: () => ({
+    get: getItinerarySessionMock,
+    saveFormSent: saveItineraryFormSentMock,
+    saveAwaitingPreferences: saveItineraryAwaitingPreferencesMock,
+    savePlanning: saveItineraryPlanningMock,
+    saveItinerary: saveItineraryMock,
+    saveEditing: saveItineraryEditingMock,
+    setCurrentDay: setItineraryCurrentDayMock,
+    clear: clearItinerarySessionMock,
+  }),
+}));
+
+vi.mock('../services/ItineraryPlannerService.js', () => ({
+  getItineraryPlannerService: () => ({
+    plan: planItineraryMock,
+  }),
+}));
+
 vi.mock('../services/twilioOutboundService.js', () => ({
   getTwilioOutboundService: () => ({
     sendWhatsAppText: sendWhatsAppTextMock,
+    sendWhatsAppReply: sendWhatsAppReplyMock,
+    sendWhatsAppMessages: sendWhatsAppMessagesMock,
     isConfigured: twilioOutboundConfiguredMock,
   }),
 }));
@@ -82,6 +203,7 @@ vi.mock('../services/profileService.js', () => ({
 vi.mock('../services/LLMService.js', () => ({
   getLLMService: () => ({
     decide: llmDecideMock,
+    generateUIContent: generateUIContentMock,
   }),
   LLMServiceError: class LLMServiceError extends Error {
     code = 'TEST';
@@ -127,20 +249,57 @@ describe('webhook hotel search flow', () => {
       },
     });
     getHotelSearchSessionMock.mockResolvedValue(null);
+    getRestaurantSearchSessionMock.mockResolvedValue(null);
+    getExcursionSearchSessionMock.mockResolvedValue(null);
+    getLogisticsSearchSessionMock.mockResolvedValue(null);
+    getItinerarySessionMock.mockResolvedValue(null);
     saveProfileRequiredMock.mockResolvedValue(undefined);
     saveHotelFormSentMock.mockResolvedValue(undefined);
+    saveRestaurantFormSentMock.mockResolvedValue(undefined);
+    saveRestaurantAwaitingPreferencesMock.mockResolvedValue(undefined);
+    saveExcursionFormSentMock.mockResolvedValue(undefined);
+    saveExcursionAwaitingPreferencesMock.mockResolvedValue(undefined);
+    saveTransportFormSentMock.mockResolvedValue(undefined);
+    saveLogisticsAwaitingPreferencesMock.mockResolvedValue(undefined);
+    saveItineraryFormSentMock.mockResolvedValue(undefined);
+    saveItineraryAwaitingPreferencesMock.mockResolvedValue(undefined);
     saveSearchingMock.mockResolvedValue(undefined);
     saveResultsMock.mockResolvedValue(undefined);
+    saveRestaurantSearchingMock.mockResolvedValue(undefined);
+    saveRestaurantResultsMock.mockResolvedValue(undefined);
+    saveExcursionSearchingMock.mockResolvedValue(undefined);
+    saveExcursionResultsMock.mockResolvedValue(undefined);
+    saveLogisticsSearchingMock.mockResolvedValue(undefined);
+    saveLogisticsResultsMock.mockResolvedValue(undefined);
+    saveItineraryPlanningMock.mockResolvedValue(undefined);
+    saveItineraryMock.mockResolvedValue(undefined);
+    saveItineraryEditingMock.mockResolvedValue(undefined);
+    setItineraryCurrentDayMock.mockResolvedValue(undefined);
     selectHotelMock.mockResolvedValue(null);
+    selectRestaurantMock.mockResolvedValue(null);
+    selectExperienceMock.mockResolvedValue(null);
+    selectTransportOptionMock.mockResolvedValue(null);
+    saveProviderPendingMock.mockResolvedValue(undefined);
+    saveLogisticsProviderPendingMock.mockResolvedValue(undefined);
     clearHotelSearchSessionMock.mockResolvedValue(undefined);
+    clearRestaurantSearchSessionMock.mockResolvedValue(undefined);
+    clearExcursionSearchSessionMock.mockResolvedValue(undefined);
+    clearLogisticsSearchSessionMock.mockResolvedValue(undefined);
+    clearItinerarySessionMock.mockResolvedValue(undefined);
+    planItineraryMock.mockResolvedValue(buildGeneratedItinerary());
     sendWhatsAppTextMock.mockResolvedValue(true);
+    sendWhatsAppReplyMock.mockResolvedValue(true);
+    sendWhatsAppMessagesMock.mockResolvedValue(true);
     twilioOutboundConfiguredMock.mockReturnValue(true);
     buildBrowseResultsPageReplyMock.mockReturnValue('Next page reply');
+    buildRestaurantBrowseResultsPageReplyMock.mockReturnValue('Next restaurant page reply');
+    buildExcursionBrowseResultsPageReplyMock.mockReturnValue('Next excursion page reply');
+    buildLogisticsOptionsPageReplyMock.mockReturnValue('Next transport page reply');
     transcribeMock.mockResolvedValue({
       transcript: 'hello',
       contentType: 'audio/ogg',
       bytes: 1234,
-      model: 'gpt-4o-mini-transcribe',
+      model: 'transcription-test-model',
     });
     llmDecideMock.mockResolvedValue({
       intent: 'unknown',
@@ -148,6 +307,10 @@ describe('webhook hotel search flow', () => {
       missingFields: [],
       suggestedAction: 'clarify',
       confidence: 0.3,
+    });
+    generateUIContentMock.mockImplementation(async (prompt: string) => {
+      const fallback = prompt.match(/Deterministic fallback style reference: ([\s\S]*)$/);
+      return fallback?.[1]?.trim() || 'I can help with your trip. What would you like to organize first?';
     });
   });
 
@@ -208,8 +371,663 @@ describe('webhook hotel search flow', () => {
     expect(handleCompletedIntakeMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'I am hungry',
+    'I need somewhere for dinner.',
+    'Find me a seafood restaurant.',
+    'I want a romantic place.',
+    'Find vegetarian food.',
+  ])('starts the restaurant form flow for dining intent: %s', async (message) => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+
+    const reply = await processInboundMessage(buildTextMessage(message), 'corr-restaurant-intent');
+
+    expect(reply).toContain('quick dining request form');
+    expect(reply).toContain('https://forms.yana.example/forms/restaurant/');
+    expect(saveRestaurantFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      message,
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(saveHotelFormSentMock).not.toHaveBeenCalled();
+  });
+
+  it('restores the latest submitted restaurant form and asks for extra preferences', async () => {
+    getLatestServiceRequestMock.mockImplementation(async (_userId: string, type: string) =>
+      type === 'restaurant'
+        ? {
+            id: 'restaurant-request-1',
+            userId: 'whatsapp:+15550009999',
+            type: 'restaurant',
+            form: {
+              location: 'Galle',
+              diningDate: '2026-06-12',
+              diningTime: '19:30',
+              guests: 2,
+              cuisine: 'Seafood',
+              diningStyle: 'Beachfront',
+              priceRange: '$$',
+              dietaryRequirements: 'None',
+              indoorOutdoor: 'Outdoor',
+              specialOccasion: 'Date Night',
+            },
+            createdAt: new Date('2026-06-01T10:00:00.000Z'),
+          }
+        : null
+    );
+
+    const reply = await processInboundMessage(buildTextMessage('done'), 'corr-restaurant-form');
+
+    expect(reply).toContain("I've gathered the following dining preferences");
+    expect(reply).toContain('Location: Galle');
+    expect(reply).toContain('Cuisine: Seafood');
+    expect(reply).toContain('Budget: $$');
+    expect(saveRestaurantAwaitingPreferencesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({
+        location: 'Galle',
+        cuisine: 'Seafood',
+        priceRange: '$$',
+      })
+    );
+  });
+
+  it('acknowledges restaurant preferences immediately and searches in the background', async () => {
+    getRestaurantSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      whatsappUserId: 'whatsapp:+15550009999',
+      stage: 'awaiting_preferences',
+      state: 'awaiting_preferences',
+      criteria: {
+        location: 'Galle',
+        diningDate: '2026-06-12',
+        diningTime: '19:30',
+        guests: 2,
+        cuisine: 'Seafood',
+        priceRange: '$$',
+      },
+      normalizedCriteria: {},
+      resultBatches: [],
+      results: [],
+      latestDisplayedBatchIndex: -1,
+      nextOffset: 0,
+      createdAt: '2026-06-01T10:00:00.000Z',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+      expiresAt: '2026-06-02T10:00:00.000Z',
+    });
+    handleRestaurantBrowseSearchMock.mockResolvedValue({
+      status: 'browse_results',
+      criteria: {},
+      reply: 'Top 3 restaurants',
+      browseResponse: {
+        provider: 'google_places',
+        results: [{ name: 'Restaurant 1' }, { name: 'Restaurant 2' }, { name: 'Restaurant 3' }, { name: 'Restaurant 4' }],
+      },
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('quiet ocean view table'),
+      'corr-restaurant-search'
+    );
+
+    expect(reply).toContain('searching the best restaurant matches');
+    expect(saveRestaurantSearchingMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({
+        location: 'Galle',
+        additionalPreferences: 'quiet ocean view table',
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(handleRestaurantBrowseSearchMock).toHaveBeenCalled();
+    });
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('I found these restaurant matches') }),
+        expect.objectContaining({ body: expect.stringContaining('Why Yana picked it:') }),
+      ]),
+      { voice: undefined, from: 'whatsapp:+15550000000' }
+    );
+    await vi.waitFor(() => {
+      expect(saveRestaurantResultsMock).toHaveBeenCalledWith(
+        'whatsapp:+15550009999',
+        expect.objectContaining({ additionalPreferences: 'quiet ocean view table' }),
+        expect.arrayContaining([expect.objectContaining({ name: 'Restaurant 1' })]),
+        3
+      );
+    });
+  });
+
+  it('paginates saved restaurant suggestions', async () => {
+    const results = [
+      { name: 'Restaurant 1' },
+      { name: 'Restaurant 2' },
+      { name: 'Restaurant 3' },
+      { name: 'Restaurant 4' },
+      { name: 'Restaurant 5' },
+      { name: 'Restaurant 6' },
+    ];
+    getRestaurantSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      whatsappUserId: 'whatsapp:+15550009999',
+      stage: 'results',
+      state: 'awaiting_selection',
+      criteria: { location: 'Galle' },
+      normalizedCriteria: {},
+      resultBatches: [results.slice(0, 3), results.slice(3, 6)],
+      results,
+      latestDisplayedBatchIndex: 0,
+      nextOffset: 3,
+      createdAt: '2026-06-01T10:00:00.000Z',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+      expiresAt: '2026-06-02T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('next'), 'corr-restaurant-next');
+
+    expect(reply).toBe('Next restaurant page reply');
+    expect(buildRestaurantBrowseResultsPageReplyMock).toHaveBeenCalledWith(
+      { location: 'Galle' },
+      [{ name: 'Restaurant 4' }, { name: 'Restaurant 5' }, { name: 'Restaurant 6' }],
+      6,
+      6
+    );
+  });
+
+  it('stores restaurant selection and opens reservation placeholder', async () => {
+    getRestaurantSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      whatsappUserId: 'whatsapp:+15550009999',
+      stage: 'results',
+      state: 'awaiting_selection',
+      criteria: { location: 'Galle' },
+      normalizedCriteria: {},
+      resultBatches: [[{ id: 'place-1', name: 'Sea View Grill' }]],
+      results: [{ id: 'place-1', name: 'Sea View Grill' }],
+      latestDisplayedBatchIndex: 0,
+      nextOffset: 3,
+      createdAt: '2026-06-01T10:00:00.000Z',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+      expiresAt: '2026-06-02T10:00:00.000Z',
+    });
+    selectRestaurantMock.mockResolvedValue({
+      selectedRestaurantId: 'place-1',
+      selectedRestaurantSnapshot: { id: 'place-1', name: 'Sea View Grill' },
+      selectedFromBatchIndex: 0,
+      selectedDisplayNumber: 1,
+      selectedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('book 1'), 'corr-restaurant-book');
+
+    expect(reply).toContain("I've selected Sea View Grill");
+    expect(reply).toContain('check table availability');
+    expect(reply).toContain('reservation provider');
+  });
+
+  it('clears restaurant state on reset', async () => {
+    getRestaurantSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      whatsappUserId: 'whatsapp:+15550009999',
+      stage: 'results',
+      state: 'awaiting_selection',
+      criteria: { location: 'Galle' },
+      normalizedCriteria: {},
+      resultBatches: [],
+      results: [],
+      latestDisplayedBatchIndex: -1,
+      nextOffset: 0,
+      createdAt: '2026-06-01T10:00:00.000Z',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+      expiresAt: '2026-06-02T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-restaurant-reset');
+
+    expect(reply).toContain('cleared the active request');
+    expect(clearRestaurantSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+  });
+
+  it('transcribes a restaurant voice note and starts restaurant flow', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    transcribeMock.mockResolvedValue({
+      transcript: "I'm hungry",
+      contentType: 'audio/ogg',
+      bytes: 2048,
+      model: 'transcription-test-model',
+    });
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-restaurant-voice');
+
+    expect(result.inboundMessage.inputType).toBe('voice');
+    expect(result.reply).toContain('quick dining request form');
+    expect(saveRestaurantFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      "I'm hungry",
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+  });
+
+  it.each([
+    'I want to visit historic places.',
+    "We're looking for adventure.",
+    "I'd like to go surfing.",
+    'I want a safari.',
+    'What are the best things to do in Kandy?',
+  ])('starts the excursion form flow for activity intent: %s', async (message) => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+
+    const reply = await processInboundMessage(buildTextMessage(message), 'corr-excursion-intent');
+
+    expect(reply).toContain('quick excursion request form');
+    expect(reply).toContain('https://forms.yana.example/forms/excursion/');
+    expect(saveExcursionFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      message,
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(saveHotelFormSentMock).not.toHaveBeenCalled();
+  });
+
+  it('restores the latest submitted excursion form and asks for extra preferences', async () => {
+    getLatestServiceRequestMock.mockImplementation(async (_userId: string, type: string) =>
+      type === 'excursion'
+        ? {
+            id: 'excursion-request-1',
+            userId: 'whatsapp:+15550009999',
+            type: 'excursion',
+            form: {
+              destination: 'Ella',
+              preferredDate: '2026-06-12',
+              preferredTime: '08:30',
+              guests: 2,
+              category: 'Hiking',
+              tourType: 'Private',
+              budget: '$$',
+              duration: 'Half Day',
+              fitnessLevel: 'Moderate',
+              transportRequired: 'Yes',
+              pickupLocation: 'Hotel',
+              specialRequirements: 'Photography',
+            },
+            createdAt: new Date('2026-06-01T10:00:00.000Z'),
+          }
+        : null
+    );
+
+    const reply = await processInboundMessage(buildTextMessage('done'), 'corr-excursion-form');
+
+    expect(reply).toContain("I've gathered the following excursion preferences");
+    expect(reply).toContain('Destination: Ella');
+    expect(reply).toContain('Experience: Hiking');
+    expect(reply).toContain('Budget: $$');
+    expect(saveExcursionAwaitingPreferencesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({
+        destination: 'Ella',
+        category: 'Hiking',
+        budget: '$$',
+      })
+    );
+  });
+
+  it('acknowledges excursion preferences immediately and searches in the background', async () => {
+    getExcursionSearchSessionMock.mockResolvedValue(buildExcursionSession({
+      stage: 'awaiting_preferences',
+      state: 'awaiting_preferences',
+      criteria: {
+        destination: 'Ella',
+        preferredDate: '2026-06-12',
+        preferredTime: '08:30',
+        guests: 2,
+        category: 'Hiking',
+        budget: '$$',
+      },
+    }));
+    handleExcursionBrowseSearchMock.mockResolvedValue({
+      status: 'browse_results',
+      criteria: {},
+      reply: 'Top 3 experiences',
+      browseResponse: {
+        provider: 'google_places',
+        results: [{ name: 'Experience 1' }, { name: 'Experience 2' }, { name: 'Experience 3' }, { name: 'Experience 4' }],
+      },
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('beginner friendly with sunset views'),
+      'corr-excursion-search'
+    );
+
+    expect(reply).toContain('searching the best experience matches');
+    expect(saveExcursionSearchingMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({
+        destination: 'Ella',
+        additionalPreferences: 'beginner friendly with sunset views',
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(handleExcursionBrowseSearchMock).toHaveBeenCalled();
+    });
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('I found these experience matches') }),
+        expect.objectContaining({ body: expect.stringContaining('Why Yana picked it:') }),
+      ]),
+      { voice: undefined, from: 'whatsapp:+15550000000' }
+    );
+    await vi.waitFor(() => {
+      expect(saveExcursionResultsMock).toHaveBeenCalledWith(
+        'whatsapp:+15550009999',
+        expect.objectContaining({ additionalPreferences: 'beginner friendly with sunset views' }),
+        expect.arrayContaining([expect.objectContaining({ name: 'Experience 1' })]),
+        3
+      );
+    });
+  });
+
+  it('paginates saved excursion suggestions', async () => {
+    const results = [
+      { name: 'Experience 1' },
+      { name: 'Experience 2' },
+      { name: 'Experience 3' },
+      { name: 'Experience 4' },
+      { name: 'Experience 5' },
+      { name: 'Experience 6' },
+    ];
+    getExcursionSearchSessionMock.mockResolvedValue(buildExcursionSession({
+      stage: 'results',
+      state: 'awaiting_selection',
+      criteria: { destination: 'Ella' },
+      resultBatches: [results.slice(0, 3), results.slice(3, 6)],
+      results,
+      latestDisplayedBatchIndex: 0,
+      nextOffset: 3,
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('next'), 'corr-excursion-next');
+
+    expect(reply).toBe('Next excursion page reply');
+    expect(buildExcursionBrowseResultsPageReplyMock).toHaveBeenCalledWith(
+      { destination: 'Ella' },
+      [{ name: 'Experience 4' }, { name: 'Experience 5' }, { name: 'Experience 6' }],
+      6,
+      6
+    );
+  });
+
+  it('opens the excursion booking request form after selection', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getExcursionSearchSessionMock.mockResolvedValue(buildExcursionSession({
+      stage: 'results',
+      state: 'awaiting_selection',
+      criteria: { destination: 'Ella', guests: 2 },
+      resultBatches: [[{ id: 'place-1', name: 'Little Adam Peak Walk' }]],
+      results: [{ id: 'place-1', name: 'Little Adam Peak Walk' }],
+      latestDisplayedBatchIndex: 0,
+      nextOffset: 3,
+    }));
+    selectExperienceMock.mockResolvedValue({
+      selectedExperienceId: 'place-1',
+      selectedExperienceSnapshot: { id: 'place-1', name: 'Little Adam Peak Walk' },
+      selectedFromBatchIndex: 0,
+      selectedDisplayNumber: 1,
+      selectedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('book 1'), 'corr-excursion-book');
+
+    expect(reply).toContain('booking request form');
+    expect(reply).toContain('https://forms.yana.example/forms/excursion_booking/');
+    expect(selectExperienceMock).toHaveBeenCalledWith('whatsapp:+15550009999', 1);
+  });
+
+  it('clears excursion state on reset', async () => {
+    getExcursionSearchSessionMock.mockResolvedValue(buildExcursionSession({
+      stage: 'results',
+      state: 'awaiting_selection',
+      criteria: { destination: 'Ella' },
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-excursion-reset');
+
+    expect(reply).toContain('cleared the active request');
+    expect(clearExcursionSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+  });
+
+  it('transcribes an excursion voice note and starts excursion flow', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    transcribeMock.mockResolvedValue({
+      transcript: 'I want a safari',
+      contentType: 'audio/ogg',
+      bytes: 2048,
+      model: 'transcription-test-model',
+    });
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-excursion-voice');
+
+    expect(result.inboundMessage.inputType).toBe('voice');
+    expect(result.reply).toContain('quick excursion request form');
+    expect(saveExcursionFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'I want a safari',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+  });
+
+  it.each([
+    'I am planning my trip.',
+    'Plan my holiday.',
+    'Plan my itinerary.',
+    "I'm visiting Sri Lanka.",
+    "I'll be here for a week.",
+    "We're travelling around Sri Lanka.",
+    'I need help planning.',
+  ])('starts the itinerary form flow for trip planning intent: %s', async (message) => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+
+    const reply = await processInboundMessage(buildTextMessage(message), 'corr-itinerary-intent');
+
+    expect(reply).toContain('full trip');
+    expect(reply).toContain('https://forms.yana.example/forms/itinerary/');
+    expect(saveItineraryFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      message,
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(saveHotelFormSentMock).not.toHaveBeenCalled();
+  });
+
+  it('continues the latest submitted itinerary form when the user says done', async () => {
+    getLatestServiceRequestMock.mockImplementation(async (_userId: string, type: string) =>
+      type === 'itinerary'
+        ? {
+            id: 'itinerary-request-1',
+            userId: 'whatsapp:+15550009999',
+            type: 'itinerary',
+            form: {
+              arrivalAirport: 'Colombo',
+              arrivalDate: '2026-07-12',
+              arrivalTime: '10:00',
+              departureAirport: 'Colombo',
+              departureDate: '2026-07-19',
+              departureTime: '21:00',
+              adults: 2,
+              children: 0,
+              budget: 'Comfort',
+              accommodationStyle: 'Boutique',
+              travelStyle: 'Mixed',
+              interests: 'Historical Sites, Wildlife, Adventure, Tea Country',
+              preferredTransport: 'Private Driver',
+            },
+            createdAt: new Date('2026-06-01T10:00:00.000Z'),
+          }
+        : null
+    );
+
+    const reply = await processInboundMessage(buildTextMessage('done'), 'corr-itinerary-form');
+
+    expect(reply).toContain('prepared your itinerary');
+    expect(reply).toContain('Route:');
+    expect(saveItineraryPlanningMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({ arrivalAirport: 'Colombo', preferredTransport: 'Private Driver' })
+    );
+    expect(planItineraryMock).toHaveBeenCalled();
+  });
+
+  it('generates the itinerary after additional preferences', async () => {
+    getItinerarySessionMock.mockResolvedValue(buildItinerarySession({
+      state: 'awaiting_preferences',
+      criteria: {
+        arrivalAirport: 'Colombo',
+        arrivalDate: '2026-07-12',
+        arrivalTime: '10:00',
+        departureAirport: 'Colombo',
+        departureDate: '2026-07-19',
+        departureTime: '21:00',
+        adults: 2,
+        children: 0,
+        budget: 'Comfort',
+        travelStyle: 'Mixed',
+        preferredTransport: 'Private Driver',
+      },
+    }));
+
+    const reply = await processInboundMessage(
+      buildTextMessage('avoid long drives and add safari'),
+      'corr-itinerary-plan'
+    );
+
+    expect(reply).toContain('prepared your itinerary');
+    expect(reply).toContain('Open your interactive itinerary');
+    expect(reply).toContain('Route:');
+    expect(saveItineraryPlanningMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({ additionalPreferences: 'avoid long drives and add safari' })
+    );
+    expect(planItineraryMock).toHaveBeenCalled();
+    expect(saveItineraryMock).toHaveBeenCalled();
+  });
+
+  it('continues from the latest itinerary form instead of asking hotel dates when the session is missing', async () => {
+    getLatestServiceRequestMock.mockImplementation(async (_userId: string, type: string) =>
+      type === 'itinerary'
+        ? {
+            id: 'itinerary-request-1',
+            userId: 'whatsapp:+15550009999',
+            type: 'itinerary',
+            form: {
+              arrivalAirport: 'Colombo',
+              arrivalDate: '2026-07-12',
+              arrivalTime: '10:00',
+              departureAirport: 'Colombo',
+              departureDate: '2026-07-19',
+              departureTime: '21:00',
+              adults: 2,
+              children: 0,
+              budget: 'Comfort',
+              accommodationStyle: 'Boutique',
+              travelStyle: 'Mixed',
+              interests: ['Historical Sites', 'Wildlife', 'Tea Country'],
+              preferredTransport: 'Private Driver',
+            },
+            createdAt: new Date('2026-06-01T10:00:00.000Z'),
+          }
+        : null
+    );
+
+    const reply = await processInboundMessage(buildTextMessage('no'), 'corr-itinerary-no-session');
+
+    expect(reply).toContain('prepared your itinerary');
+    expect(reply).toContain('Route:');
+    expect(reply).not.toContain('check-in');
+    expect(reply).not.toContain('check-out');
+    expect(saveItineraryPlanningMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({ arrivalAirport: 'Colombo', preferredTransport: 'Private Driver' })
+    );
+    expect(planItineraryMock).toHaveBeenCalled();
+    expect(saveHotelFormSentMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the next itinerary day', async () => {
+    getItinerarySessionMock.mockResolvedValue(buildItinerarySession({
+      state: 'showing_itinerary',
+      itinerary: buildGeneratedItinerary(),
+      currentDay: 1,
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('next day'), 'corr-itinerary-next');
+
+    expect(reply).toContain('Day 2');
+    expect(setItineraryCurrentDayMock).toHaveBeenCalledWith('whatsapp:+15550009999', 2);
+  });
+
+  it('regenerates itinerary incrementally for edit requests', async () => {
+    getItinerarySessionMock.mockResolvedValue(buildItinerarySession({
+      state: 'showing_itinerary',
+      itinerary: buildGeneratedItinerary(),
+      criteria: { arrivalAirport: 'Colombo', additionalPreferences: 'avoid long drives' },
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('more beach time'), 'corr-itinerary-edit');
+
+    expect(reply).toContain('prepared your itinerary');
+    expect(planItineraryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalPreferences: 'avoid long drives; more beach time' })
+    );
+    expect(saveItineraryEditingMock).toHaveBeenCalled();
+  });
+
+  it('clears itinerary state on reset', async () => {
+    getItinerarySessionMock.mockResolvedValue(buildItinerarySession({
+      state: 'showing_itinerary',
+      itinerary: buildGeneratedItinerary(),
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-itinerary-reset');
+
+    expect(reply).toContain('cleared the active request');
+    expect(clearItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+  });
+
+  it('transcribes an itinerary voice note and starts itinerary flow', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    transcribeMock.mockResolvedValue({
+      transcript: 'Plan my itinerary',
+      contentType: 'audio/ogg',
+      bytes: 2048,
+      model: 'transcription-test-model',
+    });
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-itinerary-voice');
+
+    expect(result.reply).toContain('full trip');
+    expect(saveItineraryFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'Plan my itinerary',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+  });
+
   it('resumes the saved hotel request by collecting the hotel-specific form', async () => {
     process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      whatsappUserId: 'whatsapp:+15550009999',
+      stage: 'awaiting_preferences',
+      state: 'profile_required',
+      criteria: {},
+      results: [],
+      nextOffset: 0,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
     consumeProfileGateRequestMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       messageText: 'Find a hotel in Galle',
@@ -229,6 +1047,28 @@ describe('webhook hotel search flow', () => {
     expect(reply).toContain('https://forms.yana.example/forms/hotel/');
     expect(consumeProfileGateRequestMock).toHaveBeenCalledWith('whatsapp:+15550009999');
     expect(handleMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('does not show an empty hotel form summary after only the profile form is completed', async () => {
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      whatsappUserId: 'whatsapp:+15550009999',
+      stage: 'awaiting_preferences',
+      state: 'profile_required',
+      criteria: {},
+      results: [],
+      nextOffset: 0,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('done'), 'corr-webhook-profile-only');
+
+    expect(reply).toContain('Hi Sam, I am Yana');
+    expect(reply).toContain('Thank you for the information');
+    expect(reply).not.toContain("I've gathered the following details");
+    expect(reply).not.toContain('Destination: Not provided');
+    expect(saveSearchingMock).not.toHaveBeenCalled();
+    expect(handleBrowseSearchMock).not.toHaveBeenCalled();
   });
 
   it('confirms the latest submitted hotel form before searching', async () => {
@@ -302,7 +1142,7 @@ describe('webhook hotel search flow', () => {
       'corr-webhook-5'
     );
 
-    expect(reply).toContain('Just a moment while I check');
+    expect(reply).toContain('Let me check on that and get back to you');
     expect(saveSearchingMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
       expect.objectContaining({
@@ -333,9 +1173,13 @@ describe('webhook hotel search flow', () => {
         expect.arrayContaining([expect.objectContaining({ name: 'Hotel 1' })]),
         3
       );
-      expect(sendWhatsAppTextMock).toHaveBeenCalledWith(
+      expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
         'whatsapp:+15550009999',
-        'Top 3 Google Places hotels'
+        expect.arrayContaining([
+          expect.objectContaining({ body: expect.stringContaining('I found these hotel matches') }),
+          expect.objectContaining({ body: expect.stringContaining('Why Yana picked it:') }),
+        ]),
+        { voice: undefined, from: 'whatsapp:+15550000000' }
       );
     });
   });
@@ -368,6 +1212,7 @@ describe('webhook hotel search flow', () => {
   it('returns hotel results in the same response when async Twilio outbound is unavailable', async () => {
     twilioOutboundConfiguredMock.mockReturnValue(false);
     sendWhatsAppTextMock.mockResolvedValue(false);
+    sendWhatsAppReplyMock.mockResolvedValue(false);
     getHotelSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       stage: 'awaiting_preferences',
@@ -395,6 +1240,7 @@ describe('webhook hotel search flow', () => {
     const reply = await processInboundMessage(buildTextMessage('beachfront'), 'corr-webhook-15');
 
     expect(reply).toBe('Top 3 Google Places hotels');
+    expectNoInternalPresentationTerms(reply);
     expect(reply).not.toContain('reply "status"');
     expect(handleBrowseSearchMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -415,6 +1261,7 @@ describe('webhook hotel search flow', () => {
       3
     );
     expect(sendWhatsAppTextMock).not.toHaveBeenCalled();
+    expect(sendWhatsAppReplyMock).not.toHaveBeenCalled();
   });
 
   it('keeps the user updated while hotel search is still running', async () => {
@@ -474,7 +1321,7 @@ describe('webhook hotel search flow', () => {
       transcript: 'restart my hotel booking',
       contentType: 'audio/ogg',
       bytes: 2048,
-      model: 'gpt-4o-mini-transcribe',
+      model: 'transcription-test-model',
     });
     getHotelSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
@@ -507,7 +1354,7 @@ describe('webhook hotel search flow', () => {
       transcript: 'next',
       contentType: 'audio/ogg',
       bytes: 2048,
-      model: 'gpt-4o-mini-transcribe',
+      model: 'transcription-test-model',
     });
     const results = [
       { name: 'Hotel 1' },
@@ -530,6 +1377,7 @@ describe('webhook hotel search flow', () => {
 
     expect(result.reply).toContain('I heard: "next"');
     expect(result.reply).toContain('Next page reply');
+    expectNoInternalPresentationTerms(result.reply);
     expect(buildBrowseResultsPageReplyMock).toHaveBeenCalledWith(
       { location: 'Galle Fort' },
       [{ name: 'Hotel 4' }, { name: 'Hotel 5' }, { name: 'Hotel 6' }],
@@ -567,13 +1415,13 @@ describe('webhook hotel search flow', () => {
 
   it('returns a friendly webhook error when voice transcription is not configured', async () => {
     transcribeMock.mockRejectedValue(
-      new SpeechToTextServiceError('OPENAI_API_KEY is required', 'missing_api_key')
+      new SpeechToTextServiceError('TRANSCRIPTION_API_KEY is required', 'missing_api_key')
     );
 
     const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-26');
 
     expect(result.reply).toContain('transcription is not configured yet');
-    expect(result.reply).toContain('OPENAI_API_KEY');
+    expect(result.reply).toContain('TRANSCRIPTION_API_KEY');
   });
 
   it('returns a Twilio setup error when voice media cannot be downloaded without real credentials', async () => {
@@ -697,6 +1545,163 @@ describe('webhook hotel search flow', () => {
     );
     expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
     expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
+  });
+
+  it('does not expose internal intent or field names when asking for missing details', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockResolvedValue({
+      intent: 'search_hotels',
+      parameters: {},
+      missingFields: ['destination', 'travelDates'],
+      suggestedAction: 'ask_missing',
+      confidence: 0.82,
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('help me plan'), 'corr-webhook-style-1');
+
+    expect(reply).toContain('hotel search');
+    expect(reply).toContain('where you would like to go');
+    expect(reply).toContain('your travel dates');
+    expectNoInternalPresentationTerms(reply);
+    expect(reply).not.toContain('I understood this as');
+  });
+
+  it('does not expose unsupported internal intent names in fallback replies', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockResolvedValue({
+      intent: 'general_inquiry',
+      parameters: {},
+      missingFields: [],
+      suggestedAction: 'execute_tool',
+      confidence: 0.8,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('can you help with my trip?'),
+      'corr-webhook-style-2'
+    );
+
+    expect(reply).toContain('travel');
+    expectNoInternalPresentationTerms(reply);
+    expect(reply).not.toContain('I understood this as');
+  });
+
+  it('does not return hotel-only language for a broad Sri Lanka trip planning request', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockResolvedValue({
+      intent: 'general_inquiry',
+      parameters: { destination: 'Sri Lanka' },
+      missingFields: [],
+      suggestedAction: 'clarify',
+      confidence: 0.81,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('I want to plan my trip in Sri Lanka'),
+      'corr-webhook-style-6'
+    );
+
+    expect(reply).toContain('full trip');
+    expect(reply).toContain('/forms/itinerary/');
+    expect(saveItineraryFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'I want to plan my trip in Sri Lanka',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(reply).not.toContain('Which area are you thinking of');
+    expect(reply).not.toContain('your hotel search');
+    expectNoInternalPresentationTerms(reply);
+  });
+
+  it('uses the ConversationManager capabilities template for general inquiry', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockResolvedValue({
+      intent: 'general_inquiry',
+      parameters: {},
+      missingFields: [],
+      suggestedAction: 'execute_tool',
+      confidence: 0.84,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('what else can you do?'),
+      'corr-webhook-style-3'
+    );
+
+    expect(reply).toContain('hotels, transport, restaurants, excursions');
+    expect(reply).toContain('What would you like to organize first?');
+    expectNoInternalPresentationTerms(reply);
+    expect(reply).not.toContain('execute_tool');
+  });
+
+  it('uses the ConversationManager low-confidence fallback template', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockResolvedValue({
+      intent: 'unclear',
+      parameters: {},
+      missingFields: [],
+      suggestedAction: 'clarify',
+      confidence: 0.32,
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('hmm maybe'), 'corr-webhook-style-4');
+
+    expect(reply).toContain('are you looking for help with accommodation');
+    expect(reply).toContain('transport, food, activities, or a full itinerary');
+    expectNoInternalPresentationTerms(reply);
+    expect(reply).not.toContain('unclear');
+  });
+
+  it('uses the ConversationManager trip-planning template in the webhook path', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockResolvedValue({
+      intent: 'general_inquiry',
+      parameters: { duration: 'one week' },
+      missingFields: [],
+      suggestedAction: 'clarify',
+      confidence: 0.82,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('I want to plan my trip in Sri Lanka'),
+      'corr-webhook-style-5'
+    );
+
+    expect(reply).toContain('full trip');
+    expect(reply).toContain('/forms/itinerary/');
+    expect(saveItineraryFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'I want to plan my trip in Sri Lanka',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expectNoInternalPresentationTerms(reply);
+  });
+
+  it('uses the trip-planning style response for a one-week Sri Lanka planning request', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockResolvedValue({
+      intent: 'general_inquiry',
+      parameters: { duration: '1 week', destination: 'Sri Lanka' },
+      missingFields: [],
+      suggestedAction: 'clarify',
+      confidence: 0.86,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('I need to plan my trip in Sri Lanka, I will be here for 1 week'),
+      'corr-webhook-style-7'
+    );
+
+    expect(reply).toContain('full trip');
+    expect(reply).toContain('/forms/itinerary/');
+    expect(saveItineraryFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'I need to plan my trip in Sri Lanka, I will be here for 1 week',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(reply).not.toContain('Which area are you thinking of');
+    expect(reply).not.toContain('your hotel search');
+    expectNoInternalPresentationTerms(reply);
   });
 
   it('returns details for a hotel from the latest displayed batch', async () => {
@@ -914,6 +1919,195 @@ describe('webhook hotel search flow', () => {
     expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
     expect(reply).toContain('I am Yana');
   });
+
+  it.each([
+    'I need a taxi.',
+    'Book me an Uber.',
+    'I need an airport transfer.',
+    'I need a driver tomorrow.',
+    'We need transport for six people.',
+  ])('starts the transport form flow for logistics intent: %s', async (message) => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+
+    const reply = await processInboundMessage(buildTextMessage(message), 'corr-logistics-intent');
+
+    expect(reply).toContain('quick transport request form');
+    expect(reply).toContain('https://forms.yana.example/forms/logistics/');
+    expect(saveTransportFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      message,
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(saveHotelFormSentMock).not.toHaveBeenCalled();
+  });
+
+  it('restores the latest submitted transport form and asks for extra requirements', async () => {
+    getLatestServiceRequestMock.mockImplementation(async (_userId: string, type: string) =>
+      type === 'logistics'
+        ? {
+            id: 'transport-request-1',
+            userId: 'whatsapp:+15550009999',
+            type: 'logistics',
+            form: {
+              pickupLocation: 'Colombo Fort',
+              destination: 'Galle',
+              pickupDate: '2026-07-10',
+              pickupTime: '10:00',
+              passengers: 4,
+              vehicleType: 'SUV',
+              luggage: 'Large',
+            },
+            createdAt: new Date('2026-06-01T10:00:00.000Z'),
+          }
+        : null
+    );
+
+    const reply = await processInboundMessage(buildTextMessage('done'), 'corr-logistics-form');
+
+    expect(reply).toContain("I've gathered your transport details");
+    expect(reply).toContain('Pickup: Colombo Fort');
+    expect(reply).toContain('Destination: Galle');
+    expect(saveLogisticsAwaitingPreferencesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({ pickupLocation: 'Colombo Fort', destination: 'Galle' })
+    );
+  });
+
+  it('acknowledges transport requirements immediately and searches in the background', async () => {
+    getLogisticsSearchSessionMock.mockResolvedValue(buildLogisticsSession({
+      stage: 'awaiting_preferences',
+      state: 'awaiting_preferences',
+      criteria: {
+        pickupLocation: 'Colombo Fort',
+        destination: 'Galle',
+        pickupDate: '2026-07-10',
+        pickupTime: '10:00',
+        passengers: 4,
+      },
+    }));
+    handleLogisticsProviderSearchMock.mockResolvedValue({
+      status: 'provider_options',
+      criteria: {},
+      reply: 'Top 3 transport',
+      options: [
+        { id: '1', provider: 'Private Driver', vehicle: 'SUV', estimatedPrice: '$$', vehicleType: 'SUV', capacity: 5, luggageCapacity: 'Large', estimatedDuration: 'Confirm live route time' },
+        { id: '2', provider: 'Airport Transfer', vehicle: 'Van', estimatedPrice: '$$$', vehicleType: 'Van', capacity: 7, luggageCapacity: 'Large', estimatedDuration: 'Confirm live route time' },
+        { id: '3', provider: 'Local Transfer', vehicle: 'Comfort car', estimatedPrice: '$$', vehicleType: 'Comfort', capacity: 3, luggageCapacity: 'Medium', estimatedDuration: 'Confirm live route time' },
+        { id: '4', provider: 'Private Chauffeur', vehicle: 'Luxury car', estimatedPrice: '$$$$', vehicleType: 'Luxury', capacity: 3, luggageCapacity: 'Medium', estimatedDuration: 'Confirm live route time' },
+      ],
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('English-speaking driver with multiple stops'),
+      'corr-logistics-search'
+    );
+
+    expect(reply).toContain('searching the best transport matches');
+    expect(saveLogisticsSearchingMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({
+        pickupLocation: 'Colombo Fort',
+        additionalPreferences: 'English-speaking driver with multiple stops',
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(handleLogisticsProviderSearchMock).toHaveBeenCalled();
+    });
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('I found these transport options') }),
+        expect.objectContaining({ body: expect.stringContaining('Why Yana picked it:') }),
+      ]),
+      { voice: undefined, from: 'whatsapp:+15550000000' }
+    );
+  });
+
+  it('paginates saved transport suggestions', async () => {
+    getLogisticsSearchSessionMock.mockResolvedValue(buildLogisticsSession({
+      stage: 'results',
+      state: 'awaiting_selection',
+      criteria: { pickupLocation: 'Colombo', destination: 'Galle' },
+      results: [
+        { id: '1', provider: 'Provider 1', vehicle: 'SUV', estimatedPrice: '$$', vehicleType: 'SUV', capacity: 5, luggageCapacity: 'Large', estimatedDuration: '2h' },
+        { id: '2', provider: 'Provider 2', vehicle: 'Van', estimatedPrice: '$$$', vehicleType: 'Van', capacity: 7, luggageCapacity: 'Large', estimatedDuration: '2h' },
+        { id: '3', provider: 'Provider 3', vehicle: 'Car', estimatedPrice: '$$', vehicleType: 'Comfort', capacity: 3, luggageCapacity: 'Medium', estimatedDuration: '2h' },
+        { id: '4', provider: 'Provider 4', vehicle: 'Luxury', estimatedPrice: '$$$$', vehicleType: 'Luxury', capacity: 3, luggageCapacity: 'Medium', estimatedDuration: '2h' },
+      ],
+      resultBatches: [
+        [
+          { id: '1', provider: 'Provider 1', vehicle: 'SUV', estimatedPrice: '$$', vehicleType: 'SUV', capacity: 5, luggageCapacity: 'Large', estimatedDuration: '2h' },
+          { id: '2', provider: 'Provider 2', vehicle: 'Van', estimatedPrice: '$$$', vehicleType: 'Van', capacity: 7, luggageCapacity: 'Large', estimatedDuration: '2h' },
+          { id: '3', provider: 'Provider 3', vehicle: 'Car', estimatedPrice: '$$', vehicleType: 'Comfort', capacity: 3, luggageCapacity: 'Medium', estimatedDuration: '2h' },
+        ],
+        [
+          { id: '4', provider: 'Provider 4', vehicle: 'Luxury', estimatedPrice: '$$$$', vehicleType: 'Luxury', capacity: 3, luggageCapacity: 'Medium', estimatedDuration: '2h' },
+        ],
+      ],
+      latestDisplayedBatchIndex: 0,
+      nextOffset: 3,
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('next'), 'corr-logistics-next');
+
+    expect(reply).toBe('Next transport page reply');
+    expect(saveLogisticsResultsMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({ pickupLocation: 'Colombo' }),
+      expect.any(Array),
+      4
+    );
+  });
+
+  it('opens the transport booking request form after selection', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getLogisticsSearchSessionMock.mockResolvedValue(buildLogisticsSession({
+      stage: 'results',
+      state: 'awaiting_selection',
+      latestDisplayedBatchIndex: 0,
+    }));
+    selectTransportOptionMock.mockResolvedValue({
+      selectedOptionSnapshot: { id: '1', provider: 'Private Driver', vehicle: 'SUV' },
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('book 1'), 'corr-logistics-book');
+
+    expect(reply).toContain('short transport booking form');
+    expect(reply).toContain('https://forms.yana.example/forms/logistics_booking/');
+    expect(selectTransportOptionMock).toHaveBeenCalledWith('whatsapp:+15550009999', 1);
+  });
+
+  it('clears transport state on reset', async () => {
+    getLogisticsSearchSessionMock.mockResolvedValue(buildLogisticsSession({
+      stage: 'results',
+      state: 'awaiting_selection',
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-logistics-reset');
+
+    expect(reply).toContain('cleared the active request');
+    expect(clearLogisticsSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+  });
+
+  it('transcribes a transport voice note and starts transport flow', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    transcribeMock.mockResolvedValue({
+      transcript: 'I need an airport transfer',
+      contentType: 'audio/ogg',
+      bytes: 2048,
+      model: 'transcription-test-model',
+    });
+
+    const result = await processWebhookPayload(buildAudioPayload(), 'corr-logistics-voice');
+
+    expect(result.reply).toContain('quick transport request form');
+    expect(saveTransportFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'I need an airport transfer',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+  });
 });
 
 function buildTextMessage(body: string): InboundMessage {
@@ -935,6 +2129,102 @@ function buildTextMessage(body: string): InboundMessage {
   };
 }
 
+function buildExcursionSession(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 'whatsapp:+15550009999',
+    whatsappUserId: 'whatsapp:+15550009999',
+    stage: 'awaiting_preferences',
+    state: 'awaiting_preferences',
+    criteria: {},
+    normalizedCriteria: {},
+    resultBatches: [],
+    results: [],
+    latestDisplayedBatchIndex: -1,
+    nextOffset: 0,
+    createdAt: '2026-06-01T10:00:00.000Z',
+    updatedAt: '2026-06-01T10:00:00.000Z',
+    expiresAt: '2026-06-02T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function buildLogisticsSession(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 'whatsapp:+15550009999',
+    whatsappUserId: 'whatsapp:+15550009999',
+    stage: 'awaiting_preferences',
+    state: 'awaiting_preferences',
+    criteria: {},
+    normalizedCriteria: {},
+    resultBatches: [],
+    results: [],
+    latestDisplayedBatchIndex: -1,
+    nextOffset: 0,
+    createdAt: '2026-06-01T10:00:00.000Z',
+    updatedAt: '2026-06-01T10:00:00.000Z',
+    expiresAt: '2026-06-02T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function buildItinerarySession(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 'whatsapp:+15550009999',
+    whatsappUserId: 'whatsapp:+15550009999',
+    state: 'awaiting_preferences',
+    criteria: {},
+    createdAt: '2026-06-01T10:00:00.000Z',
+    updatedAt: '2026-06-01T10:00:00.000Z',
+    expiresAt: '2026-06-08T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function buildGeneratedItinerary() {
+  return {
+    overview: '7 day itinerary around Sri Lanka',
+    mapSummary: 'Colombo -> Kandy -> Ella -> Galle',
+    budgetEstimate: 'Comfort style across 7 days',
+    weatherNotes: 'Check weather close to travel dates.',
+    orchestration: {
+      hotels: [],
+      restaurants: [],
+      excursions: [],
+      logistics: [],
+    },
+    days: [
+      {
+        day: 1,
+        date: '2026-07-12',
+        location: 'Colombo',
+        morning: 'Arrive and transfer to Colombo.',
+        afternoon: 'Light city orientation.',
+        evening: 'Dinner near hotel.',
+        hotel: 'Comfort stay in Colombo',
+        restaurantSuggestions: ['Breakfast near Colombo', 'Lunch near Fort', 'Dinner in Colombo'],
+        experiences: ['Local culture', 'Food Experiences'],
+        transport: 'Private Driver',
+        estimatedTravelTime: 'Airport transfer timing to confirm',
+        approximateCost: 'Comfort day estimate',
+      },
+      {
+        day: 2,
+        date: '2026-07-13',
+        location: 'Kandy',
+        morning: 'Travel to Kandy.',
+        afternoon: 'Temple and lake walk.',
+        evening: 'Dinner in Kandy.',
+        hotel: 'Boutique stay in Kandy',
+        restaurantSuggestions: ['Breakfast near hotel', 'Lunch in Kandy', 'Dinner in Kandy'],
+        experiences: ['Historical Sites', 'Temples'],
+        transport: 'Private Driver',
+        estimatedTravelTime: '2-3 hours',
+        approximateCost: 'Comfort day estimate',
+      },
+    ],
+  };
+}
+
 function buildAudioPayload(mediaUrl = 'https://api.twilio.com/audio.ogg') {
   return {
     MessageSid: 'SMvoice001',
@@ -945,4 +2235,17 @@ function buildAudioPayload(mediaUrl = 'https://api.twilio.com/audio.ogg') {
     MediaContentType0: 'audio/ogg; codecs=opus',
     ProfileName: 'Test Traveler',
   };
+}
+
+function expectNoInternalPresentationTerms(reply: string): void {
+  for (const term of [
+    'search_hotels',
+    'general_inquiry',
+    'ASK_MISSING_FIELDS',
+    'EXECUTE_SEARCH',
+    'confidence',
+    'travelDates',
+  ]) {
+    expect(reply).not.toContain(term);
+  }
 }

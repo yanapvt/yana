@@ -63,6 +63,23 @@ const checkbox = z.preprocess(
   z.boolean()
 );
 
+const multiSelectText = (
+  label: string,
+  maxItems = 40,
+  maxLength = 80
+) =>
+  z.preprocess(
+    (value) => {
+      if (Array.isArray(value)) return value;
+      if (typeof value === 'string' && sanitizeText(value) !== '') return [value];
+      return [];
+    },
+    z
+      .array(text(label, maxLength))
+      .max(maxItems)
+      .transform((values) => Array.from(new Set(values)))
+  );
+
 export const basicProfileFormSchema = z.object({
   fullName: text('Full name'),
   preferredName: text('Preferred name'),
@@ -117,32 +134,145 @@ export const hotelRequestFormSchema = z
 
 export const restaurantRequestFormSchema = z.object({
   location: text('Location'),
-  date: requiredDate('Date'),
-  time: requiredTime('Time'),
+  diningDate: requiredDate('Dining date'),
+  diningTime: requiredTime('Preferred dining time'),
   guests: integerField('Guests', 1, 50),
-  cuisinePreference: optionalText(120),
-  budget: text('Budget', 80),
-  dietaryRestrictions: optionalText(),
-  ambience: optionalText(100),
+  cuisine: optionalText(120),
+  diningStyle: optionalText(120),
+  priceRange: text('Price range', 4),
+  dietaryRequirements: optionalText(180),
   indoorOutdoor: optionalText(40),
-  occasion: optionalText(120),
+  specialOccasion: optionalText(120),
 });
 
-export const logisticsRequestFormSchema = z.object({
-  pickupLocation: text('Pickup location'),
-  dropOffLocation: text('Drop-off location'),
-  date: requiredDate('Date'),
-  time: requiredTime('Time'),
-  passengers: integerField('Passengers', 1, 30),
-  luggageCount: integerField('Luggage count', 0, 50),
-  vehicleType: optionalText(80),
+export const itineraryRequestFormSchema = z
+  .object({
+    arrivalAirport: optionalText(120),
+    arrivalDate: requiredDate('Arrival date'),
+    arrivalTime: requiredTime('Arrival time'),
+    departureAirport: optionalText(120),
+    departureDate: requiredDate('Departure date'),
+    departureTime: requiredTime('Departure time'),
+    adults: integerField('Adults', 1, 30),
+    children: integerField('Children', 0, 20),
+    childAges: optionalText(100),
+    budget: text('Budget', 40),
+    accommodationStyle: optionalText(80),
+    travelStyle: text('Travel style', 80),
+    interests: multiSelectText('Interests'),
+    preferredTransport: optionalText(120),
+    walkingPreference: optionalText(80),
+    specialRequirements: optionalText(220),
+  })
+  .superRefine(({ arrivalDate, departureDate }, ctx) => {
+    if (departureDate < arrivalDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['departureDate'],
+        message: 'Departure date must be after arrival date.',
+      });
+    }
+  });
+
+export const excursionRequestFormSchema = z.object({
+  destination: text('Destination / area'),
+  preferredDate: requiredDate('Preferred date'),
+  preferredTime: requiredTime('Preferred time'),
+  guests: integerField('Guests', 1, 50),
+  category: optionalText(120),
+  tourType: optionalText(120),
+  budget: text('Budget', 4),
+  duration: optionalText(80),
+  fitnessLevel: optionalText(80),
+  transportRequired: optionalText(20),
+  pickupLocation: optionalText(160),
+  specialRequirements: optionalText(220),
+});
+
+export const excursionBookingFormSchema = z.object({
+  preferredDate: requiredDate('Preferred date'),
+  preferredTime: requiredTime('Preferred time'),
+  pickupLocation: text('Pickup location', 160),
+  guestNames: text('Guest names', 500),
+  contactNumber: text('Contact number', 40),
+  specialRequests: optionalText(300),
+});
+
+export const logisticsRequestFormSchema = z
+  .object({
+    pickupLocation: text('Pickup location'),
+    destination: optionalText(180),
+    dropOffLocation: optionalText(180),
+    pickupDate: z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() ? value : undefined),
+      z.string().optional()
+    ),
+    date: z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() ? value : undefined),
+      z.string().optional()
+    ),
+    pickupTime: z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() ? value : undefined),
+      z.string().optional()
+    ),
+    time: z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() ? value : undefined),
+      z.string().optional()
+    ),
+    passengers: integerField('Passengers', 1, 60),
+    luggage: optionalText(80),
+    luggageCount: z.preprocess(
+      (value) => (value === undefined || value === '' ? undefined : value),
+      z.coerce.number().int().min(0).max(50).optional()
+    ),
+    vehicleType: optionalText(80),
+    childSeatsRequired: optionalText(80),
+    accessibility: optionalText(120),
+    journeyType: optionalText(120),
+    preferredProvider: optionalText(120),
+    specialRequirements: optionalText(220),
+    flightNumber: optionalText(32),
+    childSeat: checkbox.optional(),
+    budget: optionalText(80),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.destination && !value.dropOffLocation) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['destination'],
+        message: 'Destination is required.',
+      });
+    }
+    if (!value.pickupDate && !value.date) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pickupDate'],
+        message: 'Pickup date is required.',
+      });
+    }
+    if (!value.pickupTime && !value.time) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pickupTime'],
+        message: 'Pickup time is required.',
+      });
+    }
+  });
+
+export const logisticsBookingFormSchema = z.object({
+  passengerName: text('Passenger name', 160),
+  phoneNumber: text('Phone number', 40),
+  pickupContact: text('Pickup contact', 160),
   flightNumber: optionalText(32),
-  childSeat: checkbox,
-  budget: text('Budget', 80),
+  notes: optionalText(300),
 });
 
 export type FormSchema =
   | typeof basicProfileFormSchema
   | typeof hotelRequestFormSchema
   | typeof restaurantRequestFormSchema
-  | typeof logisticsRequestFormSchema;
+  | typeof itineraryRequestFormSchema
+  | typeof excursionRequestFormSchema
+  | typeof excursionBookingFormSchema
+  | typeof logisticsRequestFormSchema
+  | typeof logisticsBookingFormSchema;

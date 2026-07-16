@@ -57,8 +57,11 @@ const EnvironmentSchema = z.object({
   }),
 
   voice: z.object({
+    provider: z.string().min(1).default('openai'),
+    apiKey: isNonProductionMode ? z.string().optional() : z.string().min(1),
+    baseUrl: z.string().url().optional(),
     openAiApiKey: isNonProductionMode ? z.string().optional() : z.string().min(1),
-    transcriptionModel: z.string().min(1).default('gpt-4o-mini-transcribe'),
+    transcriptionModel: z.string().min(1),
     maxMb: z.number().positive().default(10),
   }),
 
@@ -141,8 +144,18 @@ function loadEnvironmentConfig(): EnvironmentConfig {
     },
 
     voice: {
+      provider: process.env.TRANSCRIPTION_PROVIDER || process.env.LLM_PROVIDER || 'openai',
+      apiKey:
+        process.env.TRANSCRIPTION_API_KEY ||
+        process.env.OPENAI_API_KEY ||
+        process.env.LLM_API_KEY,
+      baseUrl: process.env.TRANSCRIPTION_BASE_URL || process.env.LLM_BASE_URL,
       openAiApiKey: process.env.OPENAI_API_KEY,
-      transcriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-mini-transcribe',
+      transcriptionModel:
+        process.env.TRANSCRIPTION_MODEL ||
+        process.env.OPENAI_TRANSCRIPTION_MODEL ||
+        process.env.GROQ_TRANSCRIPTION_MODEL ||
+        '',
       maxMb: parseFloat(process.env.VOICE_NOTE_MAX_MB || '10'),
     },
 

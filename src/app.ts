@@ -8,6 +8,7 @@ import webhookRoutes from './routes/webhook.js';
 import demoRouter from './routes/demo.js';
 import formsRouter from './routes/forms.js';
 import mediaRouter from './routes/media.js';
+import itineraryWorkspaceRouter from './routes/itineraryWorkspace.js';
 
 /**
  * Creates and configures the Express application
@@ -34,6 +35,9 @@ export function createApp(): Express {
 
   // Mount safe media proxy routes
   app.use('/', mediaRouter);
+
+  // Mount interactive itinerary workspace routes
+  app.use('/', itineraryWorkspaceRouter);
 
   // Mount demo/playground routes
   app.use('/demo', demoRouter);

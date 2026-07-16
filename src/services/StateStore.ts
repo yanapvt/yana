@@ -89,6 +89,7 @@ export class StateStore {
   private client: RedisClientType | UpstashRedisClient;
   private connected: boolean = false;
   private isUpstash: boolean = false;
+  private fallbackStore = new Map<string, { value: string; expiresAt: number }>();
 
   constructor() {
     // Check if using Upstash Redis REST API
@@ -108,6 +109,8 @@ export class StateStore {
         socket: {
           host: env.redis.host,
           port: env.redis.port,
+          connectTimeout: 1000,
+          reconnectStrategy: false,
         },
         password: env.redis.password,
         database: env.redis.db,
@@ -149,7 +152,12 @@ export class StateStore {
     }
 
     if (!this.connected) {
-      await (this.client as RedisClientType).connect();
+      try {
+        await (this.client as RedisClientType).connect();
+      } catch (error) {
+        this.connected = false;
+        console.warn('[StateStore] Redis is unavailable; using in-memory session fallback');
+      }
     }
   }
 
@@ -195,7 +203,12 @@ export class StateStore {
     const ttl = ttlSeconds ?? env.operational.sessionTtlSeconds;
     const serialized = JSON.stringify(state);
 
-    await this.client.setEx(key, ttl, serialized);
+    try {
+      await this.connect();
+      await this.client.setEx(key, ttl, serialized);
+    } catch {
+      this.setFallback(key, serialized, ttl);
+    }
   }
 
   /**
@@ -205,7 +218,13 @@ export class StateStore {
    */
   async getSessionState(sessionId: string): Promise<SessionState | null> {
     const key = this.getSessionKey(sessionId);
-    const data = await this.client.get(key);
+    let data: string | null;
+    try {
+      await this.connect();
+      data = await this.client.get(key);
+    } catch {
+      data = this.getFallback(key);
+    }
 
     if (!data) {
       return null;
@@ -226,8 +245,13 @@ export class StateStore {
    */
   async deleteSessionState(sessionId: string): Promise<boolean> {
     const key = this.getSessionKey(sessionId);
-    const result = await this.client.del(key);
-    return result > 0;
+    try {
+      await this.connect();
+      const result = await this.client.del(key);
+      return result > 0;
+    } catch {
+      return this.deleteFallback(key);
+    }
   }
 
   // ==========================================================================
@@ -240,13 +264,23 @@ export class StateStore {
     ttlSeconds?: number
   ): Promise<void> {
     const ttl = ttlSeconds ?? env.operational.sessionTtlSeconds;
-    await this.connect();
-    await this.client.setEx(key, ttl, JSON.stringify(value));
+    const serialized = JSON.stringify(value);
+    try {
+      await this.connect();
+      await this.client.setEx(key, ttl, serialized);
+    } catch {
+      this.setFallback(key, serialized, ttl);
+    }
   }
 
   async getJson<T>(key: string): Promise<T | null> {
-    await this.connect();
-    const data = await this.client.get(key);
+    let data: string | null;
+    try {
+      await this.connect();
+      data = await this.client.get(key);
+    } catch {
+      data = this.getFallback(key);
+    }
 
     if (!data) {
       return null;
@@ -261,9 +295,13 @@ export class StateStore {
   }
 
   async deleteKey(key: string): Promise<boolean> {
-    await this.connect();
-    const result = await this.client.del(key);
-    return result > 0;
+    try {
+      await this.connect();
+      const result = await this.client.del(key);
+      return result > 0;
+    } catch {
+      return this.deleteFallback(key);
+    }
   }
 
   // ==========================================================================
@@ -287,7 +325,12 @@ export class StateStore {
       timestamp: entry.timestamp.toISOString(),
     });
 
-    await this.client.setEx(key, ttlSeconds, serialized);
+    try {
+      await this.connect();
+      await this.client.setEx(key, ttlSeconds, serialized);
+    } catch {
+      this.setFallback(key, serialized, ttlSeconds);
+    }
   }
 
   /**
@@ -297,7 +340,13 @@ export class StateStore {
    */
   async getToolCache(cacheKey: string): Promise<ToolCacheEntry | null> {
     const key = this.getToolCacheKey(cacheKey);
-    const data = await this.client.get(key);
+    let data: string | null;
+    try {
+      await this.connect();
+      data = await this.client.get(key);
+    } catch {
+      data = this.getFallback(key);
+    }
 
     if (!data) {
       return null;
@@ -337,7 +386,34 @@ export class StateStore {
    * Flush all data (use with caution, primarily for testing)
    */
   async flushAll(): Promise<void> {
-    await this.client.flushDb();
+    this.fallbackStore.clear();
+    try {
+      await this.connect();
+      await this.client.flushDb();
+    } catch {
+      // Redis may be intentionally unavailable in local tests; fallback was already cleared.
+    }
+  }
+
+  private setFallback(key: string, value: string, ttlSeconds: number): void {
+    this.fallbackStore.set(key, {
+      value,
+      expiresAt: Date.now() + ttlSeconds * 1000,
+    });
+  }
+
+  private getFallback(key: string): string | null {
+    const entry = this.fallbackStore.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.fallbackStore.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  private deleteFallback(key: string): boolean {
+    return this.fallbackStore.delete(key);
   }
 }
 
