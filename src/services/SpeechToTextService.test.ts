@@ -84,4 +84,39 @@ describe('SpeechToTextService', () => {
       })
     );
   });
+
+  it('transcribes embedded OpenWA voice media without Twilio media credentials', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ text: 'openwa voice works' }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const service = new SpeechToTextService({
+      provider: 'groq',
+      apiKey: 'gsk_test_key',
+      transcriptionModel: 'whisper-test',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      twilioAccountSid: 'dev_account_sid',
+      twilioAuthToken: 'dev_auth_token',
+    });
+
+    const result = await service.transcribe({
+      mediaUrl: `data:audio/ogg;base64,${Buffer.from('voice bytes').toString('base64')}`,
+      contentType: 'audio/ogg',
+      messageSid: 'openwa-voice-1',
+      userId: 'whatsapp:+94777269221',
+    });
+
+    expect(result.transcript).toBe('openwa voice works');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.groq.com/openai/v1/audio/transcriptions',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer gsk_test_key',
+        }),
+      })
+    );
+  });
 });

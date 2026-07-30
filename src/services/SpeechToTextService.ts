@@ -93,12 +93,7 @@ export class SpeechToTextService {
       );
     }
 
-    if (
-      !this.twilioAccountSid ||
-      !this.twilioAuthToken ||
-      this.twilioAccountSid === 'dev_account_sid' ||
-      this.twilioAuthToken === 'dev_auth_token'
-    ) {
+    if (isTwilioMediaUrl(input.mediaUrl) && !this.hasRealTwilioCredentials()) {
       throw new SpeechToTextServiceError(
         'Real Twilio Account SID/Auth Token are required to download voice media',
         'missing_twilio_credentials'
@@ -124,13 +119,18 @@ export class SpeechToTextService {
   }
 
   private async downloadAudio(mediaUrl: string, expectedContentType?: string): Promise<DownloadedAudio> {
-    const response = await fetch(mediaUrl, {
-      headers: {
-        Authorization: `Basic ${Buffer.from(
-          `${this.twilioAccountSid}:${this.twilioAuthToken}`
-        ).toString('base64')}`,
-      },
-    });
+    if (/^data:/i.test(mediaUrl)) {
+      return this.readDataUrlAudio(mediaUrl, expectedContentType);
+    }
+
+    const headers: Record<string, string> = {};
+    if (isTwilioMediaUrl(mediaUrl) && this.hasRealTwilioCredentials()) {
+      headers.Authorization = `Basic ${Buffer.from(
+        `${this.twilioAccountSid}:${this.twilioAuthToken}`
+      ).toString('base64')}`;
+    }
+
+    const response = await fetch(mediaUrl, { headers });
 
     if (!response.ok) {
       throw new SpeechToTextServiceError(
@@ -159,6 +159,45 @@ export class SpeechToTextService {
     }
 
     return { bytes, contentType };
+  }
+
+  private readDataUrlAudio(mediaUrl: string, expectedContentType?: string): DownloadedAudio {
+    const match = mediaUrl.match(/^data:([^,]*),(.*)$/is);
+    if (!match) {
+      throw new SpeechToTextServiceError('Invalid embedded voice media', 'download_failed');
+    }
+
+    const metadata = match[1] || '';
+    const isBase64 = /(?:^|;)base64(?:;|$)/i.test(metadata);
+    const contentType = metadata.replace(/;base64/gi, '').trim() || expectedContentType || '';
+    if (!isSupportedVoiceContentType(contentType)) {
+      throw new SpeechToTextServiceError(
+        `Unsupported embedded voice media type: ${contentType || 'unknown'}`,
+        'unsupported_media_type'
+      );
+    }
+
+    const payload = match[2] || '';
+    const bytes = isBase64
+      ? Buffer.from(payload, 'base64')
+      : Buffer.from(decodeURIComponent(payload), 'utf8');
+    if (bytes.byteLength > this.maxBytes) {
+      throw new SpeechToTextServiceError('Voice note is too large', 'media_too_large');
+    }
+
+    return {
+      bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      contentType,
+    };
+  }
+
+  private hasRealTwilioCredentials(): boolean {
+    return Boolean(
+      this.twilioAccountSid &&
+        this.twilioAuthToken &&
+        this.twilioAccountSid !== 'dev_account_sid' &&
+        this.twilioAuthToken !== 'dev_auth_token'
+    );
   }
 
   private async transcribeWithProvider(audio: DownloadedAudio, messageSid: string): Promise<string> {
@@ -197,6 +236,15 @@ export class SpeechToTextService {
     }
 
     return transcript;
+  }
+}
+
+function isTwilioMediaUrl(mediaUrl: string): boolean {
+  try {
+    const url = new URL(mediaUrl);
+    return /(^|\.)twilio\.com$/i.test(url.hostname);
+  } catch {
+    return false;
   }
 }
 

@@ -36,7 +36,9 @@ import {
 import { mapItineraryRequestFormToCriteria } from '../services/itineraryRequestMapper.js';
 import { getProfileService } from '../services/profileService.js';
 import { getTwilioOutboundService } from '../services/twilioOutboundService.js';
+import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
+import { env } from '../config/environment.js';
 import type { HotelSearchCriteria } from '../services/HotelIntakeService.js';
 import {
   basicProfileFormSchema,
@@ -796,13 +798,21 @@ async function sendFormCompletionMessages(userId: string, messages: string[]): P
   let sentAny = false;
   try {
     for (const message of messages) {
-      const sent = await getTwilioOutboundService().sendWhatsAppText(userId, message);
+      const sent = await getFormCompletionOutboundService().sendWhatsAppText(userId, message);
       sentAny = sentAny || sent;
     }
   } catch (error) {
     console.error('[forms] Failed to send form completion WhatsApp message:', error);
   }
   return sentAny;
+}
+
+function getFormCompletionOutboundService(): { sendWhatsAppText(to: string, body: string): Promise<boolean> } {
+  if (env.whatsapp.provider === 'openwa') {
+    return getOpenWaOutboundService();
+  }
+
+  return getTwilioOutboundService();
 }
 
 async function clearCompetingSearchSessions(
@@ -830,7 +840,15 @@ function buildProfileCompletionMessage(form: BasicProfileForm): string {
   const name = form.preferredName || form.fullName;
   const greeting = name ? `Hi ${name}` : 'Hi';
 
-  return `${greeting}, I am Yana, your personal tour concierge. Thank you for the information, I will keep that context in mind. I can help with hotels, transport, restaurants, excursions, itinerary planning, local recommendations, or anything else you need while planning your tour. How can I help you today?`;
+  return [
+    `${greeting}, I am Yana, your personal tour concierge.`,
+    '',
+    'Thanks, your profile is set. I am back with you here on WhatsApp now.',
+    '',
+    'You can ask me for hotels, transport, restaurants, excursions, a full itinerary, or local recommendations.',
+    '',
+    'What would you like help with first?',
+  ].join('\n');
 }
 
 function buildHotelCompletionMessage(criteria: HotelSearchCriteria): string {

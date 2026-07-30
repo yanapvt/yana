@@ -30,6 +30,17 @@ const EnvironmentSchema = z.object({
     webhookSecret: isNonProductionMode ? z.string().default('dev_webhook_secret') : z.string().min(1),
   }),
 
+  whatsapp: z.object({
+    provider: z.enum(['twilio', 'openwa']).default('twilio'),
+  }),
+
+  openwa: z.object({
+    baseUrl: z.string().url().optional(),
+    apiKey: z.string().optional(),
+    sessionId: z.string().optional(),
+    webhookSecret: z.string().optional(),
+  }),
+
   // Database (optional in development/test)
   postgres: z.object({
     host: z.string().min(1),
@@ -118,6 +129,17 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       authToken: process.env.TWILIO_AUTH_TOKEN || '',
       whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER || '',
       webhookSecret: process.env.TWILIO_WEBHOOK_SECRET || '',
+    },
+
+    whatsapp: {
+      provider: process.env.WHATSAPP_PROVIDER === 'openwa' ? 'openwa' : 'twilio',
+    },
+
+    openwa: {
+      baseUrl: process.env.OPENWA_BASE_URL,
+      apiKey: process.env.OPENWA_API_KEY,
+      sessionId: process.env.OPENWA_SESSION_ID,
+      webhookSecret: process.env.OPENWA_WEBHOOK_SECRET,
     },
 
     postgres: {

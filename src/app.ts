@@ -5,6 +5,7 @@
 
 import express, { Express } from 'express';
 import webhookRoutes from './routes/webhook.js';
+import openWaWebhookRoutes from './routes/openWaWebhook.js';
 import demoRouter from './routes/demo.js';
 import formsRouter from './routes/forms.js';
 import mediaRouter from './routes/media.js';
@@ -29,6 +30,7 @@ export function createApp(): Express {
 
   // Mount webhook routes
   app.use('/', webhookRoutes);
+  app.use('/', openWaWebhookRoutes);
 
   // Mount secure external collection forms
   app.use('/', formsRouter);

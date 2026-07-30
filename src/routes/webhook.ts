@@ -81,6 +81,8 @@ import {
   splitWhatsAppText,
   type WhatsAppOutboundMessage,
 } from '../services/twilioOutboundService.js';
+import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
+import { env } from '../config/environment.js';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
 import { getConversationManager } from '../services/ConversationManager.js';
 import {
@@ -221,11 +223,18 @@ export async function processWebhookPayload(
   correlationId: string,
   normalizedMessage = normalizeInboundMessage(payload)
 ): Promise<{ inboundMessage: InboundMessage; reply: string }> {
-  const voiceInput = await transcribeVoiceInputIfNeeded(normalizedMessage, correlationId);
+  return processNormalizedInboundMessage(normalizedMessage, correlationId);
+}
+
+export async function processNormalizedInboundMessage(
+  inboundMessage: InboundMessage,
+  correlationId: string
+): Promise<{ inboundMessage: InboundMessage; reply: string }> {
+  const voiceInput = await transcribeVoiceInputIfNeeded(inboundMessage, correlationId);
 
   if (voiceInput.status === 'error') {
     return {
-      inboundMessage: normalizedMessage,
+      inboundMessage,
       reply: voiceInput.message,
     };
   }
@@ -296,6 +305,16 @@ export async function processInboundMessage(
     inboundText,
     correlationId
   );
+
+  const explicitServiceSwitchReply = await handleExplicitServiceSwitch(
+    inboundMessage.from,
+    userMessage,
+    inboundText
+  );
+
+  if (explicitServiceSwitchReply) {
+    return explicitServiceSwitchReply;
+  }
 
   const activeItinerarySession = await getItinerarySessionService().get(inboundMessage.from);
   const activeItineraryReply = await handleActiveItinerarySession(
@@ -640,6 +659,10 @@ async function transcribeVoiceInputIfNeeded(
     return { status: 'ok', inboundMessage };
   }
 
+  if (inboundMessage.inputType === 'voice' && inboundMessage.content.type !== 'audio') {
+    return { status: 'error', message: VOICE_DOWNLOAD_ERROR_MESSAGE };
+  }
+
   const rawPayload = inboundMessage.metadata?.rawPayload as TwilioWebhookPayload | undefined;
   const numMedia = parseInt(rawPayload?.NumMedia || '0', 10);
 
@@ -735,6 +758,15 @@ async function handleHotelFormGate(
   }
 
   if (isHotelRequestMessage(userMessage)) {
+    const activeHotelSession = await getHotelSearchSessionService().get(userId);
+    if (activeHotelSession?.state === 'hotel_form_sent') {
+      return resendHotelFormLink(
+        userId,
+        userMessage,
+        "I've sent a fresh hotel form link for you."
+      );
+    }
+
     await clearCompetingSearchSessions(userId, 'hotel');
     const token = getFormTokenService().createToken(userId, 'hotel');
     const hotelFormResponse = buildHotelCollectionResponse(buildHotelFormLink(token));
@@ -928,6 +960,67 @@ async function handleLatestItineraryRequestContinuation(
   );
 }
 
+async function handleExplicitServiceSwitch(
+  userId: string,
+  userMessage: string,
+  inboundText: string
+): Promise<string | null> {
+  if (
+    isGreeting(inboundText) ||
+    isResetCue(inboundText) ||
+    isResumeCue(inboundText) ||
+    isResumeConversationCue(inboundText)
+  ) {
+    return null;
+  }
+
+  const [
+    activeHotelSession,
+    activeRestaurantSession,
+    activeExcursionSession,
+    activeLogisticsSession,
+    activeItinerarySession,
+  ] = await Promise.all([
+    getHotelSearchSessionService().get(userId),
+    getRestaurantSearchSessionService().get(userId),
+    getExcursionSearchSessionService().get(userId),
+    getLogisticsSearchSessionService().get(userId),
+    getItinerarySessionService().get(userId),
+  ]);
+  const hasActiveSession = Boolean(
+    activeHotelSession ||
+      activeRestaurantSession ||
+      activeExcursionSession ||
+      activeLogisticsSession ||
+      activeItinerarySession
+  );
+
+  if (isFreshRestaurantSearchCue(userMessage, hasActiveSession)) {
+    return handleRestaurantFormGate(userId, userMessage, inboundText);
+  }
+
+  if (isExplicitHotelSearchCue(userMessage, hasActiveSession)) {
+    if (activeHotelSession?.state === 'hotel_form_sent') {
+      return handleHotelFormGate(userId, userMessage, inboundText, 'explicit-service-switch');
+    }
+    return startFreshHotelSearch(userId, userMessage);
+  }
+
+  if (isFreshExcursionSearchCue(userMessage, hasActiveSession)) {
+    return handleExcursionFormGate(userId, userMessage, inboundText);
+  }
+
+  if (isFreshLogisticsSearchCue(userMessage, hasActiveSession)) {
+    return handleLogisticsFormGate(userId, userMessage, inboundText);
+  }
+
+  if (isTripPlanningPrompt(userMessage) && !isItineraryEditCue(userMessage)) {
+    return handleItineraryFormGate(userId, userMessage, inboundText);
+  }
+
+  return null;
+}
+
 async function handleRestaurantFormGate(
   userId: string,
   userMessage: string,
@@ -1020,6 +1113,17 @@ async function handleActiveRestaurantSearchSession(
       const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
       await sessionService.saveResults(userId, session.criteria, session.results, nextOffset);
 
+      const deliveredCardReply = await sendResultCardPage(
+        userId,
+        outboundFrom,
+        buildRestaurantResultCardReply(session.criteria, page),
+        '🍽️ Here are the next restaurant options.',
+        options
+      );
+      if (deliveredCardReply) {
+        return deliveredCardReply;
+      }
+
       return getRestaurantSearchFlowService().buildBrowseResultsPageReply(
         session.criteria,
         page,
@@ -1064,7 +1168,7 @@ async function handleActiveRestaurantSearchSession(
   const acknowledgement =
     'Let me check on that and get back to you. I am searching the best restaurant matches now and will send the options here shortly.';
 
-  if (getTwilioOutboundService().isConfigured()) {
+  if (getWhatsAppOutboundService().isConfigured()) {
     void searchRestaurantsAndNotify(userId, outboundFrom, criteria, correlationId, options);
     return acknowledgement;
   }
@@ -1170,6 +1274,17 @@ async function handleActiveExcursionSearchSession(
       const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
       await sessionService.saveResults(userId, session.criteria, session.results, nextOffset);
 
+      const deliveredCardReply = await sendResultCardPage(
+        userId,
+        outboundFrom,
+        buildExcursionResultCardReply(session.criteria, page),
+        '🧭 Here are the next experience options.',
+        options
+      );
+      if (deliveredCardReply) {
+        return deliveredCardReply;
+      }
+
       return getExcursionSearchFlowService().buildBrowseResultsPageReply(
         session.criteria,
         page,
@@ -1211,7 +1326,7 @@ async function handleActiveExcursionSearchSession(
   const acknowledgement =
     'Let me check on that and get back to you. I am searching the best experience matches now and will send the options here shortly.';
 
-  if (getTwilioOutboundService().isConfigured()) {
+  if (getWhatsAppOutboundService().isConfigured()) {
     void searchExcursionsAndNotify(userId, outboundFrom, criteria, correlationId, options);
     return acknowledgement;
   }
@@ -1248,6 +1363,14 @@ async function handleActiveHotelSearchSession(
   }
 
   if (session.state === 'hotel_form_sent') {
+    if (isFormResendCue(inboundText) || isHotelRequestMessage(inboundText)) {
+      return resendHotelFormLink(
+        userId,
+        inboundText,
+        "No problem. Here's a fresh hotel form link."
+      );
+    }
+
     if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
       const restoredHotelRequest = await restoreLatestHotelRequest(userId);
       if (restoredHotelRequest) {
@@ -1303,6 +1426,17 @@ async function handleActiveHotelSearchSession(
 
       const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
       await sessionService.saveResults(userId, session.criteria, session.results, nextOffset);
+
+      const deliveredCardReply = await sendResultCardPage(
+        userId,
+        outboundFrom,
+        buildHotelResultCardReply(session.criteria, page, ''),
+        '🏨 Here are the next hotel options.',
+        options
+      );
+      if (deliveredCardReply) {
+        return deliveredCardReply;
+      }
 
       return getHotelSearchFlowService().buildBrowseResultsPageReply(
         session.criteria,
@@ -1360,7 +1494,7 @@ async function handleActiveHotelSearchSession(
   const acknowledgement =
     'Let me check on that and get back to you. I am searching the best hotel matches now and will send the options here shortly.';
 
-  if (getTwilioOutboundService().isConfigured()) {
+  if (getWhatsAppOutboundService().isConfigured()) {
     void searchHotelsAndNotify(userId, outboundFrom, criteria, correlationId, options);
     return acknowledgement;
   }
@@ -1550,6 +1684,17 @@ async function handleActiveLogisticsSearchSession(
       const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
       await sessionService.saveResults(userId, session.criteria, session.results, nextOffset);
 
+      const deliveredCardReply = await sendResultCardPage(
+        userId,
+        outboundFrom,
+        buildLogisticsResultCardReply(session.criteria, page),
+        '🚗 Here are the next transport options.',
+        options
+      );
+      if (deliveredCardReply) {
+        return deliveredCardReply;
+      }
+
       return getLogisticsSearchFlowService().buildOptionsPageReply(
         session.criteria,
         page,
@@ -1593,7 +1738,7 @@ async function handleActiveLogisticsSearchSession(
   const acknowledgement =
     'Let me check on that and get back to you. I am searching the best transport matches now and will send the options here shortly.';
 
-  if (getTwilioOutboundService().isConfigured()) {
+  if (getWhatsAppOutboundService().isConfigured()) {
     void searchLogisticsAndNotify(userId, outboundFrom, criteria, correlationId, options);
     return acknowledgement;
   }
@@ -1655,6 +1800,23 @@ async function startFreshHotelSearch(userId: string, userMessage: string): Promi
   );
 
   return `Of course. I'll start a fresh hotel search.\n\n${hotelFormResponse}`;
+}
+
+async function resendHotelFormLink(
+  userId: string,
+  userMessage: string,
+  intro: string
+): Promise<string> {
+  const token = getFormTokenService().createToken(userId, 'hotel');
+  const hotelFormResponse = buildHotelCollectionResponse(buildHotelFormLink(token));
+  const profile = await getProfileService().getProfile(userId);
+  await getHotelSearchSessionService().saveHotelFormSent(
+    userId,
+    userMessage,
+    profile?.form
+  );
+
+  return `${intro}\n\n${hotelFormResponse}`;
 }
 
 async function clearCompetingSearchSessions(
@@ -1822,7 +1984,7 @@ async function searchHotelsAndNotify(
 
     if (hotelSearchResult.browseResponse?.results.length) {
       const firstPage = hotelSearchResult.browseResponse.results.slice(0, 3);
-      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
+      const delivered = await getWhatsAppOutboundService().sendWhatsAppMessages(
         userId,
         buildHotelResultCardReply(criteria, firstPage, hotelSearchResult.reply),
         { voice: options.voicePreferred, from: outboundFrom }
@@ -1836,14 +1998,14 @@ async function searchHotelsAndNotify(
       return;
     }
 
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       hotelSearchResult.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
     console.error(`[${correlationId}] Hotel search failed after async acknowledgement:`, error);
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       'I am sorry, the hotel search failed while I was checking options. Your form details are saved, so please type "search again" and I will retry.',
       { voice: options.voicePreferred, from: outboundFrom }
@@ -1883,7 +2045,7 @@ async function searchRestaurantsAndNotify(
 
     if (restaurantSearchResult.browseResponse?.results.length) {
       const firstPage = restaurantSearchResult.browseResponse.results.slice(0, 3);
-      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
+      const delivered = await getWhatsAppOutboundService().sendWhatsAppMessages(
         userId,
         buildRestaurantResultCardReply(criteria, firstPage),
         { voice: options.voicePreferred, from: outboundFrom }
@@ -1897,14 +2059,14 @@ async function searchRestaurantsAndNotify(
       return;
     }
 
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       restaurantSearchResult.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
     console.error(`[${correlationId}] Restaurant search failed after async acknowledgement:`, error);
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       'I am sorry, the restaurant search failed while I was checking options. Your dining details are saved, so please type "search again" and I will retry.',
       { voice: options.voicePreferred, from: outboundFrom }
@@ -1936,7 +2098,7 @@ async function searchExcursionsAndNotify(
 
     if (excursionSearchResult.browseResponse?.results.length) {
       const firstPage = excursionSearchResult.browseResponse.results.slice(0, 3);
-      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
+      const delivered = await getWhatsAppOutboundService().sendWhatsAppMessages(
         userId,
         buildExcursionResultCardReply(criteria, firstPage),
         { voice: options.voicePreferred, from: outboundFrom }
@@ -1950,14 +2112,14 @@ async function searchExcursionsAndNotify(
       return;
     }
 
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       excursionSearchResult.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
     console.error(`[${correlationId}] Excursion search failed after async acknowledgement:`, error);
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       'I am sorry, the experience search failed while I was checking options. Your excursion details are saved, so please type "search again" and I will retry.',
       { voice: options.voicePreferred, from: outboundFrom }
@@ -1989,7 +2151,7 @@ async function searchLogisticsAndNotify(
 
     if (logisticsSearchResult.options?.length) {
       const firstPage = logisticsSearchResult.options.slice(0, 3);
-      const delivered = await getTwilioOutboundService().sendWhatsAppMessages(
+      const delivered = await getWhatsAppOutboundService().sendWhatsAppMessages(
         userId,
         buildLogisticsResultCardReply(criteria, firstPage),
         { voice: options.voicePreferred, from: outboundFrom }
@@ -2003,14 +2165,14 @@ async function searchLogisticsAndNotify(
       return;
     }
 
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       logisticsSearchResult.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
     console.error(`[${correlationId}] Transport search failed after async acknowledgement:`, error);
-    await getTwilioOutboundService().sendWhatsAppReply(
+    await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       'I am sorry, the transport search failed while I was checking options. Your transport details are saved, so please type "search again" and I will retry.',
       { voice: options.voicePreferred, from: outboundFrom }
@@ -2212,8 +2374,17 @@ function isResumeConversationCue(message: string): boolean {
   ) || /^how long\b/.test(normalized);
 }
 
+function isFormResendCue(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /\b(resend|re send|send again|send it again|send the link|link again|new link|fresh link|lost the link|dont have it|don't have it|i dont have it|i don't have it|expired)\b/i.test(
+    normalized
+  );
+}
+
 function isNextCue(message: string): boolean {
-  return /^(next|more|show more|next 3|another 3)$/i.test(message.trim());
+  return /^(next|more|show more|show me more|more options|more matches|next 3|another 3|another three|more results)$/i.test(
+    message.trim()
+  );
 }
 
 function isCurrentHotelSessionCommand(message: string): boolean {
@@ -2228,6 +2399,38 @@ function isCurrentHotelSessionCommand(message: string): boolean {
 
 function isFreshHotelSearchCue(message: string): boolean {
   return (hasFreshStartCue(message) || hasDirectionChangeCue(message)) && isHotelRequestMessage(message);
+}
+
+function isExplicitHotelSearchCue(message: string, hasActiveSession = false): boolean {
+  if (!isHotelRequestMessage(message)) return false;
+  if (!hasActiveSession) return false;
+  return (
+    hasFreshStartCue(message) ||
+    hasDirectionChangeCue(message) ||
+    /\b(find|looking for|need|want|search|hotel in|place to stay|book a hotel)\b/i.test(message)
+  );
+}
+
+function isFreshRestaurantSearchCue(message: string, hasActiveSession = false): boolean {
+  if (!isRestaurantRequestMessage(message)) return false;
+  return (
+    !hasActiveSession ||
+    hasFreshStartCue(message) ||
+    hasDirectionChangeCue(message) ||
+    /\b(find|looking for|need|want|restaurant|restuarent|food|dinner|lunch|breakfast|near me|not a hotel)\b/i.test(
+      message
+    )
+  );
+}
+
+function isFreshExcursionSearchCue(message: string, hasActiveSession = false): boolean {
+  if (!isExcursionRequestMessage(message)) return false;
+  return !hasActiveSession || hasFreshStartCue(message) || hasDirectionChangeCue(message);
+}
+
+function isFreshLogisticsSearchCue(message: string, hasActiveSession = false): boolean {
+  if (!isLogisticsRequestMessage(message)) return false;
+  return !hasActiveSession || hasFreshStartCue(message) || hasDirectionChangeCue(message);
 }
 
 function hasFreshStartCue(message: string): boolean {
@@ -2281,7 +2484,7 @@ function isHotelRequestMessage(message: string): boolean {
 
 function isRestaurantRequestMessage(message: string): boolean {
   const normalized = message.toLowerCase();
-  return /\b(hungry|food|restaurant|eat|place to eat|where can we eat|where should we eat|breakfast|lunch|dinner|brunch|coffee|cafe|fine dining|seafood|pizza|burger|romantic dinner|romantic place|family dinner|vegetarian|vegan|buffet|steak|sushi|indian food|chinese food|sri lankan food|italian|mexican|thai|bbq|somewhere for dinner|good seafood|romantic restaurant|somewhere nice|craving)\b/i.test(
+  return /\b(hungry|food|restaurants?|restuarents?|eat|place to eat|where can we eat|where should we eat|breakfast|lunch|dinner|brunch|coffee|cafe|fine dining|seafood|pizza|burger|romantic dinner|romantic place|family dinner|vegetarian|vegan|buffet|steak|sushi|indian food|chinese food|sri lankan food|italian|mexican|thai|bbq|somewhere for dinner|good seafood|romantic restaurant|somewhere nice|craving)\b/i.test(
     normalized
   );
 }
@@ -2972,13 +3175,53 @@ interface TwilioMessage {
 
 type TwilioReply = string | TwilioMessage[];
 
+interface WhatsAppOutboundService {
+  sendWhatsAppReply(
+    to: string,
+    body: string,
+    options?: { voice?: boolean; from?: string }
+  ): Promise<boolean>;
+  sendWhatsAppMessages(
+    to: string,
+    messages: WhatsAppOutboundMessage[],
+    options?: { voice?: boolean; from?: string }
+  ): Promise<boolean>;
+  isConfigured(): boolean;
+}
+
+function getWhatsAppOutboundService(): WhatsAppOutboundService {
+  return env.whatsapp.provider === 'openwa'
+    ? getOpenWaOutboundService()
+    : getTwilioOutboundService();
+}
+
+async function sendResultCardPage(
+  to: string,
+  from: string,
+  messages: WhatsAppOutboundMessage[],
+  acknowledgement: string,
+  options: { voicePreferred?: boolean } = {}
+): Promise<string | null> {
+  const outbound = getWhatsAppOutboundService();
+  if (!outbound.isConfigured()) {
+    return null;
+  }
+
+  const delivered = await outbound.sendWhatsAppMessages(to, messages, {
+    from,
+    voice: options.voicePreferred,
+  });
+
+  return delivered ? acknowledgement : null;
+}
+
 async function deliverWebhookReplyThroughTwilio(
   to: string,
   from: string,
   reply: TwilioReply,
   correlationId: string
 ): Promise<boolean> {
-  const outbound = getTwilioOutboundService();
+  const outbound = getWhatsAppOutboundService();
   if (!outbound.isConfigured()) {
     return false;
   }
@@ -2990,12 +3233,12 @@ async function deliverWebhookReplyThroughTwilio(
         : await outbound.sendWhatsAppMessages(to, reply, { from });
 
     if (!delivered) {
-      console.warn(`[${correlationId}] Twilio REST reply was not delivered; falling back to TwiML`);
+      console.warn(`[${correlationId}] WhatsApp REST reply was not delivered; falling back to TwiML`);
     }
 
     return delivered;
   } catch (error) {
-    console.error(`[${correlationId}] Twilio REST reply failed; falling back to TwiML:`, error);
+    console.error(`[${correlationId}] WhatsApp REST reply failed; falling back to TwiML:`, error);
     return false;
   }
 }
@@ -3006,9 +3249,9 @@ function buildHotelResultCardReply(
   fallbackMessage: string
 ): TwilioMessage[] {
   const intro = [
-    `I found these hotel matches for ${criteria.location ?? 'your search'}.`,
-    criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
-    'Reply "next" for more options, "details 1", or "book 1".',
+    `🏨 I found these hotel matches for ${criteria.location ?? 'your search'}.`,
+    criteria.additionalPreferences ? `✨ I included your preference: ${criteria.additionalPreferences}.` : undefined,
+    'Reply "next" or "more" for more options, "details 1", or "book 1".',
   ].filter((line): line is string => typeof line === 'string');
 
   return [
@@ -3022,9 +3265,9 @@ function buildRestaurantResultCardReply(
   restaurants: RestaurantBrowseResult[]
 ): TwilioMessage[] {
   const intro = [
-    `I found these restaurant matches for ${criteria.location ?? 'your search'}.`,
-    criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
-    'Reply "next" for more options, "details 1", or "book 1".',
+    `🍽️ I found these restaurant matches for ${criteria.location ?? 'your search'}.`,
+    criteria.additionalPreferences ? `✨ I included your preference: ${criteria.additionalPreferences}.` : undefined,
+    'Reply "next" or "more" for more options, "details 1", or "book 1".',
   ].filter((line): line is string => typeof line === 'string');
 
   return [
@@ -3038,9 +3281,9 @@ function buildExcursionResultCardReply(
   experiences: ExcursionBrowseResult[]
 ): TwilioMessage[] {
   const intro = [
-    `I found these experience matches for ${criteria.destination ?? 'your search'}.`,
-    criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
-    'Reply "next" for more options, "details 1", or "book 1".',
+    `🧭 I found these experience matches for ${criteria.destination ?? 'your search'}.`,
+    criteria.additionalPreferences ? `✨ I included your preference: ${criteria.additionalPreferences}.` : undefined,
+    'Reply "next" or "more" for more options, "details 1", or "book 1".',
   ].filter((line): line is string => typeof line === 'string');
 
   return [
@@ -3054,9 +3297,9 @@ function buildLogisticsResultCardReply(
   options: TransportOption[]
 ): TwilioMessage[] {
   const intro = [
-    `I found these transport options from ${criteria.pickupLocation ?? 'your pickup'} to ${criteria.destination ?? 'your destination'}.`,
-    criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
-    'Reply "next" for more options, "details 1", or "book 1".',
+    `🚗 I found these transport options from ${criteria.pickupLocation ?? 'your pickup'} to ${criteria.destination ?? 'your destination'}.`,
+    criteria.additionalPreferences ? `✨ I included your preference: ${criteria.additionalPreferences}.` : undefined,
+    'Reply "next" or "more" for more options, "details 1", or "book 1".',
   ].filter((line): line is string => typeof line === 'string');
 
   return [
@@ -3072,13 +3315,14 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(hotel);
   const lines = [
-    `${displayNumber}. ${hotel.name}`,
-    rating,
-    hotel.priceRange ? `Price signal: ${hotel.priceRange}` : 'Price signal: confirm live rate',
-    hotel.address,
-    `Why Yana picked it: ${buildHotelRecommendationReason(hotel)}`,
-    mapsLink ? `View on Google Maps: ${mapsLink}` : undefined,
-    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+    `🏨 *${displayNumber}. ${hotel.name}*`,
+    `⭐ Rating: ${rating}`,
+    hotel.priceRange ? `💰 Price signal: ${hotel.priceRange}` : '💰 Price signal: confirm live rate',
+    hotel.address ? `📍 Location: ${hotel.address}` : undefined,
+    `✨ Why Yana picked it: ${buildHotelRecommendationReason(hotel)}`,
+    mapsLink ? `🗺️ View on Google Maps: ${mapsLink}` : undefined,
+    `✅ Book now: reply *book ${displayNumber}*`,
+    `ℹ️ More info: reply *details ${displayNumber}*`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
 
   return {
@@ -3097,14 +3341,15 @@ function buildRestaurantResultCard(
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(restaurant);
   const lines = [
-    `${displayNumber}. ${restaurant.name}`,
-    rating,
-    restaurant.priceRange ? `Price level: ${restaurant.priceRange}` : 'Price level: confirm locally',
-    restaurant.cuisine ? `Cuisine: ${restaurant.cuisine}` : undefined,
-    restaurant.address,
-    `Why Yana picked it: ${buildRestaurantRecommendationReason(restaurant)}`,
-    mapsLink ? `View on Google Maps: ${mapsLink}` : undefined,
-    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+    `🍽️ *${displayNumber}. ${restaurant.name}*`,
+    `⭐ Rating: ${rating}`,
+    restaurant.priceRange ? `💰 Price level: ${restaurant.priceRange}` : '💰 Price level: confirm locally',
+    restaurant.cuisine ? `🍜 Cuisine: ${restaurant.cuisine}` : undefined,
+    restaurant.address ? `📍 Location: ${restaurant.address}` : undefined,
+    `✨ Why Yana picked it: ${buildRestaurantRecommendationReason(restaurant)}`,
+    mapsLink ? `🗺️ View on Google Maps: ${mapsLink}` : undefined,
+    `✅ Book now: reply *book ${displayNumber}*`,
+    `ℹ️ More info: reply *details ${displayNumber}*`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
 
   return {
@@ -3123,15 +3368,16 @@ function buildExcursionResultCard(
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(experience);
   const lines = [
-    `${displayNumber}. ${experience.name}`,
-    experience.category ? `Category: ${experience.category}` : undefined,
-    rating,
-    experience.priceRange ? `Estimated price: ${experience.priceRange}` : 'Estimated price: confirm locally',
+    `🧭 *${displayNumber}. ${experience.name}*`,
+    experience.category ? `🎯 Category: ${experience.category}` : undefined,
+    `⭐ Rating: ${rating}`,
+    experience.priceRange ? `💰 Estimated price: ${experience.priceRange}` : '💰 Estimated price: confirm locally',
     experience.shortDescription,
-    experience.address,
-    `Why Yana picked it: ${buildExcursionRecommendationReason(experience)}`,
-    mapsLink ? `View on Google Maps: ${mapsLink}` : undefined,
-    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+    experience.address ? `📍 Location: ${experience.address}` : undefined,
+    `✨ Why Yana picked it: ${buildExcursionRecommendationReason(experience)}`,
+    mapsLink ? `🗺️ View on Google Maps: ${mapsLink}` : undefined,
+    `✅ Book now: reply *book ${displayNumber}*`,
+    `ℹ️ More info: reply *details ${displayNumber}*`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
 
   return {
@@ -3145,14 +3391,15 @@ function buildLogisticsResultCard(
   option: TransportOption
 ): TwilioMessage {
   const lines = [
-    `${displayNumber}. ${option.provider}`,
-    `Vehicle: ${option.vehicle}`,
-    `Estimated price: ${option.estimatedPrice}`,
-    `Vehicle type: ${option.vehicleType}`,
-    `Capacity: ${option.capacity}`,
-    `Estimated duration: ${option.estimatedDuration}`,
-    `Why Yana picked it: ${buildLogisticsRecommendationReason(option)}`,
-    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+    `🚗 *${displayNumber}. ${option.provider}*`,
+    `🚘 Vehicle: ${option.vehicle}`,
+    `💰 Estimated price: ${option.estimatedPrice}`,
+    `🚙 Vehicle type: ${option.vehicleType}`,
+    `👥 Capacity: ${option.capacity}`,
+    `⏱️ Estimated duration: ${option.estimatedDuration}`,
+    `✨ Why Yana picked it: ${buildLogisticsRecommendationReason(option)}`,
+    `✅ Book now: reply *book ${displayNumber}*`,
+    `ℹ️ More info: reply *details ${displayNumber}*`,
   ];
 
   return { body: lines.join('\n') };

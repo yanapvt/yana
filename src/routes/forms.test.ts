@@ -5,6 +5,7 @@ import { createApp } from '../app.js';
 import { FormTokenService, initFormTokenService } from '../services/formTokenService.js';
 import { ProfileService, initProfileService } from '../services/profileService.js';
 import { initTwilioOutboundService, TwilioOutboundService } from '../services/twilioOutboundService.js';
+import { initOpenWaOutboundService, OpenWaOutboundService } from '../services/OpenWaOutboundService.js';
 import { InMemoryProfileRepository } from '../storage/profileRepository.js';
 import { InMemoryServiceRequestRepository } from '../storage/serviceRequestRepository.js';
 
@@ -39,6 +40,10 @@ describe('external form routes', () => {
       sendWhatsAppText: sendWhatsAppTextMock,
       isConfigured: () => true,
     } as unknown as TwilioOutboundService);
+    initOpenWaOutboundService({
+      sendWhatsAppText: sendWhatsAppTextMock,
+      isConfigured: () => true,
+    } as unknown as OpenWaOutboundService);
   });
 
   it('renders each supported form for a matching valid token', async () => {
@@ -104,6 +109,10 @@ describe('external form routes', () => {
     expect(sendWhatsAppTextMock).toHaveBeenCalledWith(
       userId,
       expect.stringContaining('Hi Jane, I am Yana')
+    );
+    expect(sendWhatsAppTextMock).toHaveBeenCalledWith(
+      userId,
+      expect.stringContaining('I am back with you here on WhatsApp now')
     );
     expect(profile?.form.fullName).toBe('Jane Doe');
     expect(profile?.form.email).toBe('jane@example.com');

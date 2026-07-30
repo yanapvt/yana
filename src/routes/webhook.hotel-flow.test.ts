@@ -179,6 +179,15 @@ vi.mock('../services/twilioOutboundService.js', () => ({
   }),
 }));
 
+vi.mock('../services/OpenWaOutboundService.js', () => ({
+  getOpenWaOutboundService: () => ({
+    sendWhatsAppText: sendWhatsAppTextMock,
+    sendWhatsAppReply: sendWhatsAppReplyMock,
+    sendWhatsAppMessages: sendWhatsAppMessagesMock,
+    isConfigured: twilioOutboundConfiguredMock,
+  }),
+}));
+
 vi.mock('../services/profileGate.js', () => ({
   getProfileGate: () => ({
     check: profileGateCheckMock,
@@ -371,12 +380,60 @@ describe('webhook hotel search flow', () => {
     expect(handleCompletedIntakeMock).not.toHaveBeenCalled();
   });
 
+  it('resends the hotel form link when the user lost it during an open hotel form', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      state: 'hotel_form_sent',
+      stage: 'awaiting_preferences',
+      criteria: {},
+      results: [],
+      nextOffset: 0,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage("i dont have it re send it please"),
+      'corr-webhook-resend-hotel-form'
+    );
+
+    expect(reply).toContain('fresh hotel form link');
+    expect(reply).toContain('https://forms.yana.example/forms/hotel/');
+    expect(saveHotelFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      'i dont have it re send it please',
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
+    expect(llmDecideMock).not.toHaveBeenCalled();
+  });
+
+  it('sends a fresh hotel form link instead of a dead-end already-sent message', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      state: 'hotel_form_sent',
+      stage: 'awaiting_preferences',
+      criteria: {},
+      results: [],
+      nextOffset: 0,
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('i want to find a hotel in kandy'),
+      'corr-webhook-repeat-hotel-form'
+    );
+
+    expect(reply).toContain('fresh hotel form link');
+    expect(reply).toContain('https://forms.yana.example/forms/hotel/');
+    expect(reply).not.toContain("I've already sent the hotel form");
+  });
+
   it.each([
     'I am hungry',
     'I need somewhere for dinner.',
     'Find me a seafood restaurant.',
     'I want a romantic place.',
     'Find vegetarian food.',
+    'i want to find a restuarent near me',
   ])('starts the restaurant form flow for dining intent: %s', async (message) => {
     process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
 
@@ -390,6 +447,70 @@ describe('webhook hotel search flow', () => {
       expect.objectContaining({ preferredName: 'Sam' })
     );
     expect(saveHotelFormSentMock).not.toHaveBeenCalled();
+  });
+
+  it('lets a fresh restaurant request override an old itinerary session', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getItinerarySessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      criteria: {
+        arrivalDate: '2026-07-12',
+        departureDate: '2026-07-19',
+        adults: 2,
+        budget: 'Comfort',
+        preferredTransport: 'Mixed',
+        interests: ['Culture'],
+      },
+      itinerary: buildGeneratedItinerary(),
+      state: 'showing_itinerary',
+      currentDay: 1,
+      createdAt: '2026-06-01T10:00:00.000Z',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+      expiresAt: '2026-06-08T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('I am looking for a restaurant, not a hotel'),
+      'corr-restaurant-overrides-itinerary'
+    );
+
+    expect(reply).toContain('quick dining request form');
+    expect(reply).toContain('https://forms.yana.example/forms/restaurant/');
+    expect(clearItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(saveRestaurantFormSentMock).toHaveBeenCalled();
+    expect(saveItineraryEditingMock).not.toHaveBeenCalled();
+  });
+
+  it('lets a fresh hotel request override an old itinerary session', async () => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+    getItinerarySessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      criteria: {
+        arrivalDate: '2026-07-12',
+        departureDate: '2026-07-19',
+        adults: 2,
+        budget: 'Comfort',
+        preferredTransport: 'Mixed',
+        interests: ['Culture'],
+      },
+      itinerary: buildGeneratedItinerary(),
+      state: 'showing_itinerary',
+      currentDay: 1,
+      createdAt: '2026-06-01T10:00:00.000Z',
+      updatedAt: '2026-06-01T10:00:00.000Z',
+      expiresAt: '2026-06-08T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('can you help me find a hotel in kandy'),
+      'corr-hotel-overrides-itinerary'
+    );
+
+    expect(reply).toContain("I'll start a fresh hotel search");
+    expect(reply).toContain('https://forms.yana.example/forms/hotel/');
+    expect(clearItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(saveHotelFormSentMock).toHaveBeenCalled();
+    expect(saveItineraryEditingMock).not.toHaveBeenCalled();
   });
 
   it('restores the latest submitted restaurant form and asks for extra preferences', async () => {
@@ -527,13 +648,16 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('next'), 'corr-restaurant-next');
 
-    expect(reply).toBe('Next restaurant page reply');
-    expect(buildRestaurantBrowseResultsPageReplyMock).toHaveBeenCalledWith(
-      { location: 'Galle' },
-      [{ name: 'Restaurant 4' }, { name: 'Restaurant 5' }, { name: 'Restaurant 6' }],
-      6,
-      6
+    expect(reply).toBe('🍽️ Here are the next restaurant options.');
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('🍽️ *1. Restaurant 4*') }),
+        expect.objectContaining({ body: expect.stringContaining('✨ Why Yana picked it:') }),
+      ]),
+      expect.objectContaining({ from: 'whatsapp:+15550000000' })
     );
+    expect(buildRestaurantBrowseResultsPageReplyMock).not.toHaveBeenCalled();
   });
 
   it('stores restaurant selection and opens reservation placeholder', async () => {
@@ -752,13 +876,16 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('next'), 'corr-excursion-next');
 
-    expect(reply).toBe('Next excursion page reply');
-    expect(buildExcursionBrowseResultsPageReplyMock).toHaveBeenCalledWith(
-      { destination: 'Ella' },
-      [{ name: 'Experience 4' }, { name: 'Experience 5' }, { name: 'Experience 6' }],
-      6,
-      6
+    expect(reply).toBe('🧭 Here are the next experience options.');
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('🧭 *1. Experience 4*') }),
+        expect.objectContaining({ body: expect.stringContaining('✨ Why Yana picked it:') }),
+      ]),
+      expect.objectContaining({ from: 'whatsapp:+15550000000' })
     );
+    expect(buildExcursionBrowseResultsPageReplyMock).not.toHaveBeenCalled();
   });
 
   it('opens the excursion booking request form after selection', async () => {
@@ -1300,13 +1427,16 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('next'), 'corr-webhook-6');
 
-    expect(reply).toBe('Next page reply');
-    expect(buildBrowseResultsPageReplyMock).toHaveBeenCalledWith(
-      { location: 'Galle Fort' },
-      [{ name: 'Hotel 4' }, { name: 'Hotel 5' }, { name: 'Hotel 6' }],
-      6,
-      6
+    expect(reply).toBe('🏨 Here are the next hotel options.');
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('🏨 *1. Hotel 4*') }),
+        expect.objectContaining({ body: expect.stringContaining('✨ Why Yana picked it:') }),
+      ]),
+      expect.objectContaining({ from: 'whatsapp:+15550000000' })
     );
+    expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
     expect(saveResultsMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
       { location: 'Galle Fort' },
@@ -1376,13 +1506,14 @@ describe('webhook hotel search flow', () => {
     const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-23');
 
     expect(result.reply).toContain('I heard: "next"');
-    expect(result.reply).toContain('Next page reply');
+    expect(result.reply).toContain('🏨 Here are the next hotel options.');
     expectNoInternalPresentationTerms(result.reply);
-    expect(buildBrowseResultsPageReplyMock).toHaveBeenCalledWith(
-      { location: 'Galle Fort' },
-      [{ name: 'Hotel 4' }, { name: 'Hotel 5' }, { name: 'Hotel 6' }],
-      6,
-      6
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('🏨 *1. Hotel 4*') }),
+      ]),
+      expect.objectContaining({ from: 'whatsapp:+15550000000', voice: true })
     );
   });
 
@@ -2051,7 +2182,15 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('next'), 'corr-logistics-next');
 
-    expect(reply).toBe('Next transport page reply');
+    expect(reply).toBe('🚗 Here are the next transport options.');
+    expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.arrayContaining([
+        expect.objectContaining({ body: expect.stringContaining('🚗 *1. Provider 4*') }),
+        expect.objectContaining({ body: expect.stringContaining('✨ Why Yana picked it:') }),
+      ]),
+      expect.objectContaining({ from: 'whatsapp:+15550000000' })
+    );
     expect(saveLogisticsResultsMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
       expect.objectContaining({ pickupLocation: 'Colombo' }),
