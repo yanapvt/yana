@@ -34,7 +34,7 @@ export class OpenWaOutboundService {
     for (const message of messages) {
       const sent =
         message.mediaUrl && isPublicHttpsUrl(message.mediaUrl)
-          ? await this.sendImageMessage(to, message.mediaUrl, message.body)
+          ? await this.sendTextWithOptionalImage(to, message.body, message.mediaUrl)
           : await this.sendWhatsAppText(to, message.body);
       sentAny = sentAny || sent;
     }
@@ -120,6 +120,22 @@ export class OpenWaOutboundService {
     }
 
     return sentAny;
+  }
+
+  private async sendTextWithOptionalImage(
+    to: string,
+    text: string,
+    mediaUrl: string
+  ): Promise<boolean> {
+    const textSent = await this.sendWhatsAppText(to, text);
+
+    try {
+      const imageSent = await this.sendImageMessage(to, mediaUrl, '');
+      return textSent || imageSent;
+    } catch (error) {
+      console.error('[OpenWaOutboundService] Optional image send failed after text card:', error);
+      return textSent;
+    }
   }
 
   private async sendVoiceReply(to: string, text: string): Promise<boolean> {

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { getTextToSpeechService } from '../services/TextToSpeechService.js';
+import { getMetaWhatsAppMediaService } from '../services/MetaWhatsAppMediaService.js';
 
 const router = Router();
 
@@ -53,6 +54,14 @@ router.get('/media/google-place-photo', async (req: Request, res: Response) => {
     res.send(image);
   } catch {
     res.status(502).send('Unable to load image');
+  }
+});
+
+router.get('/media/meta/:mediaId', async (req: Request, res: Response) => {
+  try {
+    await getMetaWhatsAppMediaService().proxyMedia(req, res);
+  } catch {
+    res.status(502).send('Unable to load media');
   }
 });
 

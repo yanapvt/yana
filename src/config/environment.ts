@@ -31,7 +31,7 @@ const EnvironmentSchema = z.object({
   }),
 
   whatsapp: z.object({
-    provider: z.enum(['twilio', 'openwa']).default('twilio'),
+    provider: z.enum(['twilio', 'openwa', 'meta']).default('twilio'),
   }),
 
   openwa: z.object({
@@ -39,6 +39,15 @@ const EnvironmentSchema = z.object({
     apiKey: z.string().optional(),
     sessionId: z.string().optional(),
     webhookSecret: z.string().optional(),
+  }),
+
+  meta: z.object({
+    accessToken: isNonProductionMode ? z.string().optional() : z.string().min(1).optional(),
+    phoneNumberId: isNonProductionMode ? z.string().optional() : z.string().min(1).optional(),
+    verifyToken: isNonProductionMode ? z.string().optional() : z.string().min(1).optional(),
+    appSecret: z.string().optional(),
+    apiVersion: z.string().min(1).default('v20.0'),
+    mediaProxySecret: z.string().optional(),
   }),
 
   // Database (optional in development/test)
@@ -132,7 +141,12 @@ function loadEnvironmentConfig(): EnvironmentConfig {
     },
 
     whatsapp: {
-      provider: process.env.WHATSAPP_PROVIDER === 'openwa' ? 'openwa' : 'twilio',
+      provider:
+        process.env.WHATSAPP_PROVIDER === 'openwa'
+          ? 'openwa'
+          : process.env.WHATSAPP_PROVIDER === 'meta'
+            ? 'meta'
+            : 'twilio',
     },
 
     openwa: {
@@ -140,6 +154,15 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       apiKey: process.env.OPENWA_API_KEY,
       sessionId: process.env.OPENWA_SESSION_ID,
       webhookSecret: process.env.OPENWA_WEBHOOK_SECRET,
+    },
+
+    meta: {
+      accessToken: process.env.META_WHATSAPP_ACCESS_TOKEN || process.env.META_WHATSAPP_TOKEN,
+      phoneNumberId: process.env.META_WHATSAPP_PHONE_NUMBER_ID,
+      verifyToken: process.env.META_WHATSAPP_VERIFY_TOKEN,
+      appSecret: process.env.META_WHATSAPP_APP_SECRET,
+      apiVersion: process.env.META_WHATSAPP_API_VERSION || 'v20.0',
+      mediaProxySecret: process.env.META_WHATSAPP_MEDIA_PROXY_SECRET,
     },
 
     postgres: {

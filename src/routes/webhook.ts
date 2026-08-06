@@ -82,6 +82,7 @@ import {
   type WhatsAppOutboundMessage,
 } from '../services/twilioOutboundService.js';
 import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
+import { getMetaWhatsAppOutboundService } from '../services/MetaWhatsAppOutboundService.js';
 import { env } from '../config/environment.js';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
 import { getConversationManager } from '../services/ConversationManager.js';
@@ -3190,9 +3191,15 @@ interface WhatsAppOutboundService {
 }
 
 function getWhatsAppOutboundService(): WhatsAppOutboundService {
-  return env.whatsapp.provider === 'openwa'
-    ? getOpenWaOutboundService()
-    : getTwilioOutboundService();
+  if (env.whatsapp.provider === 'openwa') {
+    return getOpenWaOutboundService();
+  }
+
+  if (env.whatsapp.provider === 'meta') {
+    return getMetaWhatsAppOutboundService();
+  }
+
+  return getTwilioOutboundService();
 }
 
 async function sendResultCardPage(
