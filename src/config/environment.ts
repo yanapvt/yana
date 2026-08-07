@@ -24,10 +24,10 @@ const EnvironmentSchema = z.object({
 
   // Twilio / WhatsApp (optional in development/test)
   twilio: z.object({
-    accountSid: isNonProductionMode ? z.string().default('dev_account_sid') : z.string().min(1),
-    authToken: isNonProductionMode ? z.string().default('dev_auth_token') : z.string().min(1),
-    whatsappNumber: isNonProductionMode ? z.string().default('+1234567890') : z.string().min(1),
-    webhookSecret: isNonProductionMode ? z.string().default('dev_webhook_secret') : z.string().min(1),
+    accountSid: z.string().default('dev_account_sid'),
+    authToken: z.string().default('dev_auth_token'),
+    whatsappNumber: z.string().default('+1234567890'),
+    webhookSecret: z.string().default('dev_webhook_secret'),
   }),
 
   whatsapp: z.object({
@@ -80,7 +80,7 @@ const EnvironmentSchema = z.object({
     provider: z.string().min(1).default('openai'),
     apiKey: isNonProductionMode ? z.string().optional() : z.string().min(1),
     baseUrl: z.string().url().optional(),
-    openAiApiKey: isNonProductionMode ? z.string().optional() : z.string().min(1),
+    openAiApiKey: z.string().optional(),
     transcriptionModel: z.string().min(1),
     maxMb: z.number().positive().default(10),
   }),
@@ -238,7 +238,9 @@ function loadEnvironmentConfig(): EnvironmentConfig {
   };
 
   try {
-    return EnvironmentSchema.parse(rawConfig);
+    const parsed = EnvironmentSchema.parse(rawConfig);
+    validateProviderConfig(parsed);
+    return parsed;
   } catch (error) {
     if (error instanceof z.ZodError) {
       console.error('Environment configuration validation failed:');
@@ -246,6 +248,56 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       throw new Error('Invalid environment configuration');
     }
     throw error;
+  }
+}
+
+function validateProviderConfig(config: EnvironmentConfig): void {
+  if (isNonProductionMode) {
+    return;
+  }
+
+  const errors: Array<{ path: string[]; message: string }> = [];
+
+  if (config.whatsapp.provider === 'twilio') {
+    if (!config.twilio.accountSid || config.twilio.accountSid === 'dev_account_sid') {
+      errors.push({ path: ['twilio', 'accountSid'], message: 'TWILIO_ACCOUNT_SID is required when WHATSAPP_PROVIDER=twilio' });
+    }
+    if (!config.twilio.authToken || config.twilio.authToken === 'dev_auth_token') {
+      errors.push({ path: ['twilio', 'authToken'], message: 'TWILIO_AUTH_TOKEN is required when WHATSAPP_PROVIDER=twilio' });
+    }
+    if (!config.twilio.whatsappNumber || config.twilio.whatsappNumber === '+1234567890') {
+      errors.push({ path: ['twilio', 'whatsappNumber'], message: 'TWILIO_WHATSAPP_NUMBER is required when WHATSAPP_PROVIDER=twilio' });
+    }
+  }
+
+  if (config.whatsapp.provider === 'openwa') {
+    if (!config.openwa.baseUrl) {
+      errors.push({ path: ['openwa', 'baseUrl'], message: 'OPENWA_BASE_URL is required when WHATSAPP_PROVIDER=openwa' });
+    }
+    if (!config.openwa.apiKey) {
+      errors.push({ path: ['openwa', 'apiKey'], message: 'OPENWA_API_KEY is required when WHATSAPP_PROVIDER=openwa' });
+    }
+    if (!config.openwa.sessionId) {
+      errors.push({ path: ['openwa', 'sessionId'], message: 'OPENWA_SESSION_ID is required when WHATSAPP_PROVIDER=openwa' });
+    }
+  }
+
+  if (config.whatsapp.provider === 'meta') {
+    if (!config.meta.accessToken) {
+      errors.push({ path: ['meta', 'accessToken'], message: 'META_WHATSAPP_ACCESS_TOKEN is required when WHATSAPP_PROVIDER=meta' });
+    }
+    if (!config.meta.phoneNumberId) {
+      errors.push({ path: ['meta', 'phoneNumberId'], message: 'META_WHATSAPP_PHONE_NUMBER_ID is required when WHATSAPP_PROVIDER=meta' });
+    }
+    if (!config.meta.verifyToken) {
+      errors.push({ path: ['meta', 'verifyToken'], message: 'META_WHATSAPP_VERIFY_TOKEN is required when WHATSAPP_PROVIDER=meta' });
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error('Environment provider configuration validation failed:');
+    console.error(JSON.stringify(errors, null, 2));
+    throw new Error('Invalid environment configuration');
   }
 }
 
