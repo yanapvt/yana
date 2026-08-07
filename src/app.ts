@@ -11,6 +11,7 @@ import demoRouter from './routes/demo.js';
 import formsRouter from './routes/forms.js';
 import mediaRouter from './routes/media.js';
 import itineraryWorkspaceRouter from './routes/itineraryWorkspace.js';
+import legalRouter from './routes/legal.js';
 
 /**
  * Creates and configures the Express application
@@ -49,6 +50,9 @@ export function createApp(): Express {
 
   // Mount interactive itinerary workspace routes
   app.use('/', itineraryWorkspaceRouter);
+
+  // Mount public legal pages required by platform providers
+  app.use('/', legalRouter);
 
   // Mount demo/playground routes
   app.use('/demo', demoRouter);
