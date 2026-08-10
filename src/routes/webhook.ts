@@ -2301,7 +2301,7 @@ function extractMessageText(inboundMessage: InboundMessage): string | null {
   }
 
   if (content.type === 'interactive') {
-    return content.selectedTitle?.trim() || content.selectedId.trim();
+    return content.selectedId.trim() || content.selectedTitle?.trim() || null;
   }
 
   return null;

@@ -9,6 +9,10 @@ interface SendMetaOptions {
 
 const META_TEXT_LIMIT = 3500;
 const META_CAPTION_LIMIT = 1024;
+const META_CAROUSEL_MIN_CARDS = 2;
+const META_CAROUSEL_MAX_CARDS = 10;
+const META_CAROUSEL_CARD_BODY_LIMIT = 320;
+const META_CAROUSEL_BODY_LIMIT = 1024;
 
 export class MetaWhatsAppOutboundService {
   async sendWhatsAppText(to: string, body: string): Promise<boolean> {
@@ -27,6 +31,16 @@ export class MetaWhatsAppOutboundService {
   ): Promise<boolean> {
     if (messages.length === 0) {
       return false;
+    }
+
+    const carouselSent = await this.trySendCarouselMessage(to, messages);
+    if (carouselSent) {
+      if (options.voice) {
+        const voiceText = messages.map((message) => message.body).join('\n\n');
+        return (await this.sendVoiceReply(to, voiceText)) || carouselSent;
+      }
+
+      return true;
     }
 
     let sentAny = false;
@@ -101,6 +115,81 @@ export class MetaWhatsAppOutboundService {
     return this.sendWhatsAppText(to, caption);
   }
 
+  private async trySendCarouselMessage(
+    to: string,
+    messages: WhatsAppOutboundMessage[]
+  ): Promise<boolean> {
+    const [intro, ...cards] = messages;
+    const carouselCards = cards.filter((message) => isPublicHttpsUrl(message.mediaUrl));
+    const canUseCarousel =
+      Boolean(intro?.body) &&
+      carouselCards.length === cards.length &&
+      carouselCards.length >= META_CAROUSEL_MIN_CARDS &&
+      carouselCards.length <= META_CAROUSEL_MAX_CARDS;
+
+    if (!canUseCarousel) {
+      return false;
+    }
+
+    const response = await this.sendMessage(
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: toMetaRecipient(to),
+        type: 'interactive',
+        interactive: {
+          type: 'carousel',
+          body: {
+            text: truncateText(intro.body, META_CAROUSEL_BODY_LIMIT),
+          },
+          action: {
+            cards: carouselCards.map((message, index) => {
+              const displayNumber = index + 1;
+              return {
+                type: 'button',
+                card_index: index,
+                header: {
+                  type: 'image',
+                  image: {
+                    link: message.mediaUrl,
+                  },
+                },
+                body: {
+                  text: buildCarouselCardBody(message.body),
+                },
+                action: {
+                  buttons: [
+                    {
+                      type: 'quick_reply',
+                      quick_reply: {
+                        id: `book ${displayNumber}`,
+                        title: 'Book',
+                      },
+                    },
+                    {
+                      type: 'quick_reply',
+                      quick_reply: {
+                        id: `details ${displayNumber}`,
+                        title: 'Details',
+                      },
+                    },
+                  ],
+                },
+              };
+            }),
+          },
+        },
+      },
+      'carousel'
+    );
+
+    if (!response) {
+      console.warn('[MetaWhatsAppOutboundService] Carousel send failed; falling back to regular messages');
+    }
+
+    return response;
+  }
+
   private async sendVoiceReply(to: string, text: string): Promise<boolean> {
     try {
       const audio = await getTextToSpeechService().synthesize(text);
@@ -123,7 +212,10 @@ export class MetaWhatsAppOutboundService {
     }
   }
 
-  private async sendMessage(payload: Record<string, unknown>): Promise<boolean> {
+  private async sendMessage(
+    payload: Record<string, unknown>,
+    label = 'message'
+  ): Promise<boolean> {
     if (!this.isConfigured()) {
       console.warn('[MetaWhatsAppOutboundService] Meta WhatsApp is not configured; skipping message');
       return false;
@@ -143,7 +235,7 @@ export class MetaWhatsAppOutboundService {
 
     if (!response.ok) {
       console.error(
-        `[MetaWhatsAppOutboundService] Failed to send WhatsApp message: ${response.status} ${await response.text()}`
+        `[MetaWhatsAppOutboundService] Failed to send WhatsApp ${label}: ${response.status} ${await response.text()}`
       );
       return false;
     }
@@ -162,6 +254,30 @@ function toMetaRecipient(value: string): string {
 
 function isPublicHttpsUrl(value?: string): value is string {
   return typeof value === 'string' && /^https:\/\//i.test(value);
+}
+
+function buildCarouselCardBody(body: string): string {
+  const cleanedLines = body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^View on Google Maps:/i.test(stripEmoji(line)))
+    .filter((line) => !/^Book now:/i.test(stripEmoji(line)))
+    .filter((line) => !/^More info:/i.test(stripEmoji(line)));
+
+  return truncateText(cleanedLines.join('\n'), META_CAROUSEL_CARD_BODY_LIMIT);
+}
+
+function truncateText(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
+function stripEmoji(value: string): string {
+  return value.replace(/^[^\p{L}\p{N}]+/u, '').trim();
 }
 
 let metaWhatsAppOutboundServiceInstance: MetaWhatsAppOutboundService | null = null;
