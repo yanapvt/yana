@@ -78,13 +78,16 @@ describe('MetaWhatsAppOutboundService', () => {
       'https://example.com/hotel-one.jpg'
     );
     expect(payload.interactive.action.cards[0].action.buttons).toEqual([
-      { type: 'quick_reply', quick_reply: { id: 'book 1', title: 'Book' } },
+      { type: 'quick_reply', quick_reply: { id: 'book 1', title: 'Book Now' } },
       { type: 'quick_reply', quick_reply: { id: 'details 1', title: 'Details' } },
     ]);
     expect(payload.interactive.action.cards[1].action.buttons).toEqual([
-      { type: 'quick_reply', quick_reply: { id: 'book 2', title: 'Book' } },
+      { type: 'quick_reply', quick_reply: { id: 'book 2', title: 'Book Now' } },
       { type: 'quick_reply', quick_reply: { id: 'details 2', title: 'Details' } },
     ]);
+    expect(payload.interactive.action.cards[0].body.text).toContain('1. Hotel One');
+    expect(payload.interactive.action.cards[0].body.text).toContain('Rating 4.8/5');
+    expect(payload.interactive.action.cards[0].body.text).toContain('Strong reviews + location');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('View on Google Maps');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('Smart view');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('Book now');

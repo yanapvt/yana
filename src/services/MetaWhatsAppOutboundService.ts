@@ -163,7 +163,7 @@ export class MetaWhatsAppOutboundService {
                       type: 'quick_reply',
                       quick_reply: {
                         id: `book ${displayNumber}`,
-                        title: 'Book',
+                        title: 'Book Now',
                       },
                     },
                     {
@@ -267,7 +267,65 @@ function buildCarouselCardBody(body: string): string {
     .filter((line) => !/^Book now:/i.test(stripEmoji(line)))
     .filter((line) => !/^More info:/i.test(stripEmoji(line)));
 
-  return truncateText(cleanedLines.join('\n'), META_CAROUSEL_CARD_BODY_LIMIT);
+  const title = cleanedLines.find((line) => /^\d+\.\s*/.test(stripEmoji(line)));
+  const rating = extractField(cleanedLines, 'Rating');
+  const price =
+    extractField(cleanedLines, 'Price signal') ??
+    extractField(cleanedLines, 'Price level') ??
+    extractField(cleanedLines, 'Estimated price');
+  const category = extractField(cleanedLines, 'Category');
+  const cuisine = extractField(cleanedLines, 'Cuisine');
+  const location = extractField(cleanedLines, 'Location') ?? extractField(cleanedLines, 'Address');
+  const reason = extractField(cleanedLines, 'Why Yana picked it');
+
+  const compactLines = [
+    title ? truncateText(stripEmoji(title), 42) : undefined,
+    rating ? `Rating ${truncateText(rating, 30)}` : undefined,
+    price ? `Price ${truncateText(price, 24)}` : undefined,
+    category ? truncateText(category, 32) : cuisine ? truncateText(cuisine, 32) : undefined,
+    location ? truncateText(compactLocation(location), 34) : undefined,
+    reason ? truncateText(compactReason(reason), 42) : undefined,
+  ].filter((line): line is string => typeof line === 'string' && line.trim().length > 0);
+
+  return truncateText(compactLines.join('\n'), META_CAROUSEL_CARD_BODY_LIMIT);
+}
+
+function extractField(lines: string[], label: string): string | undefined {
+  const pattern = new RegExp(`^${escapeRegExp(label)}\\s*:\\s*(.+)$`, 'i');
+  for (const line of lines) {
+    const match = stripEmoji(line).match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+  return undefined;
+}
+
+function compactLocation(value: string): string {
+  const parts = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 2) {
+    return value;
+  }
+
+  return parts.slice(0, 2).join(', ');
+}
+
+function compactReason(value: string): string {
+  const lower = value.toLowerCase();
+  if (lower.includes('rating') || lower.includes('review')) {
+    return 'Strong reviews + location';
+  }
+  if (lower.includes('cuisine') || lower.includes('dining')) {
+    return 'Matches your dining style';
+  }
+  if (lower.includes('experience') || lower.includes('destination')) {
+    return 'Matches your trip style';
+  }
+  return value;
 }
 
 function truncateText(value: string, limit: number): string {
@@ -280,6 +338,10 @@ function truncateText(value: string, limit: number): string {
 
 function stripEmoji(value: string): string {
   return value.replace(/^[^\p{L}\p{N}]+/u, '').trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 let metaWhatsAppOutboundServiceInstance: MetaWhatsAppOutboundService | null = null;
