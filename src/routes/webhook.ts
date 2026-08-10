@@ -2805,6 +2805,7 @@ function buildHotelDetailsReply(
       : undefined,
     hotel.priceRange ? `Price signal: ${hotel.priceRange}` : 'Price signal: confirm live rate',
     hotel.address ? `Address: ${hotel.address}` : undefined,
+    buildSmartPlaceLink(hotel) ? `Smart view: ${buildSmartPlaceLink(hotel)}` : undefined,
     hotel.googleMapsUri ? `Map: ${hotel.googleMapsUri}` : undefined,
     hotel.thumbnailUrl ? `Thumbnail: ${hotel.thumbnailUrl}` : undefined,
     '',
@@ -2844,6 +2845,7 @@ function buildRestaurantDetailsReply(
     restaurant.priceRange ? `Price level: ${restaurant.priceRange}` : 'Price level: confirm locally',
     restaurant.cuisine ? `Cuisine: ${restaurant.cuisine}` : undefined,
     restaurant.address ? `Address: ${restaurant.address}` : undefined,
+    buildSmartPlaceLink(restaurant) ? `Smart view: ${buildSmartPlaceLink(restaurant)}` : undefined,
     restaurant.googleMapsUri ? `Map: ${restaurant.googleMapsUri}` : undefined,
     '',
     `Reply "book ${displayNumber}" if you would like me to prepare the reservation check for this restaurant.`,
@@ -2879,6 +2881,7 @@ function buildExcursionDetailsReply(
     experience.priceRange ? `Estimated price: ${experience.priceRange}` : 'Estimated price: confirm locally',
     experience.shortDescription,
     experience.address ? `Address: ${experience.address}` : undefined,
+    buildSmartPlaceLink(experience) ? `Smart view: ${buildSmartPlaceLink(experience)}` : undefined,
     experience.googleMapsUri ? `Map: ${experience.googleMapsUri}` : undefined,
     '',
     `Reply "book ${displayNumber}" if you would like me to prepare the booking request for this experience.`,
@@ -3321,7 +3324,9 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
       ? `${hotel.rating.toFixed(1)}/5${hotel.reviewCount ? ` (${hotel.reviewCount} reviews)` : ''}`
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(hotel);
+  const smartLink = buildSmartPlaceLink(hotel);
   const lines = [
+    smartLink ? `Smart view: ${smartLink}` : undefined,
     `🏨 *${displayNumber}. ${hotel.name}*`,
     `⭐ Rating: ${rating}`,
     hotel.priceRange ? `💰 Price signal: ${hotel.priceRange}` : '💰 Price signal: confirm live rate',
@@ -3347,7 +3352,9 @@ function buildRestaurantResultCard(
       ? `${restaurant.rating.toFixed(1)}/5${restaurant.reviewCount ? ` (${restaurant.reviewCount} reviews)` : ''}`
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(restaurant);
+  const smartLink = buildSmartPlaceLink(restaurant);
   const lines = [
+    smartLink ? `Smart view: ${smartLink}` : undefined,
     `🍽️ *${displayNumber}. ${restaurant.name}*`,
     `⭐ Rating: ${rating}`,
     restaurant.priceRange ? `💰 Price level: ${restaurant.priceRange}` : '💰 Price level: confirm locally',
@@ -3374,7 +3381,9 @@ function buildExcursionResultCard(
       ? `${experience.rating.toFixed(1)}/5${experience.reviewCount ? ` (${experience.reviewCount} reviews)` : ''}`
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(experience);
+  const smartLink = buildSmartPlaceLink(experience);
   const lines = [
+    smartLink ? `Smart view: ${smartLink}` : undefined,
     `🧭 *${displayNumber}. ${experience.name}*`,
     experience.category ? `🎯 Category: ${experience.category}` : undefined,
     `⭐ Rating: ${rating}`,
@@ -3474,6 +3483,14 @@ function buildGoogleMapsShortLink(hotel: HotelBrowseResult): string | undefined 
   }
 
   return `${getPublicBaseUrl()}/places/google/${encodeURIComponent(hotel.id)}`;
+}
+
+function buildSmartPlaceLink(place: { id?: string }): string | undefined {
+  if (!place.id) {
+    return undefined;
+  }
+
+  return `${getPublicBaseUrl()}/places/smart/${encodeURIComponent(place.id)}`;
 }
 
 function getPublicBaseUrl(): string {

@@ -261,7 +261,9 @@ function buildCarouselCardBody(body: string): string {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
+    .filter((line) => !/^Smart view:/i.test(stripEmoji(line)))
     .filter((line) => !/^View on Google Maps:/i.test(stripEmoji(line)))
+    .filter((line) => !/^Map:/i.test(stripEmoji(line)))
     .filter((line) => !/^Book now:/i.test(stripEmoji(line)))
     .filter((line) => !/^More info:/i.test(stripEmoji(line)));
 

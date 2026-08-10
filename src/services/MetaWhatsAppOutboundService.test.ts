@@ -35,6 +35,7 @@ describe('MetaWhatsAppOutboundService', () => {
           '1. Hotel One',
           'Rating: 4.8/5 (120 reviews)',
           'Why Yana picked it: Great location near the lake with strong reviews and a useful distance signal for a short Kandy stay.',
+          'Smart view: https://example.com/places/smart/one',
           'View on Google Maps: https://example.com/place/one',
           'Book now: reply book 1',
           'More info: reply details 1',
@@ -85,6 +86,7 @@ describe('MetaWhatsAppOutboundService', () => {
       { type: 'quick_reply', quick_reply: { id: 'details 2', title: 'Details' } },
     ]);
     expect(payload.interactive.action.cards[0].body.text).not.toContain('View on Google Maps');
+    expect(payload.interactive.action.cards[0].body.text).not.toContain('Smart view');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('Book now');
     expect(payload.interactive.action.cards[0].body.text.length).toBeLessThan(160);
     expect(payload.interactive.action.cards[1].body.text.length).toBeLessThan(160);
