@@ -28,13 +28,13 @@ describe('MetaWhatsAppOutboundService', () => {
 
     const sent = await service.sendWhatsAppMessages('whatsapp:+94 77 726 9221', [
       {
-        body: '🏨 I found these hotel matches for Kandy.\nReply "next" or "more" for more options.',
+        body: 'I found these hotel matches for Kandy.\nReply "next" or "more" for more options.',
       },
       {
         body: [
           '1. Hotel One',
           'Rating: 4.8/5 (120 reviews)',
-          'Why Yana picked it: Great location near the lake.',
+          'Why Yana picked it: Great location near the lake with strong reviews and a useful distance signal for a short Kandy stay.',
           'View on Google Maps: https://example.com/place/one',
           'Book now: reply book 1',
           'More info: reply details 1',
@@ -86,5 +86,7 @@ describe('MetaWhatsAppOutboundService', () => {
     ]);
     expect(payload.interactive.action.cards[0].body.text).not.toContain('View on Google Maps');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('Book now');
+    expect(payload.interactive.action.cards[0].body.text.length).toBeLessThan(160);
+    expect(payload.interactive.action.cards[1].body.text.length).toBeLessThan(160);
   });
 });
