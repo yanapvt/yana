@@ -37,6 +37,7 @@ import { mapItineraryRequestFormToCriteria } from '../services/itineraryRequestM
 import { getProfileService } from '../services/profileService.js';
 import { getTwilioOutboundService } from '../services/twilioOutboundService.js';
 import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
+import { getMetaWhatsAppOutboundService } from '../services/MetaWhatsAppOutboundService.js';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
 import { env } from '../config/environment.js';
 import type { HotelSearchCriteria } from '../services/HotelIntakeService.js';
@@ -810,6 +811,10 @@ async function sendFormCompletionMessages(userId: string, messages: string[]): P
 function getFormCompletionOutboundService(): { sendWhatsAppText(to: string, body: string): Promise<boolean> } {
   if (env.whatsapp.provider === 'openwa') {
     return getOpenWaOutboundService();
+  }
+
+  if (env.whatsapp.provider === 'meta') {
+    return getMetaWhatsAppOutboundService();
   }
 
   return getTwilioOutboundService();

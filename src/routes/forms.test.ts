@@ -6,8 +6,13 @@ import { FormTokenService, initFormTokenService } from '../services/formTokenSer
 import { ProfileService, initProfileService } from '../services/profileService.js';
 import { initTwilioOutboundService, TwilioOutboundService } from '../services/twilioOutboundService.js';
 import { initOpenWaOutboundService, OpenWaOutboundService } from '../services/OpenWaOutboundService.js';
+import {
+  initMetaWhatsAppOutboundService,
+  MetaWhatsAppOutboundService,
+} from '../services/MetaWhatsAppOutboundService.js';
 import { InMemoryProfileRepository } from '../storage/profileRepository.js';
 import { InMemoryServiceRequestRepository } from '../storage/serviceRequestRepository.js';
+import { env } from '../config/environment.js';
 
 describe('external form routes', () => {
   let server: Server;
@@ -44,6 +49,11 @@ describe('external form routes', () => {
       sendWhatsAppText: sendWhatsAppTextMock,
       isConfigured: () => true,
     } as unknown as OpenWaOutboundService);
+    initMetaWhatsAppOutboundService({
+      sendWhatsAppText: sendWhatsAppTextMock,
+      isConfigured: () => true,
+    } as unknown as MetaWhatsAppOutboundService);
+    env.whatsapp.provider = 'twilio';
   });
 
   it('renders each supported form for a matching valid token', async () => {
@@ -287,6 +297,36 @@ describe('external form routes', () => {
       passengers: 2,
       childSeat: true,
     });
+  });
+
+  it('sends form completion messages through Meta when Meta is the selected provider', async () => {
+    env.whatsapp.provider = 'meta';
+    const token = tokenService.createToken('whatsapp:+94770000012', 'hotel');
+    const csrf = extractCsrf(await (await fetch(`${origin}/forms/hotel/${token}`)).text());
+
+    const response = await fetch(`${origin}/forms/hotel/${token}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        _csrf: csrf,
+        destination: 'Kandy',
+        checkIn: '2026-08-20',
+        checkOut: '2026-08-22',
+        adults: '2',
+        children: '0',
+        rooms: '1',
+        budget: 'Comfort',
+        mealPlan: 'Breakfast included',
+      }),
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('Return to WhatsApp');
+    expect(sendWhatsAppTextMock).toHaveBeenCalledWith(
+      'whatsapp:+94770000012',
+      expect.stringContaining("I've gathered the following details")
+    );
   });
 });
 

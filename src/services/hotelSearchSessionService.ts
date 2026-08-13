@@ -5,6 +5,9 @@ import type { HotelSearchCriteria } from './HotelIntakeService.js';
 import { getProfileService } from './profileService.js';
 import { getStateStore, type StateStore } from './StateStore.js';
 import { getTwilioOutboundService } from './twilioOutboundService.js';
+import { getOpenWaOutboundService } from './OpenWaOutboundService.js';
+import { getMetaWhatsAppOutboundService } from './MetaWhatsAppOutboundService.js';
+import { env } from '../config/environment.js';
 import {
   PostgresHotelSearchSessionRepository,
   type HotelSearchSessionRepository,
@@ -408,11 +411,25 @@ export class HotelSearchSessionService {
     const profile = await getProfileService().getProfile(userId);
     const preferredName = profile?.form.preferredName || profile?.form.fullName || 'there';
     const destination = session.normalizedCriteria.location || 'your destination';
-    await getTwilioOutboundService().sendWhatsAppText(
+    await getHotelReminderOutboundService().sendWhatsAppText(
       userId,
       `Hi ${preferredName}, would you like to continue your hotel search for ${destination}? I saved your progress, so you can reply 'resume' to continue or 'reset' to start over.`
     );
   }
+}
+
+function getHotelReminderOutboundService(): {
+  sendWhatsAppText(to: string, body: string): Promise<boolean>;
+} {
+  if (env.whatsapp.provider === 'openwa') {
+    return getOpenWaOutboundService();
+  }
+
+  if (env.whatsapp.provider === 'meta') {
+    return getMetaWhatsAppOutboundService();
+  }
+
+  return getTwilioOutboundService();
 }
 
 let hotelSearchSessionServiceInstance: HotelSearchSessionService | null = null;
