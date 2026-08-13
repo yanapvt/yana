@@ -275,6 +275,9 @@ function buildCarouselCardBody(body: string): string {
     extractField(cleanedLines, 'Estimated price');
   const category = extractField(cleanedLines, 'Category');
   const cuisine = extractField(cleanedLines, 'Cuisine');
+  const vehicle = extractField(cleanedLines, 'Vehicle');
+  const capacity = extractField(cleanedLines, 'Capacity');
+  const duration = extractField(cleanedLines, 'Estimated duration');
   const location = extractField(cleanedLines, 'Location') ?? extractField(cleanedLines, 'Address');
   const reason = extractField(cleanedLines, 'Why Yana picked it');
 
@@ -282,6 +285,9 @@ function buildCarouselCardBody(body: string): string {
     title ? truncateText(stripEmoji(title), 42) : undefined,
     rating ? `Rating ${truncateText(rating, 30)}` : undefined,
     price ? `Price ${truncateText(price, 24)}` : undefined,
+    vehicle ? truncateText(vehicle, 34) : undefined,
+    capacity ? `Capacity ${truncateText(capacity, 18)}` : undefined,
+    duration ? truncateText(duration, 30) : undefined,
     category ? truncateText(category, 32) : cuisine ? truncateText(cuisine, 32) : undefined,
     location ? truncateText(compactLocation(location), 34) : undefined,
     reason ? truncateText(compactReason(reason), 42) : undefined,
@@ -324,6 +330,9 @@ function compactReason(value: string): string {
   }
   if (lower.includes('experience') || lower.includes('destination')) {
     return 'Matches your trip style';
+  }
+  if (lower.includes('capacity') || lower.includes('luggage') || lower.includes('journey')) {
+    return 'Fits guests + luggage';
   }
   return value;
 }

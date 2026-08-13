@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { deflateSync } from 'node:zlib';
 import { getTextToSpeechService } from '../services/TextToSpeechService.js';
 import { getMetaWhatsAppMediaService } from '../services/MetaWhatsAppMediaService.js';
 
@@ -78,6 +79,24 @@ router.get('/media/google-place-photo', async (req: Request, res: Response) => {
     });
     res.send(image);
   } catch {
+    res.status(502).send('Unable to load image');
+  }
+});
+
+router.get('/media/transport-card/:id.png', (req: Request, res: Response) => {
+  const vehicleType = safeQueryText(req.query.type, 'Transport');
+  const vehicle = safeQueryText(req.query.vehicle, vehicleType);
+  const provider = safeQueryText(req.query.provider, 'Yana transport');
+
+  try {
+    const image = renderTransportCardPng({ vehicleType, vehicle, provider });
+    res.set({
+      'Cache-Control': 'public, max-age=86400',
+      'Content-Type': 'image/png',
+    });
+    res.send(image);
+  } catch (error) {
+    console.error('[media] Failed to render transport card image:', error);
     res.status(502).send('Unable to load image');
   }
 });
@@ -426,4 +445,345 @@ function escapeHtml(value: string): string {
 
 function escapeAttr(value: string): string {
   return escapeHtml(value);
+}
+
+interface TransportCardImageInput {
+  vehicleType: string;
+  vehicle: string;
+  provider: string;
+}
+
+function safeQueryText(value: unknown, fallback: string): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text.length > 0 && text.length <= 80 ? text : fallback;
+}
+
+function renderTransportCardPng(input: TransportCardImageInput): Buffer {
+  const width = 900;
+  const height = 520;
+  const pixels = Buffer.alloc(width * height * 4);
+  const palette = transportPalette(input.vehicleType);
+
+  fillGradient(pixels, width, height, palette.top, palette.bottom);
+  drawSun(pixels, width, 740, 86, palette.accent);
+  drawRoad(pixels, width, height);
+  drawVehicle(pixels, width, 290, 242, palette.vehicle, palette.window);
+  drawBadge(pixels, width, input.vehicleType);
+  drawSimpleText(pixels, width, 54, 58, input.provider.toUpperCase(), [255, 255, 255, 255], 4);
+  drawSimpleText(pixels, width, 54, 392, input.vehicle, [255, 255, 255, 255], 5);
+  drawSimpleText(pixels, width, 58, 455, 'YANA TRANSPORT', [224, 242, 254, 255], 3);
+
+  return encodePng(width, height, pixels);
+}
+
+function transportPalette(vehicleType: string): {
+  top: Rgba;
+  bottom: Rgba;
+  vehicle: Rgba;
+  window: Rgba;
+  accent: Rgba;
+} {
+  const type = vehicleType.toLowerCase();
+  if (/luxury|chauffeur/.test(type)) {
+    return {
+      top: [15, 23, 42, 255],
+      bottom: [49, 46, 129, 255],
+      vehicle: [236, 201, 75, 255],
+      window: [191, 219, 254, 255],
+      accent: [250, 204, 21, 255],
+    };
+  }
+  if (/van|minibus|bus|coach/.test(type)) {
+    return {
+      top: [12, 74, 110, 255],
+      bottom: [13, 148, 136, 255],
+      vehicle: [248, 250, 252, 255],
+      window: [186, 230, 253, 255],
+      accent: [45, 212, 191, 255],
+    };
+  }
+  if (/suv/.test(type)) {
+    return {
+      top: [20, 83, 45, 255],
+      bottom: [21, 128, 61, 255],
+      vehicle: [251, 146, 60, 255],
+      window: [219, 234, 254, 255],
+      accent: [134, 239, 172, 255],
+    };
+  }
+  if (/economy/.test(type)) {
+    return {
+      top: [30, 64, 175, 255],
+      bottom: [14, 116, 144, 255],
+      vehicle: [96, 165, 250, 255],
+      window: [219, 234, 254, 255],
+      accent: [125, 211, 252, 255],
+    };
+  }
+  return {
+    top: [15, 118, 110, 255],
+    bottom: [22, 101, 52, 255],
+    vehicle: [255, 255, 255, 255],
+    window: [186, 230, 253, 255],
+    accent: [52, 211, 153, 255],
+  };
+}
+
+type Rgba = [number, number, number, number];
+
+function fillGradient(pixels: Buffer, width: number, height: number, top: Rgba, bottom: Rgba): void {
+  for (let y = 0; y < height; y += 1) {
+    const ratio = y / Math.max(1, height - 1);
+    const color: Rgba = [
+      Math.round(top[0] + (bottom[0] - top[0]) * ratio),
+      Math.round(top[1] + (bottom[1] - top[1]) * ratio),
+      Math.round(top[2] + (bottom[2] - top[2]) * ratio),
+      255,
+    ];
+    for (let x = 0; x < width; x += 1) {
+      setPixel(pixels, width, x, y, color);
+    }
+  }
+}
+
+function drawSun(pixels: Buffer, width: number, cx: number, cy: number, color: Rgba): void {
+  for (let radius = 56; radius >= 0; radius -= 1) {
+    const alpha = Math.max(20, Math.round((1 - radius / 56) * 120));
+    drawCircle(pixels, width, cx, cy, radius, [color[0], color[1], color[2], alpha]);
+  }
+}
+
+function drawRoad(pixels: Buffer, width: number, height: number): void {
+  drawPolygon(pixels, width, [
+    [210, height],
+    [690, height],
+    [540, 300],
+    [360, 300],
+  ], [15, 23, 42, 210]);
+  drawPolygon(pixels, width, [
+    [438, height],
+    [462, height],
+    [455, 310],
+    [445, 310],
+  ], [255, 255, 255, 190]);
+}
+
+function drawVehicle(
+  pixels: Buffer,
+  width: number,
+  x: number,
+  y: number,
+  body: Rgba,
+  window: Rgba
+): void {
+  drawRoundedRect(pixels, width, x + 55, y + 18, 250, 84, 18, body);
+  drawRoundedRect(pixels, width, x + 102, y - 42, 150, 72, 18, body);
+  drawRoundedRect(pixels, width, x + 120, y - 28, 48, 38, 6, window);
+  drawRoundedRect(pixels, width, x + 178, y - 28, 56, 38, 6, window);
+  drawRect(pixels, width, x + 72, y + 72, 216, 10, [15, 23, 42, 95]);
+  drawCircle(pixels, width, x + 105, y + 108, 32, [15, 23, 42, 255]);
+  drawCircle(pixels, width, x + 255, y + 108, 32, [15, 23, 42, 255]);
+  drawCircle(pixels, width, x + 105, y + 108, 14, [226, 232, 240, 255]);
+  drawCircle(pixels, width, x + 255, y + 108, 14, [226, 232, 240, 255]);
+}
+
+function drawBadge(pixels: Buffer, width: number, text: string): void {
+  drawRoundedRect(pixels, width, 54, 300, 260, 48, 12, [255, 255, 255, 48]);
+  drawSimpleText(pixels, width, 76, 316, text.toUpperCase(), [255, 255, 255, 255], 3);
+}
+
+function drawRect(pixels: Buffer, width: number, x: number, y: number, w: number, h: number, color: Rgba): void {
+  for (let yy = y; yy < y + h; yy += 1) {
+    for (let xx = x; xx < x + w; xx += 1) {
+      blendPixel(pixels, width, xx, yy, color);
+    }
+  }
+}
+
+function drawRoundedRect(
+  pixels: Buffer,
+  width: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+  color: Rgba
+): void {
+  for (let yy = y; yy < y + h; yy += 1) {
+    for (let xx = x; xx < x + w; xx += 1) {
+      const dx = xx < x + radius ? x + radius - xx : xx > x + w - radius ? xx - (x + w - radius) : 0;
+      const dy = yy < y + radius ? y + radius - yy : yy > y + h - radius ? yy - (y + h - radius) : 0;
+      if (dx * dx + dy * dy <= radius * radius || dx === 0 || dy === 0) {
+        blendPixel(pixels, width, xx, yy, color);
+      }
+    }
+  }
+}
+
+function drawCircle(pixels: Buffer, width: number, cx: number, cy: number, radius: number, color: Rgba): void {
+  for (let y = cy - radius; y <= cy + radius; y += 1) {
+    for (let x = cx - radius; x <= cx + radius; x += 1) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (dx * dx + dy * dy <= radius * radius) {
+        blendPixel(pixels, width, x, y, color);
+      }
+    }
+  }
+}
+
+function drawPolygon(pixels: Buffer, width: number, points: Array<[number, number]>, color: Rgba): void {
+  const minY = Math.min(...points.map((point) => point[1]));
+  const maxY = Math.max(...points.map((point) => point[1]));
+  const minX = Math.min(...points.map((point) => point[0]));
+  const maxX = Math.max(...points.map((point) => point[0]));
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (pointInPolygon(x, y, points)) {
+        blendPixel(pixels, width, x, y, color);
+      }
+    }
+  }
+}
+
+function pointInPolygon(x: number, y: number, points: Array<[number, number]>): boolean {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const xi = points[i][0];
+    const yi = points[i][1];
+    const xj = points[j][0];
+    const yj = points[j][1];
+    const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+const FONT: Record<string, string[]> = {
+  A: ['111', '101', '111', '101', '101'],
+  B: ['110', '101', '110', '101', '110'],
+  C: ['111', '100', '100', '100', '111'],
+  D: ['110', '101', '101', '101', '110'],
+  E: ['111', '100', '110', '100', '111'],
+  F: ['111', '100', '110', '100', '100'],
+  G: ['111', '100', '101', '101', '111'],
+  H: ['101', '101', '111', '101', '101'],
+  I: ['111', '010', '010', '010', '111'],
+  J: ['001', '001', '001', '101', '111'],
+  K: ['101', '101', '110', '101', '101'],
+  L: ['100', '100', '100', '100', '111'],
+  M: ['101', '111', '111', '101', '101'],
+  N: ['101', '111', '111', '111', '101'],
+  O: ['111', '101', '101', '101', '111'],
+  P: ['111', '101', '111', '100', '100'],
+  R: ['110', '101', '110', '101', '101'],
+  S: ['111', '100', '111', '001', '111'],
+  T: ['111', '010', '010', '010', '010'],
+  U: ['101', '101', '101', '101', '111'],
+  V: ['101', '101', '101', '101', '010'],
+  W: ['101', '101', '111', '111', '101'],
+  X: ['101', '101', '010', '101', '101'],
+  Y: ['101', '101', '010', '010', '010'],
+  Z: ['111', '001', '010', '100', '111'],
+  0: ['111', '101', '101', '101', '111'],
+  1: ['010', '110', '010', '010', '111'],
+  2: ['111', '001', '111', '100', '111'],
+  3: ['111', '001', '111', '001', '111'],
+  4: ['101', '101', '111', '001', '001'],
+  5: ['111', '100', '111', '001', '111'],
+  6: ['111', '100', '111', '101', '111'],
+  7: ['111', '001', '010', '010', '010'],
+  8: ['111', '101', '111', '101', '111'],
+  9: ['111', '101', '111', '001', '111'],
+  ' ': ['000', '000', '000', '000', '000'],
+  '-': ['000', '000', '111', '000', '000'],
+  '/': ['001', '001', '010', '100', '100'],
+};
+
+function drawSimpleText(
+  pixels: Buffer,
+  width: number,
+  x: number,
+  y: number,
+  text: string,
+  color: Rgba,
+  scale: number
+): void {
+  let cursor = x;
+  for (const char of text.toUpperCase().slice(0, 26)) {
+    const glyph = FONT[char] ?? FONT[' '];
+    for (let row = 0; row < glyph.length; row += 1) {
+      for (let col = 0; col < glyph[row].length; col += 1) {
+        if (glyph[row][col] === '1') {
+          drawRect(pixels, width, cursor + col * scale, y + row * scale, scale, scale, color);
+        }
+      }
+    }
+    cursor += 4 * scale;
+  }
+}
+
+function setPixel(pixels: Buffer, width: number, x: number, y: number, color: Rgba): void {
+  if (x < 0 || y < 0 || x >= width) return;
+  const offset = (y * width + x) * 4;
+  if (offset < 0 || offset + 3 >= pixels.length) return;
+  pixels[offset] = color[0];
+  pixels[offset + 1] = color[1];
+  pixels[offset + 2] = color[2];
+  pixels[offset + 3] = color[3];
+}
+
+function blendPixel(pixels: Buffer, width: number, x: number, y: number, color: Rgba): void {
+  if (x < 0 || y < 0 || x >= width) return;
+  const offset = (y * width + x) * 4;
+  if (offset < 0 || offset + 3 >= pixels.length) return;
+  const alpha = color[3] / 255;
+  pixels[offset] = Math.round(color[0] * alpha + pixels[offset] * (1 - alpha));
+  pixels[offset + 1] = Math.round(color[1] * alpha + pixels[offset + 1] * (1 - alpha));
+  pixels[offset + 2] = Math.round(color[2] * alpha + pixels[offset + 2] * (1 - alpha));
+  pixels[offset + 3] = 255;
+}
+
+function encodePng(width: number, height: number, rgba: Buffer): Buffer {
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const rowStart = y * (width * 4 + 1);
+    raw[rowStart] = 0;
+    rgba.copy(raw, rowStart + 1, y * width * 4, (y + 1) * width * 4);
+  }
+
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', concatBuffers(uint32(width), uint32(height), Buffer.from([8, 6, 0, 0, 0]))),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  return concatBuffers(uint32(data.length), typeBuffer, data, uint32(crc32(concatBuffers(typeBuffer, data))));
+}
+
+function uint32(value: number): Buffer {
+  const buffer = Buffer.alloc(4);
+  buffer.writeUInt32BE(value >>> 0, 0);
+  return buffer;
+}
+
+function concatBuffers(...buffers: Buffer[]): Buffer {
+  return Buffer.concat(buffers);
+}
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let index = 0; index < 8; index += 1) {
+      crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }

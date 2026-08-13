@@ -3418,7 +3418,10 @@ function buildLogisticsResultCard(
     `ℹ️ More info: reply *details ${displayNumber}*`,
   ];
 
-  return { body: lines.join('\n') };
+  return {
+    body: lines.join('\n'),
+    mediaUrl: buildTransportCardImageUrl(option),
+  };
 }
 
 function buildHotelRecommendationReason(hotel: HotelBrowseResult): string {
@@ -3491,6 +3494,16 @@ function buildSmartPlaceLink(place: { id?: string }): string | undefined {
   }
 
   return `${getPublicBaseUrl()}/places/smart/${encodeURIComponent(place.id)}`;
+}
+
+function buildTransportCardImageUrl(option: TransportOption): string {
+  const params = new URLSearchParams({
+    provider: option.provider,
+    vehicle: option.vehicle,
+    type: option.vehicleType,
+  });
+
+  return `${getPublicBaseUrl()}/media/transport-card/${encodeURIComponent(option.id)}.png?${params.toString()}`;
 }
 
 function getPublicBaseUrl(): string {
