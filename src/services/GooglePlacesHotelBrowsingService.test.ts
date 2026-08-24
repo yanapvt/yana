@@ -59,4 +59,19 @@ describe('GooglePlacesHotelBrowsingService', () => {
         'http://localhost:3000/media/google-place-photo?name=places%2Fplace-1%2Fphotos%2Fphoto-1',
     });
   });
+
+  it('does not call Google Places when hotel discovery is disabled', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const service = new GooglePlacesHotelBrowsingService({
+      apiKey: 'test-google-key',
+      enabled: false,
+    });
+
+    expect(service.isConfigured()).toBe(false);
+    await expect(service.searchHotels({ location: 'Colombo' })).resolves.toEqual({
+      provider: 'google_places',
+      results: [],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

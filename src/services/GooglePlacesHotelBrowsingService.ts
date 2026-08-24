@@ -18,6 +18,7 @@ export interface HotelBrowseResponse {
 
 interface GooglePlacesHotelBrowsingConfig {
   apiKey?: string;
+  enabled?: boolean;
 }
 
 interface GooglePlacesSearchTextResponse {
@@ -43,20 +44,24 @@ interface SearchHotelsOptions {
 
 export class GooglePlacesHotelBrowsingService {
   private apiKey?: string;
+  private enabled: boolean;
 
   constructor(config: GooglePlacesHotelBrowsingConfig = {}) {
     this.apiKey = config.apiKey ?? process.env.GOOGLE_PLACES_API_KEY;
+    this.enabled =
+      config.enabled ?? process.env.HOTEL_GOOGLE_PLACES_ENABLED !== 'false';
   }
 
   isConfigured(): boolean {
-    return Boolean(this.apiKey);
+    return this.enabled && Boolean(this.apiKey);
   }
 
   async searchHotels(
     criteria: HotelSearchCriteria,
     options: SearchHotelsOptions = {}
   ): Promise<HotelBrowseResponse> {
-    if (!this.apiKey) {
+    const apiKey = this.apiKey;
+    if (!this.enabled || !apiKey) {
       return { provider: 'google_places', results: [] };
     }
 
@@ -64,7 +69,7 @@ export class GooglePlacesHotelBrowsingService {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Goog-Api-Key': this.apiKey,
+        'X-Goog-Api-Key': apiKey,
         'X-Goog-FieldMask': [
           'places.id',
           'places.displayName',

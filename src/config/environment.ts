@@ -5,6 +5,10 @@
 
 import { config } from 'dotenv';
 import { z } from 'zod';
+import {
+  loadHotelSupplierEnvironment,
+  type HotelSupplierEnvironment,
+} from './hotelSuppliers.js';
 
 // Load environment variables from .env file
 config();
@@ -106,6 +110,9 @@ const EnvironmentSchema = z.object({
     publicKey: z.string().optional(),
     host: z.string().url().default('https://api.nango.dev'),
   }),
+
+  // Multi-supplier hotel inventory orchestration
+  hotelSuppliers: z.custom<HotelSupplierEnvironment>(),
 
   // Feature Flags
   features: z.object({
@@ -222,6 +229,8 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       publicKey: process.env.NANGO_PUBLIC_KEY,
       host: process.env.NANGO_HOST || 'https://api.nango.dev',
     },
+
+    hotelSuppliers: loadHotelSupplierEnvironment(),
 
     features: {
       ttsEnabled: process.env.FEATURE_TTS_ENABLED === 'true',
