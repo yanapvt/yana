@@ -18,6 +18,11 @@ import {
   type HotelBrowseResult,
   type HotelBrowseResponse,
 } from './GooglePlacesHotelBrowsingService.js';
+import {
+  createConfiguredHotelSupplierOrchestrator,
+  type HotelSupplierOrchestrationResult,
+  type HotelSupplierOrchestrator,
+} from './hotel-engine/index.js';
 
 export interface HotelSearchFlowContext {
   correlationId: string;
@@ -45,6 +50,8 @@ interface HotelSearchFlowDependencies {
   mcpInterface?: MCPInterface;
   renderer?: WhatsAppRenderer;
   browsingService?: GooglePlacesHotelBrowsingService;
+  supplierOrchestrator?: Pick<HotelSupplierOrchestrator, 'searchHotels'>;
+  supplierConfigured?: boolean;
   providerConfigured?: boolean;
 }
 
@@ -88,6 +95,8 @@ export class HotelSearchFlowService {
   private mcpInterface: MCPInterface;
   private renderer: WhatsAppRenderer;
   private browsingService: GooglePlacesHotelBrowsingService;
+  private supplierOrchestrator?: Pick<HotelSupplierOrchestrator, 'searchHotels'>;
+  private supplierConfigured: boolean;
   private providerConfigured: boolean;
 
   constructor(dependencies: HotelSearchFlowDependencies = {}) {
@@ -97,6 +106,11 @@ export class HotelSearchFlowService {
     this.renderer = dependencies.renderer ?? new WhatsAppRenderer();
     this.browsingService =
       dependencies.browsingService ?? new GooglePlacesHotelBrowsingService();
+    this.supplierConfigured =
+      dependencies.supplierConfigured ?? env.hotelSuppliers.enabled;
+    this.supplierOrchestrator =
+      dependencies.supplierOrchestrator ??
+      (this.supplierConfigured ? createConfiguredHotelSupplierOrchestrator() : undefined);
     this.providerConfigured =
       dependencies.providerConfigured ?? isHotelProviderConfigured();
 
@@ -127,6 +141,9 @@ export class HotelSearchFlowService {
         reply: `I have your hotel request, but I still need: ${validationErrors.join(', ')}.`,
       };
     }
+
+    const supplierResult = await this.searchSupplierInventory(criteria, context, 9);
+    if (supplierResult) return supplierResult;
 
     await this.ensureSearchHotelsTool();
 
@@ -208,7 +225,7 @@ export class HotelSearchFlowService {
 
   async handleBrowseSearch(
     criteria: HotelSearchCriteria,
-    _context: HotelSearchFlowContext,
+    context: HotelSearchFlowContext,
     maxResults = 9
   ): Promise<HotelSearchFlowResult> {
     const params = this.toToolParams(criteria);
@@ -221,6 +238,9 @@ export class HotelSearchFlowService {
         reply: `I have your hotel request, but I still need: ${validationErrors.join(', ')}.`,
       };
     }
+
+    const supplierResult = await this.searchSupplierInventory(criteria, context, maxResults);
+    if (supplierResult) return supplierResult;
 
     if (!this.browsingService.isConfigured()) {
       return {
@@ -251,6 +271,82 @@ export class HotelSearchFlowService {
         totalResults: rankedResults.length,
       }),
     };
+  }
+
+  private validateCheckoutDate(value?: string): string | undefined {
+    return value && /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? undefined
+      : 'valid check-out date';
+  }
+
+  private async searchSupplierInventory(
+    criteria: HotelSearchCriteria,
+    context: HotelSearchFlowContext,
+    maxResults: number
+  ): Promise<HotelSearchFlowResult | undefined> {
+    if (!this.supplierConfigured || !this.supplierOrchestrator) return undefined;
+
+    const checkoutError = this.validateCheckoutDate(criteria.checkoutDate);
+    if (checkoutError) {
+      return {
+        status: 'validation_failed',
+        criteria,
+        reply: `I have your hotel request, but I still need: ${checkoutError}.`,
+      };
+    }
+
+    const inventory = await this.supplierOrchestrator.searchHotels({
+      destination: criteria.location!,
+      checkIn: criteria.checkinDate!,
+      checkOut: criteria.checkoutDate!,
+      occupancy: {
+        adults: criteria.guests ?? 2,
+        children: 0,
+        rooms: criteria.rooms ?? 1,
+      },
+      currency: criteria.budgetPerNight?.currency ?? 'USD',
+      correlationId: context.correlationId,
+    });
+    const inventoryResponse = this.toInventoryBrowseResponse(inventory, maxResults);
+    if (inventoryResponse.results.length === 0) return undefined;
+
+    return {
+      status: 'browse_results',
+      criteria,
+      browseResponse: inventoryResponse,
+      reply: this.buildBrowseResultsReply(criteria, inventoryResponse.results.slice(0, 3), {
+        nextOffset: Math.min(3, inventoryResponse.results.length),
+        totalResults: inventoryResponse.results.length,
+      }),
+    };
+  }
+
+  private toInventoryBrowseResponse(
+    inventory: HotelSupplierOrchestrationResult,
+    maxResults: number
+  ): HotelBrowseResponse {
+    const hotels = new Map(inventory.hotels.map((hotel) => [hotel.yanaHotelId, hotel]));
+    const results = inventory.rates
+      .filter((rate) => rate.available && rate.bookable)
+      .slice(0, maxResults)
+      .map((rate): HotelBrowseResult => {
+        const hotel = hotels.get(rate.yanaHotelId);
+        return {
+          id: `${rate.yanaHotelId}:${rate.yanaRoomId}`,
+          name: hotel?.name ?? 'Hotel option',
+          address: hotel?.address ?? hotel?.destination,
+          rating: hotel?.starRating,
+          roomName: rate.roomName,
+          mealPlan: rate.mealPlan,
+          refundable: rate.cancellationPolicy.refundable,
+          rateAmount: rate.cost.supplierNet.amount,
+          rateCurrency: rate.currency,
+          priceBasis: rate.priceBasis,
+          priceRange: `${rate.currency} ${rate.cost.supplierNet.amount.toFixed(2)} total`,
+        };
+      });
+
+    return { provider: 'hotel_inventory', results };
   }
 
   buildBrowseResultsPageReply(
@@ -339,17 +435,27 @@ export class HotelSearchFlowService {
     const hasMore = pagination.nextOffset < pagination.totalResults;
     const lines = [
       `I found these hotel matches for ${this.formatCriteria(criteria)}.`,
-      'Price range is estimated where available. Please confirm live rates and availability before booking.',
+      results.some((result) => result.rateAmount !== undefined)
+        ? 'These are live returned room rates. Final price and availability must be rechecked before booking.'
+        : 'Price range is estimated where available. Please confirm live rates and availability before booking.',
       '',
       ...results.map((hotel, index) => {
         const rating =
           typeof hotel.rating === 'number'
             ? ` - ${hotel.rating.toFixed(1)}/5${hotel.reviewCount ? ` (${hotel.reviewCount} reviews)` : ''}`
             : '';
-        const price = hotel.priceRange ? `\nPrice signal: ${hotel.priceRange}` : '';
+        const price = hotel.priceRange
+          ? `\n${hotel.rateAmount !== undefined ? 'Returned total' : 'Price signal'}: ${hotel.priceRange}`
+          : '';
         const address = hotel.address ? `\n${hotel.address}` : '';
+        const room = hotel.roomName ? `\nRoom: ${hotel.roomName}` : '';
+        const meal = hotel.mealPlan ? `\nMeal plan: ${formatMealPlan(hotel.mealPlan)}` : '';
+        const cancellation =
+          hotel.refundable === undefined
+            ? ''
+            : `\nCancellation: ${hotel.refundable ? 'Refundable' : 'Non-refundable'}`;
 
-        return `${index + 1}. ${hotel.name}${rating}${price}${address}\nReply "book ${index + 1}" or "details ${index + 1}".`;
+        return `${index + 1}. ${hotel.name}${rating}${room}${meal}${cancellation}${price}${address}\nReply "book ${index + 1}" or "details ${index + 1}".`;
       }),
       '',
       hasMore
@@ -525,6 +631,10 @@ function scoreBudgetFit(amount: number, priceRange: string): number {
   const priceWeight = normalized === '$' ? 1 : normalized === '$$' ? 2 : normalized === '$$$' ? 3 : 4;
   const budgetWeight = amount <= 75 ? 1 : amount <= 175 ? 2 : amount <= 350 ? 3 : 4;
   return Math.max(0, 10 - Math.abs(priceWeight - budgetWeight) * 4);
+}
+
+function formatMealPlan(mealPlan: string): string {
+  return mealPlan.toLowerCase().replace(/_/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
 function isHotelProviderConfigured(): boolean {

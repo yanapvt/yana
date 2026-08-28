@@ -2803,7 +2803,14 @@ function buildHotelDetailsReply(
     hotel.rating
       ? `Rating: ${hotel.rating.toFixed(1)}/5${hotel.reviewCount ? ` (${hotel.reviewCount} reviews)` : ''}`
       : undefined,
-    hotel.priceRange ? `Price signal: ${hotel.priceRange}` : 'Price signal: confirm live rate',
+    hotel.roomName ? `Room: ${hotel.roomName}` : undefined,
+    hotel.mealPlan ? `Meal plan: ${formatInventoryLabel(hotel.mealPlan)}` : undefined,
+    hotel.refundable === undefined
+      ? undefined
+      : `Cancellation: ${hotel.refundable ? 'Refundable' : 'Non-refundable'}`,
+    hotel.priceRange
+      ? `${hotel.rateAmount !== undefined ? 'Returned total' : 'Price signal'}: ${hotel.priceRange}`
+      : 'Price signal: confirm live rate',
     hotel.address ? `Address: ${hotel.address}` : undefined,
     buildSmartPlaceLink(hotel) ? `Smart view: ${buildSmartPlaceLink(hotel)}` : undefined,
     hotel.googleMapsUri ? `Map: ${hotel.googleMapsUri}` : undefined,
@@ -3329,7 +3336,14 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
     smartLink ? `Smart view: ${smartLink}` : undefined,
     `🏨 *${displayNumber}. ${hotel.name}*`,
     `⭐ Rating: ${rating}`,
-    hotel.priceRange ? `💰 Price signal: ${hotel.priceRange}` : '💰 Price signal: confirm live rate',
+    hotel.roomName ? `🛏️ Room: ${hotel.roomName}` : undefined,
+    hotel.mealPlan ? `🍽️ Meal plan: ${formatInventoryLabel(hotel.mealPlan)}` : undefined,
+    hotel.refundable === undefined
+      ? undefined
+      : `↩️ Cancellation: ${hotel.refundable ? 'Refundable' : 'Non-refundable'}`,
+    hotel.priceRange
+      ? `💰 ${hotel.rateAmount !== undefined ? 'Returned total' : 'Price signal'}: ${hotel.priceRange}`
+      : '💰 Price signal: confirm live rate',
     hotel.address ? `📍 Location: ${hotel.address}` : undefined,
     `✨ Why Yana picked it: ${buildHotelRecommendationReason(hotel)}`,
     mapsLink ? `🗺️ View on Google Maps: ${mapsLink}` : undefined,
@@ -3341,6 +3355,10 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
     body: lines.join('\n'),
     mediaUrl: isPublicHttpsUrl(hotel.thumbnailUrl) ? hotel.thumbnailUrl : undefined,
   };
+}
+
+function formatInventoryLabel(value: string): string {
+  return value.toLowerCase().replace(/_/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
 function buildRestaurantResultCard(

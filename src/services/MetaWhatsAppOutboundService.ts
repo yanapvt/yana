@@ -270,10 +270,14 @@ function buildCarouselCardBody(body: string): string {
   const title = cleanedLines.find((line) => /^\d+\.\s*/.test(stripEmoji(line)));
   const rating = extractField(cleanedLines, 'Rating');
   const price =
+    extractField(cleanedLines, 'Returned total') ??
     extractField(cleanedLines, 'Price signal') ??
     extractField(cleanedLines, 'Price level') ??
     extractField(cleanedLines, 'Estimated price');
   const category = extractField(cleanedLines, 'Category');
+  const room = extractField(cleanedLines, 'Room');
+  const mealPlan = extractField(cleanedLines, 'Meal plan');
+  const cancellation = extractField(cleanedLines, 'Cancellation');
   const cuisine = extractField(cleanedLines, 'Cuisine');
   const vehicle = extractField(cleanedLines, 'Vehicle');
   const capacity = extractField(cleanedLines, 'Capacity');
@@ -285,6 +289,9 @@ function buildCarouselCardBody(body: string): string {
     title ? truncateText(stripEmoji(title), 42) : undefined,
     rating ? `Rating ${truncateText(rating, 30)}` : undefined,
     price ? `Price ${truncateText(price, 24)}` : undefined,
+    room ? `Room ${truncateText(room, 30)}` : undefined,
+    mealPlan ? truncateText(mealPlan, 24) : undefined,
+    cancellation ? truncateText(cancellation, 20) : undefined,
     vehicle ? truncateText(vehicle, 34) : undefined,
     capacity ? `Capacity ${truncateText(capacity, 18)}` : undefined,
     duration ? truncateText(duration, 30) : undefined,

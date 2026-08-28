@@ -250,4 +250,74 @@ describe('HotelSearchFlowService', () => {
     expect(result.status).toBe('provider_failed');
     expect(result.reply).toContain('hotel provider failed');
   });
+
+  it('uses live supplier inventory before Google and keeps supplier tokens out of customer results', async () => {
+    const supplierOrchestrator = {
+      searchHotels: vi.fn().mockResolvedValue({
+        correlationId: 'corr-live-inventory',
+        partialFailure: false,
+        outcomes: [{ supplier: 'liteapi', status: 'success', attempts: 1, durationMs: 12 }],
+        hotels: [
+          {
+            yanaHotelId: 'yana-hotel-1',
+            name: 'Live Beach Hotel',
+            destination: 'Galle',
+            country: 'Sri Lanka',
+            address: 'Galle Road',
+            images: [],
+            amenities: [],
+            supplierReferences: [],
+            rooms: [],
+          },
+        ],
+        rates: [
+          {
+            yanaHotelId: 'yana-hotel-1',
+            yanaRoomId: 'yana-room-1',
+            supplier: 'liteapi',
+            supplierHotelId: 'private-hotel-id',
+            supplierRateId: 'private-offer-token',
+            searchId: 'private-search-id',
+            roomName: 'Ocean Deluxe',
+            mealPlan: 'BREAKFAST',
+            cancellationPolicy: { refundable: true, penalties: [], normalizedCode: 'FREE' },
+            cost: { supplierNet: { amount: 240, currency: 'USD' } },
+            priceBasis: 'RETAIL',
+            currency: 'USD',
+            available: true,
+            bookable: true,
+          },
+        ],
+      }),
+    };
+    const browsingService = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      searchHotels: vi.fn(),
+    };
+    const service = new HotelSearchFlowService({
+      supplierConfigured: true,
+      supplierOrchestrator: supplierOrchestrator as any,
+      browsingService: browsingService as any,
+      providerConfigured: false,
+    });
+
+    const result = await service.handleBrowseSearch(completeCriteria, {
+      correlationId: 'corr-live-inventory',
+    });
+
+    expect(result.status).toBe('browse_results');
+    expect(result.browseResponse?.provider).toBe('hotel_inventory');
+    expect(result.reply).toContain('Ocean Deluxe');
+    expect(result.reply).toContain('Returned total: USD 240.00 total');
+    expect(result.reply).not.toContain('liteapi');
+    expect(JSON.stringify(result.browseResponse)).not.toContain('private-offer-token');
+    expect(browsingService.searchHotels).not.toHaveBeenCalled();
+
+    const completedResult = await service.handleCompletedIntake(completeCriteria, {
+      correlationId: 'corr-live-inventory-completed',
+    });
+    expect(completedResult.browseResponse?.provider).toBe('hotel_inventory');
+    expect(completedResult.reply).toContain('Ocean Deluxe');
+    expect(completedResult.reply).not.toContain('liteapi');
+  });
 });

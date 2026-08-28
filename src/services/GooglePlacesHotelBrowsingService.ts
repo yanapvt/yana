@@ -9,11 +9,17 @@ export interface HotelBrowseResult {
   priceRange?: string;
   googleMapsUri?: string;
   thumbnailUrl?: string;
+  roomName?: string;
+  mealPlan?: string;
+  refundable?: boolean;
+  rateAmount?: number;
+  rateCurrency?: string;
+  priceBasis?: 'NET' | 'RETAIL' | 'UNKNOWN';
 }
 
 export interface HotelBrowseResponse {
   results: HotelBrowseResult[];
-  provider: 'google_places';
+  provider: 'google_places' | 'hotel_inventory';
 }
 
 interface GooglePlacesHotelBrowsingConfig {
