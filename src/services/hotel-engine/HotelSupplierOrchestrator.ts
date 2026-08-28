@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { HotelSupplierProviderConfig } from '../../config/hotelSuppliers.js';
 import type { HotelSupplierAdapter } from './HotelSupplierAdapter.js';
 import type {
@@ -78,7 +79,8 @@ export class HotelSupplierOrchestrator {
     configs: HotelSupplierProviderConfig[],
     adapters: HotelSupplierAdapter[],
     private readonly logger: HotelSupplierOrchestratorLogger = defaultLogger,
-    private readonly clock: () => number = () => Date.now()
+    private readonly clock: () => number = () => Date.now(),
+    private readonly attributionLoggingEnabled = false
   ) {
     const adaptersBySupplier = new Map(adapters.map((adapter) => [adapter.supplier, adapter]));
     this.registrations = [...configs]
@@ -162,6 +164,7 @@ export class HotelSupplierOrchestrator {
           hotels: result.hotels.length,
           rates: result.rates.length,
         });
+        this.logRateAttribution(request, result);
         return this.outcome(config.supplier, 'success', attempt, startedAt, result);
       } catch (error) {
         lastError = error;
@@ -183,6 +186,29 @@ export class HotelSupplierOrchestrator {
       error: message,
     });
     return this.outcome(config.supplier, lastStatus, totalAttempts, startedAt, undefined, message);
+  }
+
+  private logRateAttribution(
+    request: HotelSearchRequest,
+    result: SupplierHotelSearchResult
+  ): void {
+    if (!this.attributionLoggingEnabled) return;
+
+    for (const rate of result.rates) {
+      this.logger.info('supplier_rate_attributed', {
+        supplier: rate.supplier,
+        correlationId: request.correlationId,
+        searchId: rate.searchId ?? request.correlationId,
+        yanaHotelId: rate.yanaHotelId,
+        yanaRoomId: rate.yanaRoomId,
+        supplierHotelId: rate.supplierHotelId,
+        supplierRateFingerprint: fingerprint(rate.supplierRateId),
+        roomName: rate.roomName,
+        mealPlan: rate.mealPlan,
+        priceBasis: rate.priceBasis,
+        currency: rate.currency,
+      });
+    }
   }
 
   private async withTimeout<T>(
@@ -263,6 +289,10 @@ export class HotelSupplierOrchestrator {
       error,
     };
   }
+}
+
+function fingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 class SupplierTimeoutError extends Error {

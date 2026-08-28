@@ -15,6 +15,8 @@ export function createConfiguredHotelSupplierOrchestrator(
   return new HotelSupplierOrchestrator(
     configs,
     adapters ?? createConfiguredHotelSupplierAdapters(configs),
-    logger
+    logger,
+    undefined,
+    env.hotelSuppliers.attributionLoggingEnabled
   );
 }

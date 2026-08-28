@@ -4,6 +4,7 @@ import type { HotelSupplierAdapter } from './HotelSupplierAdapter.js';
 import { HotelSupplierOrchestrator } from './HotelSupplierOrchestrator.js';
 import type {
   HotelSearchRequest,
+  NormalizedHotelRate,
   SupplierCommercialCapabilities,
   SupplierHotelSearchResult,
   SupplierId,
@@ -191,5 +192,43 @@ describe('HotelSupplierOrchestrator', () => {
       'disabled',
       'not_registered',
     ]);
+  });
+
+  it('logs internal rate attribution without exposing the supplier offer token', async () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const rate = {
+      supplier: 'liteapi',
+      supplierHotelId: 'supplier-hotel-1',
+      supplierRateId: 'sensitive-offer-token',
+      searchId: 'supplier-search-1',
+      yanaHotelId: 'yana-hotel-1',
+      yanaRoomId: 'yana-room-1',
+      roomName: 'Deluxe Room',
+      mealPlan: 'BREAKFAST',
+      priceBasis: 'RETAIL',
+      currency: 'USD',
+    } as NormalizedHotelRate;
+    const orchestrator = new HotelSupplierOrchestrator(
+      [config('liteapi')],
+      [adapter('liteapi', async () => ({ ...result('liteapi'), rates: [rate] }))],
+      logger,
+      undefined,
+      true
+    );
+
+    await orchestrator.searchHotels(request);
+
+    const attribution = logger.info.mock.calls.find(
+      ([event]) => event === 'supplier_rate_attributed'
+    );
+    expect(attribution?.[1]).toMatchObject({
+      supplier: 'liteapi',
+      yanaHotelId: 'yana-hotel-1',
+      yanaRoomId: 'yana-room-1',
+      supplierHotelId: 'supplier-hotel-1',
+      roomName: 'Deluxe Room',
+    });
+    expect(attribution?.[1]).not.toHaveProperty('supplierRateId');
+    expect(JSON.stringify(attribution?.[1])).not.toContain('sensitive-offer-token');
   });
 });

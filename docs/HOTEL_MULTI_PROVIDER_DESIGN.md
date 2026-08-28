@@ -131,6 +131,12 @@ LITEAPI_ENABLED=true
 ```
 
 When orchestration is disabled, configured supplier flags and keys remain inert.
+Internal rate-source logging can be enabled with
+`HOTEL_SUPPLIER_ATTRIBUTION_LOG_ENABLED=true`. It emits structured
+`supplier_rate_attributed` server events containing the supplier, correlation
+ID, YANA hotel/room IDs, supplier hotel ID, room name, and a one-way fingerprint
+of the supplier offer ID. Raw offer/rate tokens are deliberately excluded, and
+these fields must never be copied into customer-facing WhatsApp output.
 When orchestration is enabled, every enabled supplier must have a valid base URL
 and API key. Empty example entries never activate a provider.
 

@@ -8,12 +8,21 @@ describe('hotel supplier environment', () => {
   it('keeps orchestration and every supplier disabled by default', () => {
     const configuration = loadHotelSupplierEnvironment({});
     expect(configuration.enabled).toBe(false);
+    expect(configuration.attributionLoggingEnabled).toBe(false);
     expect(configuration.providers.every((provider) => !provider.enabled)).toBe(true);
     expect(configuration.providers.find((provider) => provider.supplier === 'liteapi')).toMatchObject({
       priority: 1,
       timeoutMs: 15_000,
       maxRetries: 2,
     });
+  });
+
+  it('enables internal supplier attribution logging independently', () => {
+    const configuration = loadHotelSupplierEnvironment({
+      HOTEL_SUPPLIER_ATTRIBUTION_LOG_ENABLED: 'true',
+    });
+
+    expect(configuration.attributionLoggingEnabled).toBe(true);
   });
 
   it('loads global policies and supplier overrides without exposing key values', () => {

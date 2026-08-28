@@ -22,6 +22,7 @@ export interface HotelSupplierProviderConfig extends HotelSupplierRuntimePolicy 
 
 export interface HotelSupplierEnvironment {
   enabled: boolean;
+  attributionLoggingEnabled: boolean;
   providers: HotelSupplierProviderConfig[];
 }
 
@@ -51,6 +52,10 @@ export function loadHotelSupplierEnvironment(
 
   const environment = {
     enabled: readBoolean(source.HOTEL_SUPPLIER_ORCHESTRATION_ENABLED, false),
+    attributionLoggingEnabled: readBoolean(
+      source.HOTEL_SUPPLIER_ATTRIBUTION_LOG_ENABLED,
+      false
+    ),
     providers,
   };
   validateHotelSupplierEnvironment(environment);
