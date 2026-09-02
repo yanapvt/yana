@@ -8,7 +8,7 @@ const router = Router();
 router.get('/places/smart/:placeId', async (req: Request, res: Response) => {
   const placeId = req.params.placeId;
 
-  if (!placeId || placeId.length > 256) {
+  if (!placeId || placeId.length > 256 || isInternalHotelInventoryId(placeId)) {
     res.status(404).send('Not found');
     return;
   }
@@ -33,7 +33,7 @@ router.get('/places/smart/:placeId', async (req: Request, res: Response) => {
 router.get('/places/google/:placeId', (req: Request, res: Response) => {
   const placeId = req.params.placeId;
 
-  if (!placeId || placeId.length > 256) {
+  if (!placeId || placeId.length > 256 || isInternalHotelInventoryId(placeId)) {
     res.status(404).send('Not found');
     return;
   }
@@ -129,6 +129,10 @@ router.get('/media/tts/:hash.mp3', async (req: Request, res: Response) => {
 });
 
 export default router;
+
+function isInternalHotelInventoryId(value: string): boolean {
+  return /^yana_hotel_[^:]+:yana_room_/i.test(value);
+}
 
 interface SmartPlaceDetails {
   id: string;

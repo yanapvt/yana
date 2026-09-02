@@ -382,7 +382,7 @@ describe('HotelSearchFlowService', () => {
       id: 'registry-verified', propertyName: hotel.name, normalizedName: 'registry beach hotel',
       registrationNumber: 'SLTDA-123', licenceValidUntil: '2026-12-31',
     };
-    const google = { name: hotel.name, address: hotel.address, rating: 4.7, reviewCount: 500 };
+    const google = { id: 'google-place-verified', googlePlaceId: 'google-place-verified', name: hotel.name, address: hotel.address, rating: 4.7, reviewCount: 500 };
     const registry = {
       findEligible: vi.fn().mockResolvedValue([record]),
       matchHotels: vi.fn().mockReturnValue([{ hotel, registry: record, google, confidence: 1 }]),
@@ -407,6 +407,7 @@ describe('HotelSearchFlowService', () => {
     expect(result.reply).toContain('Ocean Room');
     expect(result.reply).not.toContain('Presidential Suite');
     expect(result.reply).not.toContain('liteapi');
+    expect(result.browseResponse?.results[0].googlePlaceId).toBe('google-place-verified');
   });
 
   it('does not fall back to customer-visible unregistered results and logs ignored supplier inventory', async () => {

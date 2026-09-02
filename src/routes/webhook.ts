@@ -2815,7 +2815,7 @@ function buildHotelDetailsReply(
       ? `${hotel.rateAmount !== undefined ? 'Returned total' : 'Price signal'}: ${hotel.priceRange}`
       : 'Price signal: confirm live rate',
     hotel.address ? `Address: ${hotel.address}` : undefined,
-    buildSmartPlaceLink(hotel) ? `Smart view: ${buildSmartPlaceLink(hotel)}` : undefined,
+    buildHotelSmartPlaceLink(hotel) ? `Smart view: ${buildHotelSmartPlaceLink(hotel)}` : undefined,
     hotel.googleMapsUri ? `Map: ${hotel.googleMapsUri}` : undefined,
     hotel.thumbnailUrl ? `Thumbnail: ${hotel.thumbnailUrl}` : undefined,
     '',
@@ -3334,7 +3334,7 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
       ? `${hotel.rating.toFixed(1)}/5${hotel.reviewCount ? ` (${hotel.reviewCount} reviews)` : ''}`
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(hotel);
-  const smartLink = buildSmartPlaceLink(hotel);
+  const smartLink = buildHotelSmartPlaceLink(hotel);
   const lines = [
     smartLink ? `Smart view: ${smartLink}` : undefined,
     `🏨 *${displayNumber}. ${hotel.name}*`,
@@ -3505,11 +3505,25 @@ function buildLogisticsRecommendationReason(option: TransportOption): string {
 }
 
 function buildGoogleMapsShortLink(hotel: HotelBrowseResult): string | undefined {
-  if (!hotel.id) {
+  const placeId = resolveHotelGooglePlaceId(hotel);
+  if (!placeId) {
     return hotel.googleMapsUri;
   }
 
-  return `${getPublicBaseUrl()}/places/google/${encodeURIComponent(hotel.id)}`;
+  return `${getPublicBaseUrl()}/places/google/${encodeURIComponent(placeId)}`;
+}
+
+function buildHotelSmartPlaceLink(hotel: HotelBrowseResult): string | undefined {
+  const placeId = resolveHotelGooglePlaceId(hotel);
+  return placeId
+    ? `${getPublicBaseUrl()}/places/smart/${encodeURIComponent(placeId)}`
+    : undefined;
+}
+
+function resolveHotelGooglePlaceId(hotel: HotelBrowseResult): string | undefined {
+  if (hotel.googlePlaceId) return hotel.googlePlaceId;
+  if (!hotel.id || /^yana_hotel_[^:]+:yana_room_/i.test(hotel.id)) return undefined;
+  return hotel.id;
 }
 
 function buildSmartPlaceLink(place: { id?: string }): string | undefined {

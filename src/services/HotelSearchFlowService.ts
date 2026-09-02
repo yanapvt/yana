@@ -534,6 +534,7 @@ export class HotelSearchFlowService {
         const match = verified.get(rate.yanaHotelId);
         return {
           id: `${rate.yanaHotelId}:${rate.yanaRoomId}`,
+          googlePlaceId: match?.google?.googlePlaceId ?? match?.google?.id,
           name: match?.google?.name ?? hotel?.name ?? 'Hotel option',
           address: match?.google?.address ?? hotel?.address ?? hotel?.destination,
           rating: match?.google?.rating ?? hotel?.starRating,

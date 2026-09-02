@@ -2,6 +2,7 @@ import type { HotelSearchCriteria } from './HotelIntakeService.js';
 
 export interface HotelBrowseResult {
   id?: string;
+  googlePlaceId?: string;
   name: string;
   address?: string;
   rating?: number;
@@ -107,6 +108,7 @@ export class GooglePlacesHotelBrowsingService {
       provider: 'google_places',
       results: (data.places ?? []).slice(0, options.maxResults ?? 9).map((place) => ({
         id: place.id,
+        googlePlaceId: place.id,
         name: place.displayName?.text ?? 'Hotel result',
         address: place.formattedAddress,
         rating: place.rating,
