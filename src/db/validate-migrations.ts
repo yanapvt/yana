@@ -36,6 +36,7 @@ const REQUIRED_TABLES = [
   'decision_logs',
   'tts_assets',
   'registered_accommodations',
+  'srilanka_accommodations',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -60,6 +61,12 @@ const REQUIRED_INDEX_TYPES = {
     'registered_accommodations_district_idx',
     'registered_accommodations_licence_validity_idx',
   ],
+  srilanka_accommodation_lookup: [
+    'srilanka_accommodations_record_key_idx',
+    'srilanka_accommodations_registration_no_idx',
+    'srilanka_accommodations_name_idx',
+    'srilanka_accommodations_local_authority_idx',
+  ],
 };
 
 async function validateMigrations(): Promise<void> {
@@ -82,6 +89,7 @@ async function validateMigrations(): Promise<void> {
     '012_create_audit_logs.sql',
     '013_create_tts_assets.sql',
     '014_create_registered_accommodations.sql',
+    '015_support_srilanka_accommodations.sql',
   ];
 
   let allContent = '';
@@ -95,7 +103,7 @@ async function validateMigrations(): Promise<void> {
   console.log('Checking required tables:');
   const missingTables: string[] = [];
   for (const table of REQUIRED_TABLES) {
-    const regex = new RegExp(`CREATE TABLE ${table}\\s*\\(`, 'i');
+    const regex = new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${table}\\s*\\(`, 'i');
     if (regex.test(allContent)) {
       console.log(`  ✅ ${table}`);
     } else {
@@ -110,7 +118,7 @@ async function validateMigrations(): Promise<void> {
   for (const [category, indexes] of Object.entries(REQUIRED_INDEX_TYPES)) {
     console.log(`\n  ${category}:`);
     for (const index of indexes) {
-      const regex = new RegExp(`CREATE INDEX ${index}`, 'i');
+      const regex = new RegExp(`CREATE INDEX (?:IF NOT EXISTS )?${index}`, 'i');
       if (regex.test(allContent)) {
         console.log(`    ✅ ${index}`);
       } else {

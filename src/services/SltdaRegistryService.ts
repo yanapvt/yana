@@ -28,19 +28,16 @@ export class PostgresSltdaRegistryRepository implements SltdaRegistryRepository 
   async findEligibleByLocation(location: string, asOf: Date): Promise<RegisteredAccommodation[]> {
     const term = `%${location.trim()}%`;
     const result = await pool.query({
-      text: `SELECT id, property_name, normalized_name, address, normalized_address,
-                    district, local_authority, website, normalized_domain, telephone,
-                    registration_number, licence_number, licence_valid_until,
-                    licence_status, star_rating
-             FROM registered_accommodations
-             WHERE (licence_valid_until IS NULL OR licence_valid_until >= $2::date)
-               AND (licence_status IS NULL OR LOWER(licence_status) NOT IN ('expired', 'cancelled', 'suspended'))
-               AND (property_name ILIKE $1 OR address ILIKE $1 OR district ILIKE $1 OR local_authority ILIKE $1)
-             ORDER BY property_name
+      text: `SELECT record_key, source_key, name, category, stars, rooms, address,
+                    local_authority, website, registration_no, licence_no,
+                    licence_validity, telephone, latitude, longitude, source_page_url
+             FROM srilanka_accommodations
+             WHERE (name ILIKE $1 OR address ILIKE $1 OR local_authority ILIKE $1)
+             ORDER BY name
              LIMIT 500`,
-      values: [term, asOf.toISOString().slice(0, 10)],
+      values: [term],
     });
-    return result.rows.map(mapRow);
+    return result.rows.map(mapSriLankaAccommodationRow).filter((record) => isLicenceEligible(record, asOf));
   }
 }
 
@@ -104,24 +101,73 @@ export class SltdaRegistryService {
   }
 }
 
-function mapRow(row: Record<string, unknown>): RegisteredAccommodation {
+export function mapSriLankaAccommodationRow(row: Record<string, unknown>): RegisteredAccommodation {
+  const propertyName = optionalString(row.name) ?? '';
   return {
-    id: String(row.id),
-    propertyName: String(row.property_name),
-    normalizedName: String(row.normalized_name),
+    id: optionalString(row.record_key) ?? optionalString(row.source_key) ?? propertyName,
+    propertyName,
+    normalizedName: normalize(propertyName),
     address: optionalString(row.address),
-    normalizedAddress: optionalString(row.normalized_address),
-    district: optionalString(row.district),
+    normalizedAddress: row.address ? normalize(String(row.address)) : undefined,
     localAuthority: optionalString(row.local_authority),
     website: optionalString(row.website),
-    normalizedDomain: optionalString(row.normalized_domain),
+    normalizedDomain: normalizeDomain(optionalString(row.website)),
     telephone: optionalString(row.telephone),
-    registrationNumber: optionalString(row.registration_number),
-    licenceNumber: optionalString(row.licence_number),
-    licenceValidUntil: row.licence_valid_until ? new Date(String(row.licence_valid_until)).toISOString().slice(0, 10) : undefined,
-    licenceStatus: optionalString(row.licence_status),
-    starRating: row.star_rating === null || row.star_rating === undefined ? undefined : Number(row.star_rating),
+    registrationNumber: optionalString(row.registration_no),
+    licenceNumber: optionalString(row.licence_no),
+    licenceValidUntil: parseLicenceDate(optionalString(row.licence_validity)),
+    starRating: parseStarRating(row.stars),
   };
+}
+
+export function isLicenceEligible(record: RegisteredAccommodation, asOf: Date): boolean {
+  if (!record.registrationNumber && !record.licenceNumber) return false;
+  if (!record.licenceValidUntil) return true;
+  return record.licenceValidUntil >= asOf.toISOString().slice(0, 10);
+}
+
+function parseLicenceDate(value?: string): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  const iso = trimmed.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (iso) return formatDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+  const dayFirst = trimmed.match(/\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b/);
+  if (dayFirst) return formatDate(Number(dayFirst[3]), Number(dayFirst[2]), Number(dayFirst[1]));
+  const namedMonth = trimmed.match(
+    /\b(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b/i
+  );
+  if (namedMonth) {
+    const month = [
+      'january', 'february', 'march', 'april', 'may', 'june',
+      'july', 'august', 'september', 'october', 'november', 'december',
+    ].indexOf(namedMonth[2].toLowerCase()) + 1;
+    return formatDate(Number(namedMonth[3]), month, Number(namedMonth[1]));
+  }
+  return undefined;
+}
+
+function formatDate(year: number, month: number, day: number): string | undefined {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined;
+  return date.toISOString().slice(0, 10);
+}
+
+function parseStarRating(value: unknown): number | undefined {
+  const match = optionalString(value)?.match(/\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const rating = Number(match[0]);
+  return rating >= 0 && rating <= 5 ? rating : undefined;
+}
+
+function normalizeDomain(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const markdownTarget = value.match(/\]\((https?:\/\/[^)]+)\)/)?.[1];
+    const url = markdownTarget ?? value;
+    return new URL(url.includes('://') ? url : `https://${url}`).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return undefined;
+  }
 }
 
 function matchConfidence(hotel: YanaHotel, registry: RegisteredAccommodation): number {
