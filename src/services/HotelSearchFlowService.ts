@@ -28,6 +28,11 @@ import {
   type RegisteredAccommodation,
   type VerifiedHotelMatch,
 } from './SltdaRegistryService.js';
+import {
+  PostgresRejectedHotelInventoryAuditWriter,
+  type RejectedHotelInventoryAuditRecord,
+  type RejectedHotelInventoryAuditWriter,
+} from './RejectedHotelInventoryAuditService.js';
 
 export interface HotelSearchFlowContext {
   correlationId: string;
@@ -59,6 +64,9 @@ interface HotelSearchFlowDependencies {
   supplierConfigured?: boolean;
   sltdaRegistryService?: Pick<SltdaRegistryService, 'findEligible' | 'matchHotels'>;
   sltdaRegistryConfigured?: boolean;
+  supplierAttributionLoggingEnabled?: boolean;
+  rejectedInventoryAuditWriter?: RejectedHotelInventoryAuditWriter;
+  rejectedInventoryAuditEnabled?: boolean;
   providerConfigured?: boolean;
 }
 
@@ -106,6 +114,9 @@ export class HotelSearchFlowService {
   private supplierConfigured: boolean;
   private sltdaRegistryService?: Pick<SltdaRegistryService, 'findEligible' | 'matchHotels'>;
   private sltdaRegistryConfigured: boolean;
+  private supplierAttributionLoggingEnabled: boolean;
+  private rejectedInventoryAuditWriter?: RejectedHotelInventoryAuditWriter;
+  private rejectedInventoryAuditEnabled: boolean;
   private providerConfigured: boolean;
 
   constructor(dependencies: HotelSearchFlowDependencies = {}) {
@@ -122,6 +133,17 @@ export class HotelSearchFlowService {
       (this.supplierConfigured ? createConfiguredHotelSupplierOrchestrator() : undefined);
     this.sltdaRegistryConfigured =
       dependencies.sltdaRegistryConfigured ?? env.sltdaRegistry.enabled;
+    this.supplierAttributionLoggingEnabled =
+      dependencies.supplierAttributionLoggingEnabled ??
+      env.hotelSuppliers.attributionLoggingEnabled;
+    this.rejectedInventoryAuditEnabled =
+      dependencies.rejectedInventoryAuditEnabled ??
+      env.sltdaRegistry.rejectedInventoryAuditEnabled;
+    this.rejectedInventoryAuditWriter =
+      dependencies.rejectedInventoryAuditWriter ??
+      (this.rejectedInventoryAuditEnabled
+        ? new PostgresRejectedHotelInventoryAuditWriter()
+        : undefined);
     this.sltdaRegistryService =
       dependencies.sltdaRegistryService ??
       (this.sltdaRegistryConfigured
@@ -361,6 +383,15 @@ export class HotelSearchFlowService {
         context.correlationId
       );
     }
+    const requireVerified =
+      this.sltdaRegistryConfigured && env.sltdaRegistry.requireVerifiedHotels;
+    if (requireVerified) {
+      await this.auditIgnoredUnregisteredSupplierHotels(
+        inventory,
+        verifiedMatches,
+        context.correlationId
+      );
+    }
     const inventoryResponse = this.toInventoryBrowseResponse(
       inventory,
       criteria,
@@ -376,7 +407,23 @@ export class HotelSearchFlowService {
       verifiedHotels: verifiedMatches.length,
       customerResults: inventoryResponse.results.length,
     });
-    if (inventoryResponse.results.length === 0) return undefined;
+    if (inventoryResponse.results.length === 0) {
+      if (requireVerified) {
+        console.info('[HotelSearchFlow] verified_inventory_gate_stopped', {
+          correlationId: context.correlationId,
+          reason: 'no_verified_supplier_inventory',
+          supplierHotels: inventory.hotels.length,
+          supplierRates: inventory.rates.length,
+          ignoredHotels: inventory.hotels.length - verifiedMatches.length,
+        });
+        return {
+          status: 'provider_not_connected',
+          criteria,
+          reply: `I could not find live room availability for an eligible registered accommodation in ${criteria.location}. Please try different dates or preferences.`,
+        };
+      }
+      return undefined;
+    }
 
     return {
       status: 'browse_results',
@@ -387,6 +434,77 @@ export class HotelSearchFlowService {
         totalResults: inventoryResponse.results.length,
       }),
     };
+  }
+
+  private async auditIgnoredUnregisteredSupplierHotels(
+    inventory: HotelSupplierOrchestrationResult,
+    verifiedMatches: VerifiedHotelMatch[],
+    correlationId: string
+  ): Promise<void> {
+    const verifiedHotelIds = new Set(verifiedMatches.map((match) => match.hotel.yanaHotelId));
+    const auditRecords: RejectedHotelInventoryAuditRecord[] = [];
+    for (const hotel of inventory.hotels) {
+      if (verifiedHotelIds.has(hotel.yanaHotelId)) continue;
+      const rates = inventory.rates.filter((rate) => rate.yanaHotelId === hotel.yanaHotelId);
+      if (this.supplierAttributionLoggingEnabled) {
+        console.info('[HotelSearchFlow] supplier_hotel_ignored_unregistered', {
+          correlationId,
+          reason: 'no_eligible_sltda_match',
+          yanaHotelId: hotel.yanaHotelId,
+          hotelName: hotel.name,
+          destination: hotel.destination,
+          suppliers: [...new Set(rates.map((rate) => rate.supplier))],
+          supplierHotelIds: [...new Set(rates.map((rate) => rate.supplierHotelId))],
+          ignoredRateCount: rates.length,
+          ignoredRates: rates.slice(0, 20).map((rate) => ({
+            supplier: rate.supplier,
+            roomName: rate.roomName,
+            amount: rate.cost.supplierNet.amount,
+            currency: rate.currency,
+            available: rate.available,
+            bookable: rate.bookable,
+          })),
+        });
+      }
+      if (rates.length === 0) {
+        auditRecords.push({
+          correlationId, rejectionReason: 'no_eligible_sltda_match',
+          yanaHotelId: hotel.yanaHotelId, hotelName: hotel.name,
+          destination: hotel.destination,
+        });
+      } else {
+        auditRecords.push(...rates.map((rate) => ({
+          correlationId,
+          rejectionReason: 'no_eligible_sltda_match' as const,
+          yanaHotelId: hotel.yanaHotelId,
+          hotelName: hotel.name,
+          destination: hotel.destination,
+          supplier: rate.supplier,
+          supplierHotelId: rate.supplierHotelId,
+          roomName: rate.roomName,
+          returnedAmount: rate.cost.supplierNet.amount,
+          currency: rate.currency,
+          available: rate.available,
+          bookable: rate.bookable,
+          sanitizedDetails: {
+            mealPlan: rate.mealPlan,
+            refundable: rate.cancellationPolicy.refundable,
+            priceBasis: rate.priceBasis,
+          },
+        })));
+      }
+    }
+    if (this.rejectedInventoryAuditEnabled && this.rejectedInventoryAuditWriter && auditRecords.length) {
+      try {
+        await this.rejectedInventoryAuditWriter.write(auditRecords);
+      } catch (error) {
+        console.warn('[HotelSearchFlow] rejected_inventory_audit_write_failed', {
+          correlationId,
+          rejectedRecords: auditRecords.length,
+          error: error instanceof Error ? error.message : 'Unknown audit persistence failure',
+        });
+      }
+    }
   }
 
   private toInventoryBrowseResponse(

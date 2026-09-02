@@ -25,6 +25,7 @@ Only data obtained with appropriate permission should be imported.
 SLTDA_REGISTRY_ENABLED=true
 SLTDA_REQUIRE_VERIFIED_HOTELS=true
 SLTDA_MATCH_MIN_CONFIDENCE=0.80
+HOTEL_SUPPLIER_REJECTION_AUDIT_ENABLED=true
 ```
 
 Keep the feature disabled until migration `015_support_srilanka_accommodations.sql`
@@ -49,5 +50,13 @@ ambiguous name match is not shown as verified.
 
 The flow emits `registry_lookup_completed`, `hotel_match_verified`,
 `live_supplier_gate_stopped`, `supplier_search_succeeded`,
-`supplier_rate_attributed`, and `verified_inventory_merge_completed` events.
-Logs exclude API credentials and raw supplier offer/rate tokens.
+`supplier_rate_attributed`, `supplier_hotel_ignored_unregistered`,
+`verified_inventory_gate_stopped`, and `verified_inventory_merge_completed`
+events. With supplier attribution logging enabled, rejected supplier hotels and
+their returned amount summaries are written to internal logs. Logs exclude API
+credentials and raw supplier offer/rate/search tokens.
+
+When rejection auditing is enabled, the same sanitized rejection data is stored
+in `rejected_hotel_inventory_audit`, one row per rejected supplier rate (or one
+hotel-only row when no rates were returned). Audit persistence is best-effort and
+cannot make a customer search fail.

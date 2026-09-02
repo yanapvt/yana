@@ -37,6 +37,7 @@ const REQUIRED_TABLES = [
   'tts_assets',
   'registered_accommodations',
   'srilanka_accommodations',
+  'rejected_hotel_inventory_audit',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -67,6 +68,12 @@ const REQUIRED_INDEX_TYPES = {
     'srilanka_accommodations_name_idx',
     'srilanka_accommodations_local_authority_idx',
   ],
+  rejected_hotel_inventory_audit_lookup: [
+    'rejected_hotel_inventory_audit_correlation_idx',
+    'rejected_hotel_inventory_audit_occurred_at_idx',
+    'rejected_hotel_inventory_audit_supplier_idx',
+    'rejected_hotel_inventory_audit_reason_idx',
+  ],
 };
 
 async function validateMigrations(): Promise<void> {
@@ -90,6 +97,7 @@ async function validateMigrations(): Promise<void> {
     '013_create_tts_assets.sql',
     '014_create_registered_accommodations.sql',
     '015_support_srilanka_accommodations.sql',
+    '016_create_rejected_hotel_inventory_audit.sql',
   ];
 
   let allContent = '';

@@ -408,4 +408,89 @@ describe('HotelSearchFlowService', () => {
     expect(result.reply).not.toContain('Presidential Suite');
     expect(result.reply).not.toContain('liteapi');
   });
+
+  it('does not fall back to customer-visible unregistered results and logs ignored supplier inventory', async () => {
+    const ignoredHotel = {
+      yanaHotelId: 'yana-unregistered', name: 'Unregistered Supplier Hotel',
+      destination: 'Galle', country: 'Sri Lanka', address: 'Galle Road',
+      images: [], amenities: [], supplierReferences: [], rooms: [],
+    };
+    const supplierOrchestrator = {
+      searchHotels: vi.fn().mockResolvedValue({
+        correlationId: 'corr-unregistered', partialFailure: false, outcomes: [],
+        hotels: [ignoredHotel],
+        rates: [{
+          yanaHotelId: ignoredHotel.yanaHotelId, yanaRoomId: 'room-ignored',
+          supplier: 'liteapi', supplierHotelId: 'lite-hotel-1',
+          supplierRateId: 'secret-rate-token', searchId: 'secret-search-token',
+          roomName: 'Ignored Room', mealPlan: 'BREAKFAST',
+          cancellationPolicy: { refundable: true, penalties: [], normalizedCode: 'FREE' },
+          cost: { supplierNet: { amount: 250, currency: 'USD' } },
+          priceBasis: 'RETAIL', currency: 'USD', available: true, bookable: true,
+        }],
+      }),
+    };
+    const browsingService = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      searchHotels: vi.fn().mockResolvedValue({
+        provider: 'google_places',
+        results: [{ name: 'Unregistered Supplier Hotel', address: 'Galle Road' }],
+      }),
+    };
+    const registry = {
+      findEligible: vi.fn().mockResolvedValue([{
+        id: 'another-registry-record', propertyName: 'Different Registered Hotel',
+        normalizedName: 'different registered hotel', registrationNumber: 'REG-1',
+      }]),
+      matchHotels: vi.fn().mockReturnValue([]),
+    };
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const auditWriter = { write: vi.fn().mockResolvedValue(undefined) };
+    const service = new HotelSearchFlowService({
+      supplierConfigured: true,
+      supplierOrchestrator: supplierOrchestrator as any,
+      sltdaRegistryConfigured: true,
+      sltdaRegistryService: registry as any,
+      supplierAttributionLoggingEnabled: true,
+      rejectedInventoryAuditEnabled: true,
+      rejectedInventoryAuditWriter: auditWriter,
+      browsingService: browsingService as any,
+      providerConfigured: false,
+    });
+
+    const result = await service.handleBrowseSearch(completeCriteria, {
+      correlationId: 'corr-unregistered',
+    });
+
+    expect(result.status).toBe('provider_not_connected');
+    expect(result.reply).not.toContain('Unregistered Supplier Hotel');
+    expect(result.reply).not.toContain('Ignored Room');
+    expect(result.browseResponse).toBeUndefined();
+    const ignoredLog = info.mock.calls.find(
+      ([event]) => event === '[HotelSearchFlow] supplier_hotel_ignored_unregistered'
+    );
+    expect(ignoredLog?.[1]).toMatchObject({
+      reason: 'no_eligible_sltda_match',
+      hotelName: 'Unregistered Supplier Hotel',
+      suppliers: ['liteapi'],
+      ignoredRateCount: 1,
+    });
+    expect(JSON.stringify(ignoredLog)).not.toContain('secret-rate-token');
+    expect(JSON.stringify(ignoredLog)).not.toContain('secret-search-token');
+    expect(auditWriter.write).toHaveBeenCalledWith([
+      expect.objectContaining({
+        correlationId: 'corr-unregistered',
+        rejectionReason: 'no_eligible_sltda_match',
+        hotelName: 'Unregistered Supplier Hotel',
+        supplier: 'liteapi',
+        supplierHotelId: 'lite-hotel-1',
+        roomName: 'Ignored Room',
+        returnedAmount: 250,
+        currency: 'USD',
+      }),
+    ]);
+    expect(JSON.stringify(auditWriter.write.mock.calls)).not.toContain('secret-rate-token');
+    expect(JSON.stringify(auditWriter.write.mock.calls)).not.toContain('secret-search-token');
+    info.mockRestore();
+  });
 });

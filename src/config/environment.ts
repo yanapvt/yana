@@ -118,6 +118,7 @@ const EnvironmentSchema = z.object({
     enabled: z.boolean().default(false),
     requireVerifiedHotels: z.boolean().default(true),
     minimumMatchConfidence: z.number().min(0).max(1).default(0.8),
+    rejectedInventoryAuditEnabled: z.boolean().default(false),
   }),
 
   // Feature Flags
@@ -242,6 +243,8 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       enabled: process.env.SLTDA_REGISTRY_ENABLED === 'true',
       requireVerifiedHotels: process.env.SLTDA_REQUIRE_VERIFIED_HOTELS !== 'false',
       minimumMatchConfidence: parseFloat(process.env.SLTDA_MATCH_MIN_CONFIDENCE || '0.80'),
+      rejectedInventoryAuditEnabled:
+        process.env.HOTEL_SUPPLIER_REJECTION_AUDIT_ENABLED === 'true',
     },
 
     features: {
