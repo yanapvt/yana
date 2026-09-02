@@ -15,6 +15,8 @@ export interface HotelBrowseResult {
   rateAmount?: number;
   rateCurrency?: string;
   priceBasis?: 'NET' | 'RETAIL' | 'UNKNOWN';
+  sltdaVerified?: boolean;
+  sltdaLicenceValidUntil?: string;
 }
 
 export interface HotelBrowseResponse {

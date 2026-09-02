@@ -320,4 +320,92 @@ describe('HotelSearchFlowService', () => {
     expect(completedResult.reply).toContain('Ocean Deluxe');
     expect(completedResult.reply).not.toContain('liteapi');
   });
+
+  it('does not call the live supplier when the enabled SLTDA gate has no eligible records', async () => {
+    const supplierOrchestrator = { searchHotels: vi.fn() };
+    const registry = {
+      findEligible: vi.fn().mockResolvedValue([]),
+      matchHotels: vi.fn(),
+    };
+    const service = new HotelSearchFlowService({
+      supplierConfigured: true,
+      supplierOrchestrator: supplierOrchestrator as any,
+      sltdaRegistryConfigured: true,
+      sltdaRegistryService: registry as any,
+      browsingService: {
+        isConfigured: vi.fn().mockReturnValue(false),
+        searchHotels: vi.fn(),
+      } as any,
+      providerConfigured: false,
+    });
+
+    const result = await service.handleBrowseSearch(completeCriteria, {
+      correlationId: 'corr-no-registered-hotels',
+    });
+
+    expect(result.status).toBe('provider_not_connected');
+    expect(result.reply).toContain('have not requested live room rates');
+    expect(supplierOrchestrator.searchHotels).not.toHaveBeenCalled();
+  });
+
+  it('merges verified registry, Google and live rates and removes over-budget totals', async () => {
+    const hotel = {
+      yanaHotelId: 'yana-hotel-verified',
+      name: 'Registry Beach Hotel',
+      destination: 'Galle',
+      country: 'Sri Lanka',
+      address: '10 Galle Road',
+      images: [], amenities: [], supplierReferences: [], rooms: [],
+    };
+    const baseRate = {
+      yanaHotelId: hotel.yanaHotelId,
+      supplier: 'liteapi',
+      supplierHotelId: 'supplier-hotel',
+      searchId: 'supplier-search',
+      mealPlan: 'BREAKFAST',
+      cancellationPolicy: { refundable: true, penalties: [], normalizedCode: 'FREE' },
+      priceBasis: 'RETAIL',
+      currency: 'USD',
+      available: true,
+      bookable: true,
+    };
+    const supplierOrchestrator = {
+      searchHotels: vi.fn().mockResolvedValue({
+        correlationId: 'corr-verified', partialFailure: false, outcomes: [], hotels: [hotel],
+        rates: [
+          { ...baseRate, yanaRoomId: 'room-budget', supplierRateId: 'private-1', roomName: 'Ocean Room', cost: { supplierNet: { amount: 300, currency: 'USD' } } },
+          { ...baseRate, yanaRoomId: 'room-expensive', supplierRateId: 'private-2', roomName: 'Presidential Suite', cost: { supplierNet: { amount: 900, currency: 'USD' } } },
+        ],
+      }),
+    };
+    const record = {
+      id: 'registry-verified', propertyName: hotel.name, normalizedName: 'registry beach hotel',
+      registrationNumber: 'SLTDA-123', licenceValidUntil: '2026-12-31',
+    };
+    const google = { name: hotel.name, address: hotel.address, rating: 4.7, reviewCount: 500 };
+    const registry = {
+      findEligible: vi.fn().mockResolvedValue([record]),
+      matchHotels: vi.fn().mockReturnValue([{ hotel, registry: record, google, confidence: 1 }]),
+    };
+    const service = new HotelSearchFlowService({
+      supplierConfigured: true,
+      supplierOrchestrator: supplierOrchestrator as any,
+      sltdaRegistryConfigured: true,
+      sltdaRegistryService: registry as any,
+      browsingService: {
+        isConfigured: vi.fn().mockReturnValue(true),
+        searchHotels: vi.fn().mockResolvedValue({ provider: 'google_places', results: [google] }),
+      } as any,
+      providerConfigured: false,
+    });
+
+    const result = await service.handleBrowseSearch(completeCriteria, { correlationId: 'corr-verified' });
+
+    expect(supplierOrchestrator.searchHotels).toHaveBeenCalledOnce();
+    expect(result.browseResponse?.results).toHaveLength(1);
+    expect(result.reply).toContain('Sri Lanka Tourism registration: Verified');
+    expect(result.reply).toContain('Ocean Room');
+    expect(result.reply).not.toContain('Presidential Suite');
+    expect(result.reply).not.toContain('liteapi');
+  });
 });

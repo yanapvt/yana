@@ -114,6 +114,12 @@ const EnvironmentSchema = z.object({
   // Multi-supplier hotel inventory orchestration
   hotelSuppliers: z.custom<HotelSupplierEnvironment>(),
 
+  sltdaRegistry: z.object({
+    enabled: z.boolean().default(false),
+    requireVerifiedHotels: z.boolean().default(true),
+    minimumMatchConfidence: z.number().min(0).max(1).default(0.8),
+  }),
+
   // Feature Flags
   features: z.object({
     ttsEnabled: z.boolean().default(false),
@@ -231,6 +237,12 @@ function loadEnvironmentConfig(): EnvironmentConfig {
     },
 
     hotelSuppliers: loadHotelSupplierEnvironment(),
+
+    sltdaRegistry: {
+      enabled: process.env.SLTDA_REGISTRY_ENABLED === 'true',
+      requireVerifiedHotels: process.env.SLTDA_REQUIRE_VERIFIED_HOTELS !== 'false',
+      minimumMatchConfidence: parseFloat(process.env.SLTDA_MATCH_MIN_CONFIDENCE || '0.80'),
+    },
 
     features: {
       ttsEnabled: process.env.FEATURE_TTS_ENABLED === 'true',

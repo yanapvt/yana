@@ -23,6 +23,11 @@ import {
   type HotelSupplierOrchestrationResult,
   type HotelSupplierOrchestrator,
 } from './hotel-engine/index.js';
+import {
+  SltdaRegistryService,
+  type RegisteredAccommodation,
+  type VerifiedHotelMatch,
+} from './SltdaRegistryService.js';
 
 export interface HotelSearchFlowContext {
   correlationId: string;
@@ -52,6 +57,8 @@ interface HotelSearchFlowDependencies {
   browsingService?: GooglePlacesHotelBrowsingService;
   supplierOrchestrator?: Pick<HotelSupplierOrchestrator, 'searchHotels'>;
   supplierConfigured?: boolean;
+  sltdaRegistryService?: Pick<SltdaRegistryService, 'findEligible' | 'matchHotels'>;
+  sltdaRegistryConfigured?: boolean;
   providerConfigured?: boolean;
 }
 
@@ -97,6 +104,8 @@ export class HotelSearchFlowService {
   private browsingService: GooglePlacesHotelBrowsingService;
   private supplierOrchestrator?: Pick<HotelSupplierOrchestrator, 'searchHotels'>;
   private supplierConfigured: boolean;
+  private sltdaRegistryService?: Pick<SltdaRegistryService, 'findEligible' | 'matchHotels'>;
+  private sltdaRegistryConfigured: boolean;
   private providerConfigured: boolean;
 
   constructor(dependencies: HotelSearchFlowDependencies = {}) {
@@ -111,6 +120,16 @@ export class HotelSearchFlowService {
     this.supplierOrchestrator =
       dependencies.supplierOrchestrator ??
       (this.supplierConfigured ? createConfiguredHotelSupplierOrchestrator() : undefined);
+    this.sltdaRegistryConfigured =
+      dependencies.sltdaRegistryConfigured ?? env.sltdaRegistry.enabled;
+    this.sltdaRegistryService =
+      dependencies.sltdaRegistryService ??
+      (this.sltdaRegistryConfigured
+        ? new SltdaRegistryService(
+            undefined,
+            env.sltdaRegistry.minimumMatchConfidence
+          )
+        : undefined);
     this.providerConfigured =
       dependencies.providerConfigured ?? isHotelProviderConfigured();
 
@@ -295,6 +314,32 @@ export class HotelSearchFlowService {
       };
     }
 
+    let registryRecords: RegisteredAccommodation[] = [];
+    let googleResults: HotelBrowseResult[] = [];
+    if (this.sltdaRegistryConfigured && this.sltdaRegistryService) {
+      if (this.browsingService.isConfigured()) {
+        googleResults = (
+          await this.browsingService.searchHotels(criteria, { maxResults: Math.max(maxResults, 20) })
+        ).results;
+      }
+      registryRecords = await this.sltdaRegistryService.findEligible(
+        criteria.location!,
+        context.correlationId
+      );
+      if (registryRecords.length === 0 && env.sltdaRegistry.requireVerifiedHotels) {
+        console.info('[HotelSearchFlow] live_supplier_gate_stopped', {
+          correlationId: context.correlationId,
+          reason: 'no_eligible_sltda_records',
+          location: criteria.location,
+        });
+        return {
+          status: 'provider_not_connected',
+          criteria,
+          reply: `I could not find an eligible registered accommodation match for ${criteria.location}. I have not requested live room rates.`,
+        };
+      }
+    }
+
     const inventory = await this.supplierOrchestrator.searchHotels({
       destination: criteria.location!,
       checkIn: criteria.checkinDate!,
@@ -307,7 +352,30 @@ export class HotelSearchFlowService {
       currency: criteria.budgetPerNight?.currency ?? 'USD',
       correlationId: context.correlationId,
     });
-    const inventoryResponse = this.toInventoryBrowseResponse(inventory, maxResults);
+    let verifiedMatches: VerifiedHotelMatch[] = [];
+    if (this.sltdaRegistryConfigured && this.sltdaRegistryService) {
+      verifiedMatches = this.sltdaRegistryService.matchHotels(
+        inventory.hotels,
+        registryRecords,
+        googleResults,
+        context.correlationId
+      );
+    }
+    const inventoryResponse = this.toInventoryBrowseResponse(
+      inventory,
+      criteria,
+      maxResults,
+      verifiedMatches
+    );
+    console.info('[HotelSearchFlow] verified_inventory_merge_completed', {
+      correlationId: context.correlationId,
+      googleCandidates: googleResults.length,
+      registryCandidates: registryRecords.length,
+      supplierHotels: inventory.hotels.length,
+      supplierRates: inventory.rates.length,
+      verifiedHotels: verifiedMatches.length,
+      customerResults: inventoryResponse.results.length,
+    });
     if (inventoryResponse.results.length === 0) return undefined;
 
     return {
@@ -323,19 +391,37 @@ export class HotelSearchFlowService {
 
   private toInventoryBrowseResponse(
     inventory: HotelSupplierOrchestrationResult,
-    maxResults: number
+    criteria: HotelSearchCriteria,
+    maxResults: number,
+    verifiedMatches: VerifiedHotelMatch[] = []
   ): HotelBrowseResponse {
     const hotels = new Map(inventory.hotels.map((hotel) => [hotel.yanaHotelId, hotel]));
+    const verified = new Map(verifiedMatches.map((match) => [match.hotel.yanaHotelId, match]));
+    const requireVerified = this.sltdaRegistryConfigured && env.sltdaRegistry.requireVerifiedHotels;
+    const nights = calculateNights(criteria.checkinDate!, criteria.checkoutDate!);
+    const maximumTotal = criteria.budgetPerNight
+      ? criteria.budgetPerNight.amount * nights * (criteria.rooms ?? 1)
+      : undefined;
     const results = inventory.rates
       .filter((rate) => rate.available && rate.bookable)
-      .slice(0, maxResults)
+      .filter((rate) => !requireVerified || verified.has(rate.yanaHotelId))
+      .filter(
+        (rate) =>
+          maximumTotal === undefined ||
+          rate.currency !== criteria.budgetPerNight?.currency ||
+          rate.cost.supplierNet.amount <= maximumTotal
+      )
       .map((rate): HotelBrowseResult => {
         const hotel = hotels.get(rate.yanaHotelId);
+        const match = verified.get(rate.yanaHotelId);
         return {
           id: `${rate.yanaHotelId}:${rate.yanaRoomId}`,
-          name: hotel?.name ?? 'Hotel option',
-          address: hotel?.address ?? hotel?.destination,
-          rating: hotel?.starRating,
+          name: match?.google?.name ?? hotel?.name ?? 'Hotel option',
+          address: match?.google?.address ?? hotel?.address ?? hotel?.destination,
+          rating: match?.google?.rating ?? hotel?.starRating,
+          reviewCount: match?.google?.reviewCount,
+          googleMapsUri: match?.google?.googleMapsUri,
+          thumbnailUrl: match?.google?.thumbnailUrl,
           roomName: rate.roomName,
           mealPlan: rate.mealPlan,
           refundable: rate.cancellationPolicy.refundable,
@@ -343,8 +429,17 @@ export class HotelSearchFlowService {
           rateCurrency: rate.currency,
           priceBasis: rate.priceBasis,
           priceRange: `${rate.currency} ${rate.cost.supplierNet.amount.toFixed(2)} total`,
+          sltdaVerified: Boolean(match),
+          sltdaLicenceValidUntil: match?.registry.licenceValidUntil,
         };
-      });
+      })
+      .sort((left, right) => {
+        if (left.sltdaVerified !== right.sltdaVerified) return left.sltdaVerified ? -1 : 1;
+        const leftBudget = left.rateAmount ?? Number.POSITIVE_INFINITY;
+        const rightBudget = right.rateAmount ?? Number.POSITIVE_INFINITY;
+        return leftBudget - rightBudget || (right.rating ?? 0) - (left.rating ?? 0);
+      })
+      .slice(0, maxResults);
 
     return { provider: 'hotel_inventory', results };
   }
@@ -454,8 +549,11 @@ export class HotelSearchFlowService {
           hotel.refundable === undefined
             ? ''
             : `\nCancellation: ${hotel.refundable ? 'Refundable' : 'Non-refundable'}`;
+        const verification = hotel.sltdaVerified
+          ? `\nSri Lanka Tourism registration: Verified${hotel.sltdaLicenceValidUntil ? ` (licence valid to ${hotel.sltdaLicenceValidUntil})` : ''}`
+          : '';
 
-        return `${index + 1}. ${hotel.name}${rating}${room}${meal}${cancellation}${price}${address}\nReply "book ${index + 1}" or "details ${index + 1}".`;
+        return `${index + 1}. ${hotel.name}${rating}${verification}${room}${meal}${cancellation}${price}${address}\nReply "book ${index + 1}" or "details ${index + 1}".`;
       }),
       '',
       hasMore
@@ -635,6 +733,11 @@ function scoreBudgetFit(amount: number, priceRange: string): number {
 
 function formatMealPlan(mealPlan: string): string {
   return mealPlan.toLowerCase().replace(/_/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function calculateNights(checkIn: string, checkOut: string): number {
+  const milliseconds = Date.parse(`${checkOut}T00:00:00Z`) - Date.parse(`${checkIn}T00:00:00Z`);
+  return Math.max(1, Math.round(milliseconds / 86_400_000));
 }
 
 function isHotelProviderConfigured(): boolean {

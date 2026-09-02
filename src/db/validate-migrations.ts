@@ -35,6 +35,7 @@ const REQUIRED_TABLES = [
   'audit_logs',
   'decision_logs',
   'tts_assets',
+  'registered_accommodations',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -53,6 +54,11 @@ const REQUIRED_INDEX_TYPES = {
     'idx_audit_logs_correlation_id',
     'idx_decision_logs_correlation_id',
     'idx_human_handoffs_correlation_id',
+  ],
+  registered_accommodation_lookup: [
+    'registered_accommodations_normalized_name_idx',
+    'registered_accommodations_district_idx',
+    'registered_accommodations_licence_validity_idx',
   ],
 };
 
@@ -75,6 +81,7 @@ async function validateMigrations(): Promise<void> {
     '011_create_notifications.sql',
     '012_create_audit_logs.sql',
     '013_create_tts_assets.sql',
+    '014_create_registered_accommodations.sql',
   ];
 
   let allContent = '';

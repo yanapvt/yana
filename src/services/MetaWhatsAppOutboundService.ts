@@ -278,6 +278,7 @@ function buildCarouselCardBody(body: string): string {
   const room = extractField(cleanedLines, 'Room');
   const mealPlan = extractField(cleanedLines, 'Meal plan');
   const cancellation = extractField(cleanedLines, 'Cancellation');
+  const registration = extractField(cleanedLines, 'Sri Lanka Tourism registration');
   const cuisine = extractField(cleanedLines, 'Cuisine');
   const vehicle = extractField(cleanedLines, 'Vehicle');
   const capacity = extractField(cleanedLines, 'Capacity');
@@ -292,6 +293,7 @@ function buildCarouselCardBody(body: string): string {
     room ? `Room ${truncateText(room, 30)}` : undefined,
     mealPlan ? truncateText(mealPlan, 24) : undefined,
     cancellation ? truncateText(cancellation, 20) : undefined,
+    registration ? `Registered ${truncateText(registration, 28)}` : undefined,
     vehicle ? truncateText(vehicle, 34) : undefined,
     capacity ? `Capacity ${truncateText(capacity, 18)}` : undefined,
     duration ? truncateText(duration, 30) : undefined,

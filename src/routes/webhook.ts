@@ -2804,6 +2804,9 @@ function buildHotelDetailsReply(
       ? `Rating: ${hotel.rating.toFixed(1)}/5${hotel.reviewCount ? ` (${hotel.reviewCount} reviews)` : ''}`
       : undefined,
     hotel.roomName ? `Room: ${hotel.roomName}` : undefined,
+    hotel.sltdaVerified
+      ? `Sri Lanka Tourism registration: Verified${hotel.sltdaLicenceValidUntil ? `; licence valid to ${hotel.sltdaLicenceValidUntil}` : ''}`
+      : undefined,
     hotel.mealPlan ? `Meal plan: ${formatInventoryLabel(hotel.mealPlan)}` : undefined,
     hotel.refundable === undefined
       ? undefined
@@ -3335,6 +3338,9 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
   const lines = [
     smartLink ? `Smart view: ${smartLink}` : undefined,
     `🏨 *${displayNumber}. ${hotel.name}*`,
+    hotel.sltdaVerified
+      ? `✅ Sri Lanka Tourism registration: Verified${hotel.sltdaLicenceValidUntil ? `; licence valid to ${hotel.sltdaLicenceValidUntil}` : ''}`
+      : undefined,
     `⭐ Rating: ${rating}`,
     hotel.roomName ? `🛏️ Room: ${hotel.roomName}` : undefined,
     hotel.mealPlan ? `🍽️ Meal plan: ${formatInventoryLabel(hotel.mealPlan)}` : undefined,
