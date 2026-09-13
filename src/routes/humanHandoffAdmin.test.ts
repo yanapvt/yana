@@ -46,4 +46,17 @@ describe('human handoff operator routes', () => {
     expect(JSON.stringify(await response.json())).not.toContain('summary');
     expect(service.assign).toHaveBeenCalledWith(handoffId, actorId, operatorId);
   });
+
+  it('requires operator identity and returns paginated minimal case views', async () => {
+    const operations = { list: vi.fn().mockResolvedValue({ items: [{ handoffId, status: 'pending', channel: 'agent_queue', service: 'hotel' }], nextCursor: 'opaque' }) };
+    const base = await start({ config: { enabled: true, operatorToken: 'right' }, service: {}, operations });
+    const headers = { authorization: 'Bearer right' };
+    expect((await fetch(`${base}/admin/handoffs`, { headers })).status).toBe(403);
+    const response = await fetch(`${base}/admin/handoffs?limit=10`, { headers: { ...headers, 'x-operator-id': operatorId } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.nextCursor).toBe('opaque');
+    expect(JSON.stringify(body)).not.toMatch(/session_summary|correlationId|provider|token/i);
+    expect(operations.list).toHaveBeenCalledWith(10, undefined);
+  });
 });

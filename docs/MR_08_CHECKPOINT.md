@@ -63,7 +63,6 @@ disabled until those deployment checks pass.
 
 ## MR-09 boundary
 
-MR-09 should provide the production operator work queue and observability layer:
-consume notification work items with leases/retries, expose authorized case
-listing and status views, add delivery/dead-letter metrics and alerts, and run a
-staging end-to-end handoff drill. It must not add autonomous booking or payment.
+The leased operator queue, case views, metrics/readiness, and guarded staging
+drill are implemented in MR-09. See `docs/MR_09_CHECKPOINT.md` for the remaining
+production identity, alert-delivery, and staging-load boundary.

@@ -5,6 +5,9 @@ import { HumanHandoffRuntime } from './HumanHandoffRuntime.js';
 const config: HumanHandoffConfig = {
   enabled: true, nativeGroupEnabled: false, fallbackQueueEnabled: true,
   slaMinutes: 30, queueName: 'travel-concierge', operatorToken: 'operator-secret', slaPollSeconds: 60,
+  queueProcessingEnabled: false, queueWorkerId: 'test-worker', queueLeaseSeconds: 60,
+  queueMaxAttempts: 5, queueBackoffSeconds: 30, queuePollSeconds: 10,
+  alertQueueDepth: 100, alertOldestMinutes: 15, stagingDrillEnabled: false,
 };
 const selection = {
   selectedHotelId: 'public-place', selectedFromBatchIndex: 0, selectedDisplayNumber: 1,

@@ -8,6 +8,8 @@ import { HotelSearchHandoffSessionControl } from './HotelSearchHandoffSessionCon
 import { NearBookingHandoffService, type HandoffAuthorizer, type HandoffResult } from './NearBookingHandoffService.js';
 import { PostgresAgentQueueNotifier } from './PostgresAgentQueueNotifier.js';
 import { PostgresHandoffCaseStore } from './PostgresHandoffCaseStore.js';
+import { HandoffQueueService, PostgresHandoffQueueStore, type HandoffQueueItem } from './HandoffQueueService.js';
+import { HandoffOperationsService, PostgresHandoffOperationsStore } from './HandoffOperationsService.js';
 
 export interface HandoffIdentityResolver {
   resolve(whatsappUserId: string): Promise<{ userId: string; sessionId: string } | undefined>;
@@ -33,11 +35,14 @@ class AuthenticatedOperatorAuthorizer implements HandoffAuthorizer {
 
 export class HumanHandoffRuntime {
   private timer?: NodeJS.Timeout;
+  private queueTimer?: NodeJS.Timeout;
 
   constructor(
     readonly config: HumanHandoffConfig,
     readonly service: NearBookingHandoffService,
-    private readonly identities: HandoffIdentityResolver
+    private readonly identities: HandoffIdentityResolver,
+    readonly queue?: HandoffQueueService,
+    readonly operations?: HandoffOperationsService
   ) {}
 
   async requestHotelHandoff(input: {
@@ -80,11 +85,19 @@ export class HumanHandoffRuntime {
       });
     }, this.config.slaPollSeconds * 1000);
     this.timer.unref?.();
+    if (this.config.queueProcessingEnabled && this.queue) {
+      this.queueTimer = setInterval(() => {
+        void this.queue!.processOne().catch(() => console.error('handoff_queue_cycle_failed', { correlationId: 'scheduled-queue-cycle' }));
+      }, this.config.queuePollSeconds * 1000);
+      this.queueTimer.unref?.();
+    }
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    if (this.queueTimer) clearInterval(this.queueTimer);
+    this.queueTimer = undefined;
   }
 
   async runSlaCycle(): Promise<number> {
@@ -98,6 +111,18 @@ let runtime: HumanHandoffRuntime | undefined;
 export function getHumanHandoffRuntime(): HumanHandoffRuntime {
   if (!runtime) {
     const config = loadHumanHandoffConfig();
+    const queueStore = new PostgresHandoffQueueStore();
+    const queue = new HandoffQueueService(queueStore, {
+      handle: async (item: HandoffQueueItem) => {
+        console.info('handoff_queue_published', {
+          notificationId: item.notificationId, handoffId: item.handoffId,
+          correlationId: item.correlationId, type: item.type,
+        });
+      },
+    }, {
+      workerId: config.queueWorkerId, leaseSeconds: config.queueLeaseSeconds,
+      maxAttempts: config.queueMaxAttempts, backoffSeconds: config.queueBackoffSeconds,
+    });
     runtime = new HumanHandoffRuntime(
       config,
       new NearBookingHandoffService(
@@ -109,7 +134,9 @@ export function getHumanHandoffRuntime(): HumanHandoffRuntime {
         new PostgresAgentQueueNotifier(config.fallbackQueueEnabled),
         new AuthenticatedOperatorAuthorizer()
       ),
-      new PostgresHandoffIdentityResolver()
+      new PostgresHandoffIdentityResolver(),
+      queue,
+      new HandoffOperationsService(config, new PostgresHandoffOperationsStore(), queueStore)
     );
   }
   return runtime;

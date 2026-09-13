@@ -7,6 +7,9 @@ describe('human handoff configuration', () => {
       enabled: false, nativeGroupEnabled: false, fallbackQueueEnabled: true,
       slaMinutes: 30, queueName: 'travel-concierge', operatorToken: undefined,
       slaPollSeconds: 60,
+      queueProcessingEnabled: false, queueWorkerId: 'yana-handoff-worker', queueLeaseSeconds: 60,
+      queueMaxAttempts: 5, queueBackoffSeconds: 30, queuePollSeconds: 10,
+      alertQueueDepth: 100, alertOldestMinutes: 15, stagingDrillEnabled: false,
     });
   });
 

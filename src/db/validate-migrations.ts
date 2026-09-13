@@ -60,6 +60,8 @@ const REQUIRED_INDEX_TYPES = {
     'human_handoffs_one_open_case_per_session_idx',
     'human_handoffs_sla_due_idx',
     'notifications_handoff_event_unique_idx',
+    'notifications_handoff_queue_ready_idx',
+    'notifications_handoff_queue_lease_idx',
   ],
   registered_accommodation_lookup: [
     'registered_accommodations_normalized_name_idx',
@@ -105,6 +107,7 @@ async function validateMigrations(): Promise<void> {
     '017_create_hotel_search_settings.sql',
     '018_harden_human_handoffs.sql',
     '019_idempotent_handoff_notifications.sql',
+    '020_handoff_queue_leases.sql',
   ];
 
   let allContent = '';

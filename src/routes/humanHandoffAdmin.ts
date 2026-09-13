@@ -7,6 +7,39 @@ export function createHumanHandoffAdminRouter(getRuntime: () => HumanHandoffRunt
   const router = Router();
   router.use('/admin/handoffs', (req, res, next) => authenticate(req, res, next, getRuntime()));
 
+  router.get('/admin/handoffs', async (req, res) => {
+    if (!operatorId(req)) return res.status(403).json({ error: 'Forbidden' });
+    const operations = getRuntime().operations;
+    if (!operations) return res.status(503).json({ error: 'Handoff operations are unavailable.' });
+    try {
+      const limit = Number.parseInt(readString(req.query.limit) ?? '25', 10);
+      return res.status(200).json(await operations.list(Number.isFinite(limit) ? limit : 25, readString(req.query.cursor)));
+    } catch (error) {
+      logSafeOperatorFailure(console, 'handoff_list_failed', correlationId(req), error);
+      return res.status(503).json({ error: 'Handoff cases are temporarily unavailable.' });
+    }
+  });
+
+  router.get('/admin/handoffs/metrics', async (req, res) => {
+    if (!operatorId(req)) return res.status(403).json({ error: 'Forbidden' });
+    try { return res.status(200).json(await getRuntime().operations!.metrics()); }
+    catch (error) { logSafeOperatorFailure(console, 'handoff_metrics_failed', correlationId(req), error); return res.status(503).json({ error: 'Metrics unavailable.' }); }
+  });
+
+  router.get('/admin/handoffs/readiness', async (req, res) => {
+    if (!operatorId(req)) return res.status(403).json({ error: 'Forbidden' });
+    const result = await getRuntime().operations!.readiness();
+    return res.status(result.ready ? 200 : 503).json(result);
+  });
+
+  router.get('/admin/handoffs/:handoffId', async (req, res) => {
+    if (!operatorId(req) || !isUuid(req.params.handoffId)) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const item = await getRuntime().operations!.detail(req.params.handoffId);
+      return item ? res.status(200).json(item) : res.status(404).json({ error: 'Not found' });
+    } catch (error) { logSafeOperatorFailure(console, 'handoff_detail_failed', correlationId(req), error); return res.status(503).json({ error: 'Handoff unavailable.' }); }
+  });
+
   router.post('/admin/handoffs/:handoffId/assign', async (req, res) => {
     const { handoffId } = req.params;
     const actorId = readString(req.body?.actorId);
@@ -51,6 +84,12 @@ export function createHumanHandoffAdminRouter(getRuntime: () => HumanHandoffRunt
       return res.status(503).json({ error: 'SLA processing is temporarily unavailable.' });
     }
   });
+
+  router.post('/admin/handoffs/staging-drill', (req, res) => {
+    if (!operatorId(req)) return res.status(403).json({ error: 'Forbidden' });
+    const result = getRuntime().operations!.stagingDrill();
+    return res.status(result.status === 'passed' ? 200 : 404).json(result);
+  });
   return router;
 }
 
@@ -75,6 +114,11 @@ function readString(value: unknown): string | undefined {
 
 function correlationId(req: Request): string {
   return readString(req.header('x-correlation-id')) ?? 'operator-request';
+}
+
+function operatorId(req: Request): string | undefined {
+  const value = readString(req.header('x-operator-id'));
+  return value && isUuid(value) ? value : undefined;
 }
 
 function publicCase(value: { handoffId: string; sessionId: string; status: string; channel: string; operatorId?: string; createdAt: Date; slaDueAt: Date }) {
