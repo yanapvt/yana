@@ -1,6 +1,6 @@
 # Post-MR tourist-journey audit
 
-Audit date: 2026-09-14  
+Audit date: 2026-09-14
 Baseline: `e79d2a0` (`feat: add handoff launch validation boundary`)
 
 This audit made no runtime repairs and used no real traveler, booking, payment,
