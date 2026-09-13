@@ -20,6 +20,8 @@ const saveSearchingMock = vi.fn();
 const saveResultsMock = vi.fn();
 const selectHotelMock = vi.fn();
 const markHandoffConsentPendingMock = vi.fn();
+const saveRecheckReceiptMock = vi.fn();
+const issueRecheckReceiptMock = vi.fn();
 const clearHandoffConsentPendingMock = vi.fn();
 const requestHotelHandoffMock = vi.fn();
 const clearHotelSearchSessionMock = vi.fn();
@@ -94,6 +96,7 @@ vi.mock('../services/hotelSearchSessionService.js', () => ({
     saveResults: saveResultsMock,
     selectHotel: selectHotelMock,
     markHandoffConsentPending: markHandoffConsentPendingMock,
+    saveRecheckReceipt: saveRecheckReceiptMock,
     clearHandoffConsentPending: clearHandoffConsentPendingMock,
     clear: clearHotelSearchSessionMock,
   }),
@@ -101,6 +104,9 @@ vi.mock('../services/hotelSearchSessionService.js', () => ({
 
 vi.mock('../services/handoff/HumanHandoffRuntime.js', () => ({
   getHumanHandoffRuntime: () => ({ requestHotelHandoff: requestHotelHandoffMock }),
+}));
+vi.mock('../services/handoff/HotelRecheckReceiptService.js', () => ({
+  getHotelRecheckReceiptService: () => ({ issue: issueRecheckReceiptMock }),
 }));
 
 vi.mock('../services/restaurantSearchSessionService.js', () => ({
@@ -299,6 +305,8 @@ describe('webhook hotel search flow', () => {
     markHandoffConsentPendingMock.mockResolvedValue(undefined);
     clearHandoffConsentPendingMock.mockResolvedValue(undefined);
     requestHotelHandoffMock.mockResolvedValue({ status: 'handed_off', reply: 'Your request is in the human concierge queue.' });
+    issueRecheckReceiptMock.mockResolvedValue({ receiptId: '00000000-0000-4000-8000-000000000001', provider: 'liteapi', issuedAt: '2026-09-13T00:00:00Z', expiresAt: '2026-09-13T00:10:00Z' });
+    saveRecheckReceiptMock.mockResolvedValue(undefined);
     selectRestaurantMock.mockResolvedValue(null);
     selectExperienceMock.mockResolvedValue(null);
     selectTransportOptionMock.mockResolvedValue(null);
@@ -317,6 +325,7 @@ describe('webhook hotel search flow', () => {
     buildBrowseResultsPageReplyMock.mockReturnValue('Next page reply');
     handleBookingCheckMock.mockResolvedValue({
       status: 'browse_results',
+      authoritativeProvider: 'liteapi',
       reply: 'I rechecked Hotel 1 at USD 100.00 total. No reservation has been made.',
     });
     buildRestaurantBrowseResultsPageReplyMock.mockReturnValue('Next restaurant page reply');

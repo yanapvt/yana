@@ -18,7 +18,7 @@ const config: HumanHandoffConfig = {
 };
 const request = {
   sessionId: 'session-1', userId: 'user-1', correlationId: 'corr-1',
-  travelerConsented: true, authoritativeRecheckPassed: true, travelerIntendsToProceed: true,
+  travelerConsented: true, travelerIntendsToProceed: true,
   summary: { service: 'hotel' as const, selectedStayName: 'Test Stay', dates: '2026-10-01/2026-10-03', guestCount: 2 },
 };
 
@@ -69,7 +69,6 @@ describe('NearBookingHandoffService', () => {
   });
 
   it.each([
-    ['missing authoritative recheck', { authoritativeRecheckPassed: false }],
     ['missing intent to proceed', { travelerIntendsToProceed: false }],
   ])('rejects %s', async (_name, patch) => {
     const { service, store } = harness();

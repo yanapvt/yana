@@ -119,6 +119,7 @@ import type { ExcursionBrowseResult } from '../services/GooglePlacesExcursionBro
 import type { TransportOption } from '../services/TransportProvider.js';
 import { handleTravelFailure, logSafeOperatorFailure } from '../services/SafeFailureService.js';
 import { getHumanHandoffRuntime } from '../services/handoff/HumanHandoffRuntime.js';
+import { getHotelRecheckReceiptService } from '../services/handoff/HotelRecheckReceiptService.js';
 
 const router = Router();
 const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
@@ -1409,6 +1410,7 @@ async function handleActiveHotelSearchSession(
         travelerConsented: true,
         criteria: session.criteria,
         selectedHotel: session.selectedHotel,
+        recheckReceipt: session.recheckReceipt,
       });
       return handoff.reply;
     }
@@ -1435,6 +1437,11 @@ async function handleActiveHotelSearchSession(
         }
       );
       if (bookingCheck.status === 'browse_results') {
+        if (!bookingCheck.authoritativeProvider) {
+          return 'I could not preserve the supplier recheck safely. Please try the booking check again. No booking or payment was attempted.';
+        }
+        const receipt = await getHotelRecheckReceiptService().issue(selectedHotel, session.criteria, bookingCheck.authoritativeProvider);
+        await sessionService.saveRecheckReceipt(userId, receipt);
         await sessionService.markHandoffConsentPending(userId);
         return `${bookingCheck.reply}\n\nWould you like me to share the minimum stay-request details with a human travel concierge? Reply "yes, connect me" to consent.`;
       }

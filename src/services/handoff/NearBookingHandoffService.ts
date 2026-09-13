@@ -8,7 +8,6 @@ export interface NearBookingHandoffRequest {
   userId: string;
   correlationId: string;
   travelerConsented: boolean;
-  authoritativeRecheckPassed: boolean;
   travelerIntendsToProceed: boolean;
   summary: { service: 'hotel'; selectedStayName: string; dates: string; guestCount: number };
 }
@@ -80,7 +79,7 @@ export class NearBookingHandoffService {
     if (!request.travelerConsented) {
       return { status: 'consent_required', reply: 'Would you like me to share the minimum stay-request details with a human travel concierge?' };
     }
-    if (!request.authoritativeRecheckPassed || !request.travelerIntendsToProceed) {
+    if (!request.travelerIntendsToProceed) {
       return { status: 'not_ready', reply: 'A current supplier availability and rate recheck plus your confirmation are required before handoff.' };
     }
     const channel = this.chooseInitialChannel();

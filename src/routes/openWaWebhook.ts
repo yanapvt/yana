@@ -5,7 +5,7 @@ import { webhookRateLimiter } from '../middleware/rateLimiting.js';
 import { env } from '../config/environment.js';
 import { processNormalizedInboundMessage } from './webhook.js';
 import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
-import { getStateStore } from '../services/StateStore.js';
+import { getInboundIdempotencyService, type IdempotencyDecision } from '../services/InboundIdempotencyService.js';
 import {
   isOpenWaOutboundEcho,
   normalizeOpenWaInboundMessage,
@@ -13,7 +13,6 @@ import {
 } from '../utils/openWaMessageNormalizer.js';
 
 const router = Router();
-const MESSAGE_ID_TTL_SECONDS = 24 * 60 * 60;
 
 router.post(
   '/webhook/openwa',
@@ -35,12 +34,16 @@ router.post(
       }
 
       const inboundMessage = normalizeOpenWaInboundMessage(payload);
-      const duplicate = await isDuplicateOpenWaMessage(
+      const deduplication = await claimOpenWaMessage(
         getOpenWaDeduplicationKey(req) || inboundMessage.messageId,
         correlationId
       );
 
-      if (duplicate) {
+      if (deduplication === 'unavailable') {
+        res.status(503).json({ ok: false, error: 'Webhook idempotency unavailable' });
+        return;
+      }
+      if (deduplication === 'duplicate') {
         console.log(
           `[${correlationId}] Ignoring duplicate OpenWA message: ${inboundMessage.messageId}`
         );
@@ -174,34 +177,14 @@ function timingSafeEqual(received: string, expected: string): boolean {
   return crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
 }
 
-async function isDuplicateOpenWaMessage(
+async function claimOpenWaMessage(
   messageId: string,
   correlationId: string
-): Promise<boolean> {
+): Promise<IdempotencyDecision> {
   if (!messageId) {
-    return false;
+    return 'unavailable';
   }
-
-  try {
-    const stateStore = getStateStore();
-    if (!stateStore.isConnected()) {
-      await stateStore.connect();
-    }
-
-    const result = await stateStore.getClient().set(
-      `webhook:openwa:message:${messageId}`,
-      correlationId,
-      {
-        NX: true,
-        EX: MESSAGE_ID_TTL_SECONDS,
-      }
-    );
-
-    return result === null;
-  } catch (error) {
-    console.error(`[${correlationId}] OpenWA deduplication failed:`, error);
-    return false;
-  }
+  return getInboundIdempotencyService().claim('openwa', messageId, correlationId, 'repeatable_external_effect');
 }
 
 export default router;

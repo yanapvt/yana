@@ -13,6 +13,7 @@ import { OperatorIdentityService } from './OperatorIdentityService.js';
 import { HttpStaffPublicationAdapter, StaffPublicationHandler } from './StaffPublicationService.js';
 import { DeadLetterService, PostgresDeadLetterStore } from './DeadLetterService.js';
 import { HandoffAlertService, HttpAlertAdapter, PostgresAlertStore } from './HandoffAlertService.js';
+import { getHotelRecheckReceiptService, type HotelRecheckReceipt, type HotelRecheckReceiptService } from './HotelRecheckReceiptService.js';
 
 export interface HandoffIdentityResolver {
   resolve(whatsappUserId: string): Promise<{ userId: string; sessionId: string } | undefined>;
@@ -49,7 +50,8 @@ export class HumanHandoffRuntime {
     readonly operations?: HandoffOperationsService,
     readonly operatorAuth = new OperatorIdentityService(config.operatorIdentitiesJson),
     readonly deadLetters?: DeadLetterService,
-    readonly alerts?: HandoffAlertService
+    readonly alerts?: HandoffAlertService,
+    private readonly recheckReceipts: HotelRecheckReceiptService = getHotelRecheckReceiptService()
   ) {}
 
   async requestHotelHandoff(input: {
@@ -58,12 +60,22 @@ export class HumanHandoffRuntime {
     travelerConsented: boolean;
     criteria: HotelSearchCriteria;
     selectedHotel: SelectedHotel;
+    recheckReceipt?: HotelRecheckReceipt;
   }): Promise<HandoffResult> {
     if (!this.config.enabled) {
       return { status: 'disabled', reply: 'Human concierge handoff is not currently available.' };
     }
     if (!input.travelerConsented) {
       return { status: 'consent_required', reply: 'Would you like me to share the minimum stay-request details with a human travel concierge?' };
+    }
+    let receiptStatus;
+    try {
+      receiptStatus = await this.recheckReceipts.consume(input.recheckReceipt, input.selectedHotel, input.criteria, input.correlationId);
+    } catch {
+      receiptStatus = 'missing';
+    }
+    if (receiptStatus !== 'valid') {
+      return { status: 'not_ready', reply: 'A fresh supplier availability and rate recheck is required before handoff. No booking or payment was attempted.' };
     }
     const identity = await this.identities.resolve(input.whatsappUserId);
     if (!identity) {
@@ -73,7 +85,6 @@ export class HumanHandoffRuntime {
       ...identity,
       correlationId: input.correlationId,
       travelerConsented: true,
-      authoritativeRecheckPassed: true,
       travelerIntendsToProceed: true,
       summary: {
         service: 'hotel',

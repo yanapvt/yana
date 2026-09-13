@@ -60,6 +60,7 @@ export interface HotelSearchFlowResult {
   toolResult?: ToolCallResult;
   renderedMessage?: WhatsAppMessage;
   browseResponse?: HotelBrowseResponse;
+  authoritativeProvider?: string;
 }
 
 interface HotelSearchFlowDependencies {
@@ -508,6 +509,7 @@ export class HotelSearchFlowService {
         status: 'browse_results',
         criteria,
         browseResponse: recheckedBrowseResponse,
+        authoritativeProvider: outcome.result.rate.supplier,
         reply: [
           `I rechecked the selected stay with the room supplier for ${selectedHotel?.name ?? recheckedResult.name}.`,
           recheckedResult.sltdaVerified
