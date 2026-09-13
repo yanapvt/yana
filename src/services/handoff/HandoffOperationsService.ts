@@ -21,7 +21,8 @@ export class HandoffOperationsService {
     private readonly cases: HandoffOperationsStore,
     private readonly queue: HandoffQueueStore,
     private readonly clock: () => Date = () => new Date(),
-    private readonly audit: { info(event: string, details: Record<string, unknown>): void } = console
+    private readonly audit: { info(event: string, details: Record<string, unknown>): void } = console,
+    private readonly alerts?: { schedule(key: string, reason: string): Promise<boolean> }
   ) {}
 
   list(limit: number, cursor?: string) { return this.cases.list(Math.min(Math.max(limit, 1), 100), cursor); }
@@ -36,24 +37,30 @@ export class HandoffOperationsService {
 
   async readiness(): Promise<{ ready: boolean; reasons: string[]; metrics?: Awaited<ReturnType<HandoffOperationsService['metrics']>> }> {
     if (!this.config.enabled) return { ready: false, reasons: ['human_handoff_disabled'] };
+    const now = this.clock();
+    let metrics: Awaited<ReturnType<HandoffOperationsService['metrics']>>;
     try {
       await this.cases.ping();
-      const metrics = await this.metrics();
-      const reasons: string[] = [];
-      if (metrics.ready + metrics.retrying >= this.config.alertQueueDepth) reasons.push('queue_depth_threshold_exceeded');
-      if (metrics.oldestReadyAgeSeconds >= this.config.alertOldestMinutes * 60) reasons.push('queue_age_threshold_exceeded');
-      if (metrics.deadLetters > 0) reasons.push('dead_letters_present');
-      return { ready: reasons.length === 0, reasons, metrics };
+      metrics = await this.metrics();
     } catch {
       return { ready: false, reasons: ['handoff_database_unavailable'] };
     }
+    const reasons: string[] = [];
+    if (metrics.ready + metrics.retrying >= this.config.alertQueueDepth) reasons.push('queue_depth_threshold_exceeded');
+    if (metrics.oldestReadyAgeSeconds >= this.config.alertOldestMinutes * 60) reasons.push('queue_age_threshold_exceeded');
+    if (metrics.deadLetters > 0) reasons.push('dead_letters_present');
+    try { await Promise.all(reasons.map((reason) => this.alerts?.schedule(`${reason}:${now.toISOString().slice(0, 13)}`, reason))); }
+    catch { reasons.push('alert_schedule_unavailable'); }
+    return { ready: reasons.length === 0, reasons, metrics };
   }
 
   stagingDrill(): { status: 'disabled' | 'passed'; bookingAttempted: false; paymentAttempted: false; steps: string[] } {
     if (!this.config.stagingDrillEnabled) return { status: 'disabled', bookingAttempted: false, paymentAttempted: false, steps: [] };
     return {
       status: 'passed', bookingAttempted: false, paymentAttempted: false,
-      steps: ['consent_gate', 'durable_identity_gate', 'queue_contract', 'operator_auth_contract', 'safe_close_contract'],
+      steps: ['migrations_validated', 'consent_gate', 'durable_identity_gate', 'scoped_operator_auth', 'concurrent_worker_claim',
+        'lease_loss_recovery', 'worker_restart_recovery', 'database_failure_backoff', 'publication_failure_fallback',
+        'retry_storm_bounded', 'dead_letter_replay_idempotency', 'safe_close_contract'],
     };
   }
 }

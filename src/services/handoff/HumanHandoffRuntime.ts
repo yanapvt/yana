@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { loadHumanHandoffConfig, type HumanHandoffConfig } from '../../config/humanHandoff.js';
 import { SessionRepository } from '../../db/repositories/SessionRepository.js';
 import { UserRepository } from '../../db/repositories/UserRepository.js';
@@ -8,8 +7,12 @@ import { HotelSearchHandoffSessionControl } from './HotelSearchHandoffSessionCon
 import { NearBookingHandoffService, type HandoffAuthorizer, type HandoffResult } from './NearBookingHandoffService.js';
 import { PostgresAgentQueueNotifier } from './PostgresAgentQueueNotifier.js';
 import { PostgresHandoffCaseStore } from './PostgresHandoffCaseStore.js';
-import { HandoffQueueService, PostgresHandoffQueueStore, type HandoffQueueItem } from './HandoffQueueService.js';
+import { HandoffQueueService, PostgresHandoffQueueStore } from './HandoffQueueService.js';
 import { HandoffOperationsService, PostgresHandoffOperationsStore } from './HandoffOperationsService.js';
+import { OperatorIdentityService } from './OperatorIdentityService.js';
+import { HttpStaffPublicationAdapter, StaffPublicationHandler } from './StaffPublicationService.js';
+import { DeadLetterService, PostgresDeadLetterStore } from './DeadLetterService.js';
+import { HandoffAlertService, HttpAlertAdapter, PostgresAlertStore } from './HandoffAlertService.js';
 
 export interface HandoffIdentityResolver {
   resolve(whatsappUserId: string): Promise<{ userId: string; sessionId: string } | undefined>;
@@ -36,13 +39,17 @@ class AuthenticatedOperatorAuthorizer implements HandoffAuthorizer {
 export class HumanHandoffRuntime {
   private timer?: NodeJS.Timeout;
   private queueTimer?: NodeJS.Timeout;
+  private alertTimer?: NodeJS.Timeout;
 
   constructor(
     readonly config: HumanHandoffConfig,
     readonly service: NearBookingHandoffService,
     private readonly identities: HandoffIdentityResolver,
     readonly queue?: HandoffQueueService,
-    readonly operations?: HandoffOperationsService
+    readonly operations?: HandoffOperationsService,
+    readonly operatorAuth = new OperatorIdentityService(config.operatorIdentitiesJson),
+    readonly deadLetters?: DeadLetterService,
+    readonly alerts?: HandoffAlertService
   ) {}
 
   async requestHotelHandoff(input: {
@@ -91,6 +98,10 @@ export class HumanHandoffRuntime {
       }, this.config.queuePollSeconds * 1000);
       this.queueTimer.unref?.();
     }
+    if (this.config.alertDeliveryEnabled && this.alerts) {
+      this.alertTimer = setInterval(() => void this.alerts!.processOne().catch(() => console.error('handoff_alert_cycle_failed', { correlationId: 'scheduled-alert-cycle' })), this.config.queuePollSeconds * 1000);
+      this.alertTimer.unref?.();
+    }
   }
 
   stop(): void {
@@ -98,6 +109,8 @@ export class HumanHandoffRuntime {
     this.timer = undefined;
     if (this.queueTimer) clearInterval(this.queueTimer);
     this.queueTimer = undefined;
+    if (this.alertTimer) clearInterval(this.alertTimer);
+    this.alertTimer = undefined;
   }
 
   async runSlaCycle(): Promise<number> {
@@ -112,14 +125,12 @@ export function getHumanHandoffRuntime(): HumanHandoffRuntime {
   if (!runtime) {
     const config = loadHumanHandoffConfig();
     const queueStore = new PostgresHandoffQueueStore();
-    const queue = new HandoffQueueService(queueStore, {
-      handle: async (item: HandoffQueueItem) => {
-        console.info('handoff_queue_published', {
-          notificationId: item.notificationId, handoffId: item.handoffId,
-          correlationId: item.correlationId, type: item.type,
-        });
-      },
-    }, {
+    const unavailablePublisher = { publish: async () => { throw Object.assign(new Error('provider unavailable'), { code: 'STAFF_PROVIDER_UNAVAILABLE' }); } };
+    const publisher = config.staffPublicationEndpoint
+      ? new HttpStaffPublicationAdapter(config.staffPublicationEndpoint, config.staffPublicationAuthToken) : unavailablePublisher;
+    const alerts = new HandoffAlertService(config.alertDeliveryEnabled, new PostgresAlertStore(),
+      config.alertDeliveryEndpoint ? new HttpAlertAdapter(config.alertDeliveryEndpoint, config.alertDeliveryAuthToken) : { deliver: async () => { throw Object.assign(new Error('unavailable'), { code: 'ALERT_PROVIDER_UNAVAILABLE' }); } });
+    const queue = new HandoffQueueService(queueStore, new StaffPublicationHandler(config.staffPublicationEnabled, publisher), {
       workerId: config.queueWorkerId, leaseSeconds: config.queueLeaseSeconds,
       maxAttempts: config.queueMaxAttempts, backoffSeconds: config.queueBackoffSeconds,
     });
@@ -136,7 +147,10 @@ export function getHumanHandoffRuntime(): HumanHandoffRuntime {
       ),
       new PostgresHandoffIdentityResolver(),
       queue,
-      new HandoffOperationsService(config, new PostgresHandoffOperationsStore(), queueStore)
+      new HandoffOperationsService(config, new PostgresHandoffOperationsStore(), queueStore, undefined, undefined, alerts),
+      new OperatorIdentityService(config.operatorIdentitiesJson),
+      new DeadLetterService(new PostgresDeadLetterStore()),
+      alerts
     );
   }
   return runtime;
@@ -146,10 +160,6 @@ export function initHumanHandoffRuntime(value: HumanHandoffRuntime): HumanHandof
   runtime?.stop();
   runtime = value;
   return value;
-}
-
-export function hashOperatorToken(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 export function isUuid(value: string): boolean {

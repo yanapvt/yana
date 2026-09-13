@@ -39,6 +39,7 @@ const REQUIRED_TABLES = [
   'srilanka_accommodations',
   'rejected_hotel_inventory_audit',
   'hotel_search_settings',
+  'handoff_operational_alerts',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -62,6 +63,8 @@ const REQUIRED_INDEX_TYPES = {
     'notifications_handoff_event_unique_idx',
     'notifications_handoff_queue_ready_idx',
     'notifications_handoff_queue_lease_idx',
+    'notifications_handoff_dead_letter_idx',
+    'handoff_operational_alerts_delivery_idx',
   ],
   registered_accommodation_lookup: [
     'registered_accommodations_normalized_name_idx',
@@ -108,6 +111,7 @@ async function validateMigrations(): Promise<void> {
     '018_harden_human_handoffs.sql',
     '019_idempotent_handoff_notifications.sql',
     '020_handoff_queue_leases.sql',
+    '021_handoff_operations_hardening.sql',
   ];
 
   let allContent = '';

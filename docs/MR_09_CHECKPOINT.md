@@ -72,3 +72,5 @@ instead of the shared bootstrap credential, integrate the internal publication
 handler with the chosen staff system, add durable alert delivery and dead-letter
 replay controls, and execute a migrated staging load/failover drill. It must not
 enable booking or payment without a separate approved booking transaction design.
+
+Implemented in `docs/MR_10_CHECKPOINT.md`.
