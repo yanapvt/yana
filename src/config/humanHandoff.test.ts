@@ -12,6 +12,7 @@ describe('human handoff configuration', () => {
       alertQueueDepth: 100, alertOldestMinutes: 15, stagingDrillEnabled: false,
       staffPublicationEnabled: false, staffPublicationProvider: 'none', staffPublicationEndpoint: undefined, staffPublicationAuthToken: undefined,
       providerTimeoutMs: 10000, alertDeliveryEnabled: false, alertDeliveryProvider: 'none', alertDeliveryEndpoint: undefined, alertDeliveryAuthToken: undefined,
+      operatorDashboardEnabled: false, operatorDashboardSessionMinutes: 30, operatorDashboardSecureCookies: true,
     });
   });
 

@@ -37,3 +37,5 @@ provision secrets and scoped identities, inject the staging harness, run the rea
 migrated fault drill, rotate the legacy credential, coordinate authorized history
 cleanup, and capture production approval evidence. It must remain separate from
 booking and payment transaction development.
+
+Implemented in `docs/MR_12_CHECKPOINT.md`.

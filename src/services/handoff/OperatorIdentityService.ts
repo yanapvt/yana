@@ -23,6 +23,12 @@ export class OperatorIdentityService {
     const rank: Record<OperatorRole, number> = { viewer: 1, operator: 2, admin: 3 };
     return identity.roles.some((role) => rank[role] >= rank[required]);
   }
+
+  findActive(id: string): OperatorIdentity | undefined {
+    return this.identities.find((identity) => identity.id === id && !identity.revoked && (!identity.expiresAt || identity.expiresAt > this.clock()));
+  }
+
+  revoke(id: string): boolean { const identity=this.identities.find(value=>value.id===id);if(!identity)return false;identity.revoked=true;return true; }
 }
 
 export function hashOperatorCredential(value: string): string { return hash(value); }

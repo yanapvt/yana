@@ -24,6 +24,9 @@ export interface HumanHandoffConfig {
   alertDeliveryProvider: string;
   alertDeliveryEndpoint?: string;
   alertDeliveryAuthToken?: string;
+  operatorDashboardEnabled: boolean;
+  operatorDashboardSessionMinutes: number;
+  operatorDashboardSecureCookies: boolean;
 }
 
 type EnvironmentSource = Record<string, string | undefined>;
@@ -55,6 +58,9 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
     alertDeliveryProvider: source.HUMAN_HANDOFF_ALERT_DELIVERY_PROVIDER?.trim() || 'none',
     alertDeliveryEndpoint: source.HUMAN_HANDOFF_ALERT_DELIVERY_ENDPOINT?.trim() || undefined,
     alertDeliveryAuthToken: source.HUMAN_HANDOFF_ALERT_DELIVERY_AUTH_TOKEN?.trim() || undefined,
+    operatorDashboardEnabled: readBoolean(source.HUMAN_HANDOFF_DASHBOARD_ENABLED, false),
+    operatorDashboardSessionMinutes: readPositiveInteger(source.HUMAN_HANDOFF_DASHBOARD_SESSION_MINUTES, 30),
+    operatorDashboardSecureCookies: readBoolean(source.HUMAN_HANDOFF_DASHBOARD_SECURE_COOKIES, true),
   };
   if (config.enabled && !config.nativeGroupEnabled && !config.fallbackQueueEnabled) {
     throw new Error('Enabled human handoff requires at least one delivery path');

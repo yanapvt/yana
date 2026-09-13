@@ -13,6 +13,7 @@ const config: HumanHandoffConfig = {
   queueMaxAttempts: 5, queueBackoffSeconds: 30, queuePollSeconds: 10,
   alertQueueDepth: 100, alertOldestMinutes: 15, stagingDrillEnabled: false,
   staffPublicationEnabled: false, staffPublicationProvider: 'none', providerTimeoutMs: 10000, alertDeliveryEnabled: false, alertDeliveryProvider: 'none',
+  operatorDashboardEnabled: false, operatorDashboardSessionMinutes: 30, operatorDashboardSecureCookies: true,
 };
 const request = {
   sessionId: 'session-1', userId: 'user-1', correlationId: 'corr-1',

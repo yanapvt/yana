@@ -14,6 +14,7 @@ import itineraryWorkspaceRouter from './routes/itineraryWorkspace.js';
 import legalRouter from './routes/legal.js';
 import hotelSearchAdminRouter from './routes/hotelSearchAdmin.js';
 import humanHandoffAdminRouter from './routes/humanHandoffAdmin.js';
+import operatorDashboardRouter from './routes/operatorDashboard.js';
 
 /**
  * Creates and configures the Express application
@@ -59,6 +60,7 @@ export function createApp(): Express {
   // Protected operational controls (disabled unless ADMIN_CONTROL_TOKEN is set).
   app.use('/', hotelSearchAdminRouter);
   app.use('/', humanHandoffAdminRouter);
+  app.use('/', operatorDashboardRouter);
 
   // Mount demo/playground routes
   app.use('/demo', demoRouter);
