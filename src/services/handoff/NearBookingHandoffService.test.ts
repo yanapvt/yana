@@ -14,6 +14,7 @@ const config: HumanHandoffConfig = {
   alertQueueDepth: 100, alertOldestMinutes: 15, stagingDrillEnabled: false,
   staffPublicationEnabled: false, staffPublicationProvider: 'none', providerTimeoutMs: 10000, alertDeliveryEnabled: false, alertDeliveryProvider: 'none',
   operatorDashboardEnabled: false, operatorDashboardSessionMinutes: 30, operatorDashboardSecureCookies: true,
+  operatorDashboardSessionStore: 'memory', operatorDashboardLocalTokenEnabled: false, operatorOidcEnabled: false, operatorOidcRoleClaim: 'roles', operatorOidcRoleMappingJson: '{}', operatorAuthRetentionDays: 30,
 };
 const request = {
   sessionId: 'session-1', userId: 'user-1', correlationId: 'corr-1',

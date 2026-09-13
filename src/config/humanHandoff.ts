@@ -27,6 +27,17 @@ export interface HumanHandoffConfig {
   operatorDashboardEnabled: boolean;
   operatorDashboardSessionMinutes: number;
   operatorDashboardSecureCookies: boolean;
+  operatorDashboardSessionStore: string;
+  operatorDashboardSessionKeysJson?: string;
+  operatorDashboardActiveKeyId?: string;
+  operatorDashboardLocalTokenEnabled: boolean;
+  operatorOidcEnabled: boolean;
+  operatorOidcIssuer?: string;
+  operatorOidcClientId?: string;
+  operatorOidcRedirectUri?: string;
+  operatorOidcRoleClaim: string;
+  operatorOidcRoleMappingJson: string;
+  operatorAuthRetentionDays: number;
 }
 
 type EnvironmentSource = Record<string, string | undefined>;
@@ -61,6 +72,17 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
     operatorDashboardEnabled: readBoolean(source.HUMAN_HANDOFF_DASHBOARD_ENABLED, false),
     operatorDashboardSessionMinutes: readPositiveInteger(source.HUMAN_HANDOFF_DASHBOARD_SESSION_MINUTES, 30),
     operatorDashboardSecureCookies: readBoolean(source.HUMAN_HANDOFF_DASHBOARD_SECURE_COOKIES, true),
+    operatorDashboardSessionStore: source.HUMAN_HANDOFF_DASHBOARD_SESSION_STORE?.trim() || 'memory',
+    operatorDashboardSessionKeysJson: source.HUMAN_HANDOFF_DASHBOARD_SESSION_KEYS_JSON?.trim() || undefined,
+    operatorDashboardActiveKeyId: source.HUMAN_HANDOFF_DASHBOARD_ACTIVE_KEY_ID?.trim() || undefined,
+    operatorDashboardLocalTokenEnabled: readBoolean(source.HUMAN_HANDOFF_DASHBOARD_LOCAL_TOKEN_ENABLED, false),
+    operatorOidcEnabled: readBoolean(source.HUMAN_HANDOFF_OIDC_ENABLED, false),
+    operatorOidcIssuer: source.HUMAN_HANDOFF_OIDC_ISSUER?.trim() || undefined,
+    operatorOidcClientId: source.HUMAN_HANDOFF_OIDC_CLIENT_ID?.trim() || undefined,
+    operatorOidcRedirectUri: source.HUMAN_HANDOFF_OIDC_REDIRECT_URI?.trim() || undefined,
+    operatorOidcRoleClaim: source.HUMAN_HANDOFF_OIDC_ROLE_CLAIM?.trim() || 'roles',
+    operatorOidcRoleMappingJson: source.HUMAN_HANDOFF_OIDC_ROLE_MAPPING_JSON?.trim() || '{}',
+    operatorAuthRetentionDays: readPositiveInteger(source.HUMAN_HANDOFF_AUTH_RETENTION_DAYS, 30),
   };
   if (config.enabled && !config.nativeGroupEnabled && !config.fallbackQueueEnabled) {
     throw new Error('Enabled human handoff requires at least one delivery path');
@@ -76,6 +98,11 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
   }
   if (config.staffPublicationEnabled) requireSafeEndpoint(config.staffPublicationEndpoint!);
   if (config.alertDeliveryEnabled) requireSafeEndpoint(config.alertDeliveryEndpoint!);
+  if (!['memory','postgres'].includes(config.operatorDashboardSessionStore)) throw new Error('Unsupported dashboard session store');
+  if (config.operatorDashboardEnabled && !config.operatorDashboardLocalTokenEnabled && !config.operatorOidcEnabled) throw new Error('Dashboard requires an explicitly enabled authentication method');
+  if (config.operatorDashboardEnabled && config.operatorDashboardSessionStore === 'postgres' && (!config.operatorDashboardSessionKeysJson || !config.operatorDashboardActiveKeyId)) throw new Error('Postgres dashboard sessions require encryption keys and an active key ID');
+  if (config.operatorOidcEnabled && (!config.operatorOidcIssuer || !config.operatorOidcClientId || !config.operatorOidcRedirectUri)) throw new Error('OIDC requires issuer, client ID, and redirect URI');
+  if (config.operatorOidcEnabled) { requireSafeEndpoint(config.operatorOidcIssuer!); requireSafeEndpoint(config.operatorOidcRedirectUri!); }
   return config;
 }
 

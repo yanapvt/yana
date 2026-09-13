@@ -40,6 +40,8 @@ const REQUIRED_TABLES = [
   'rejected_hotel_inventory_audit',
   'hotel_search_settings',
   'handoff_operational_alerts',
+  'operator_dashboard_sessions',
+  'operator_auth_events',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -65,6 +67,9 @@ const REQUIRED_INDEX_TYPES = {
     'notifications_handoff_queue_lease_idx',
     'notifications_handoff_dead_letter_idx',
     'handoff_operational_alerts_delivery_idx',
+    'operator_dashboard_sessions_expiry_idx',
+    'operator_auth_events_retention_idx',
+    'operator_auth_events_correlation_idx',
   ],
   registered_accommodation_lookup: [
     'registered_accommodations_normalized_name_idx',
@@ -112,6 +117,7 @@ async function validateMigrations(): Promise<void> {
     '019_idempotent_handoff_notifications.sql',
     '020_handoff_queue_leases.sql',
     '021_handoff_operations_hardening.sql',
+    '022_operator_dashboard_security.sql',
   ];
 
   let allContent = '';

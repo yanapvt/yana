@@ -13,6 +13,9 @@ describe('human handoff configuration', () => {
       staffPublicationEnabled: false, staffPublicationProvider: 'none', staffPublicationEndpoint: undefined, staffPublicationAuthToken: undefined,
       providerTimeoutMs: 10000, alertDeliveryEnabled: false, alertDeliveryProvider: 'none', alertDeliveryEndpoint: undefined, alertDeliveryAuthToken: undefined,
       operatorDashboardEnabled: false, operatorDashboardSessionMinutes: 30, operatorDashboardSecureCookies: true,
+      operatorDashboardSessionStore: 'memory', operatorDashboardSessionKeysJson: undefined, operatorDashboardActiveKeyId: undefined,
+      operatorDashboardLocalTokenEnabled: false, operatorOidcEnabled: false, operatorOidcIssuer: undefined, operatorOidcClientId: undefined,
+      operatorOidcRedirectUri: undefined, operatorOidcRoleClaim: 'roles', operatorOidcRoleMappingJson: '{}', operatorAuthRetentionDays: 30,
     });
   });
 
@@ -31,5 +34,25 @@ describe('human handoff configuration', () => {
     expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_STAFF_PUBLICATION_ENABLED:'true', HUMAN_HANDOFF_STAFF_PUBLICATION_PROVIDER:'none' })).toThrow('provider and endpoint');
     expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_ALERT_DELIVERY_ENABLED:'true', HUMAN_HANDOFF_ALERT_DELIVERY_PROVIDER:'other', HUMAN_HANDOFF_ALERT_DELIVERY_ENDPOINT:'https://example.test' })).toThrow('provider and endpoint');
     expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_ALERT_DELIVERY_ENABLED:'true', HUMAN_HANDOFF_ALERT_DELIVERY_PROVIDER:'http', HUMAN_HANDOFF_ALERT_DELIVERY_ENDPOINT:'http://example.test' })).toThrow('HTTPS');
+  });
+
+  it('requires an explicitly enabled dashboard authentication method', () => {
+    expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_DASHBOARD_ENABLED: 'true' }))
+      .toThrow('authentication method');
+  });
+
+  it('requires encryption keys for the shared Postgres session store', () => {
+    expect(() => loadHumanHandoffConfig({
+      HUMAN_HANDOFF_DASHBOARD_ENABLED: 'true',
+      HUMAN_HANDOFF_DASHBOARD_LOCAL_TOKEN_ENABLED: 'true',
+      HUMAN_HANDOFF_DASHBOARD_SESSION_STORE: 'postgres',
+    })).toThrow('encryption keys');
+  });
+
+  it('requires exact OIDC configuration only when OIDC is enabled', () => {
+    expect(() => loadHumanHandoffConfig({
+      HUMAN_HANDOFF_DASHBOARD_ENABLED: 'true',
+      HUMAN_HANDOFF_OIDC_ENABLED: 'true',
+    })).toThrow('issuer, client ID, and redirect URI');
   });
 });
