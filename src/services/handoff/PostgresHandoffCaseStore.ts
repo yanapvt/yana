@@ -56,7 +56,7 @@ export class PostgresHandoffCaseStore implements HandoffCaseStore {
       `UPDATE human_handoffs
        SET status=$2,
            resolved_at=CASE WHEN $2 IN ('resolved','cancelled') THEN NOW() ELSE resolved_at END
-       WHERE handoff_id=$1 RETURNING ${RETURNING}`,
+       WHERE handoff_id=$1 AND status IN ('pending','assigned') RETURNING ${RETURNING}`,
       [id, status]
     );
     if (!result.rows[0]) throw new Error('Handoff not found');

@@ -19,6 +19,9 @@ const saveAwaitingPreferencesMock = vi.fn();
 const saveSearchingMock = vi.fn();
 const saveResultsMock = vi.fn();
 const selectHotelMock = vi.fn();
+const markHandoffConsentPendingMock = vi.fn();
+const clearHandoffConsentPendingMock = vi.fn();
+const requestHotelHandoffMock = vi.fn();
 const clearHotelSearchSessionMock = vi.fn();
 const getRestaurantSearchSessionMock = vi.fn();
 const saveRestaurantFormSentMock = vi.fn();
@@ -90,8 +93,14 @@ vi.mock('../services/hotelSearchSessionService.js', () => ({
     saveSearching: saveSearchingMock,
     saveResults: saveResultsMock,
     selectHotel: selectHotelMock,
+    markHandoffConsentPending: markHandoffConsentPendingMock,
+    clearHandoffConsentPending: clearHandoffConsentPendingMock,
     clear: clearHotelSearchSessionMock,
   }),
+}));
+
+vi.mock('../services/handoff/HumanHandoffRuntime.js', () => ({
+  getHumanHandoffRuntime: () => ({ requestHotelHandoff: requestHotelHandoffMock }),
 }));
 
 vi.mock('../services/restaurantSearchSessionService.js', () => ({
@@ -287,6 +296,9 @@ describe('webhook hotel search flow', () => {
     saveItineraryEditingMock.mockResolvedValue(undefined);
     setItineraryCurrentDayMock.mockResolvedValue(undefined);
     selectHotelMock.mockResolvedValue(null);
+    markHandoffConsentPendingMock.mockResolvedValue(undefined);
+    clearHandoffConsentPendingMock.mockResolvedValue(undefined);
+    requestHotelHandoffMock.mockResolvedValue({ status: 'handed_off', reply: 'Your request is in the human concierge queue.' });
     selectRestaurantMock.mockResolvedValue(null);
     selectExperienceMock.mockResolvedValue(null);
     selectTransportOptionMock.mockResolvedValue(null);
@@ -1968,6 +1980,31 @@ describe('webhook hotel search flow', () => {
     );
     expect(reply).toContain('I rechecked Hotel 1');
     expect(reply).toContain('No reservation has been made');
+    expect(markHandoffConsentPendingMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(reply).toContain('yes, connect me');
+  });
+
+  it('requires explicit follow-up consent before creating a durable human handoff', async () => {
+    const selectedHotel = {
+      selectedHotelId: 'place-1', selectedHotelSnapshot: { id: 'place-1', name: 'Hotel 1' },
+      selectedFromBatchIndex: 0, selectedDisplayNumber: 1, selectedAt: '2026-06-01T10:00:00.000Z',
+    };
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999', whatsappUserId: 'whatsapp:+15550009999',
+      stage: 'booking_provider_pending', state: 'booking_provider_pending', pendingHumanHandoffConsent: true,
+      criteria: { location: 'Galle Fort', checkinDate: '2026-10-01', checkoutDate: '2026-10-03', guests: 2 },
+      selectedHotel,
+    });
+
+    const unclear = await processInboundMessage(buildTextMessage('maybe later'), 'corr-consent-1');
+    expect(unclear).toContain('Reply "yes, connect me"');
+    expect(requestHotelHandoffMock).not.toHaveBeenCalled();
+
+    const accepted = await processInboundMessage(buildTextMessage('yes, connect me'), 'corr-consent-2');
+    expect(accepted).toContain('concierge queue');
+    expect(requestHotelHandoffMock).toHaveBeenCalledWith(expect.objectContaining({
+      whatsappUserId: 'whatsapp:+15550009999', travelerConsented: true, selectedHotel,
+    }));
   });
 
   it('replays ready results when async outbound did not deliver them', async () => {

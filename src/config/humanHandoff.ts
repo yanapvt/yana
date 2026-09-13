@@ -4,6 +4,8 @@ export interface HumanHandoffConfig {
   fallbackQueueEnabled: boolean;
   slaMinutes: number;
   queueName: string;
+  operatorToken?: string;
+  slaPollSeconds: number;
 }
 
 type EnvironmentSource = Record<string, string | undefined>;
@@ -15,9 +17,14 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
     fallbackQueueEnabled: readBoolean(source.HUMAN_HANDOFF_FALLBACK_QUEUE_ENABLED, true),
     slaMinutes: readPositiveInteger(source.HUMAN_HANDOFF_SLA_MINUTES, 30),
     queueName: source.HUMAN_HANDOFF_QUEUE_NAME?.trim() || 'travel-concierge',
+    operatorToken: source.HUMAN_HANDOFF_OPERATOR_TOKEN?.trim() || undefined,
+    slaPollSeconds: readPositiveInteger(source.HUMAN_HANDOFF_SLA_POLL_SECONDS, 60),
   };
   if (config.enabled && !config.nativeGroupEnabled && !config.fallbackQueueEnabled) {
     throw new Error('Enabled human handoff requires at least one delivery path');
+  }
+  if (config.enabled && !config.operatorToken) {
+    throw new Error('Enabled human handoff requires HUMAN_HANDOFF_OPERATOR_TOKEN');
   }
   return config;
 }

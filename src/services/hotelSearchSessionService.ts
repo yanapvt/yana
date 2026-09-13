@@ -54,6 +54,8 @@ export interface HotelSearchSession {
   latestDisplayedBatchIndex: number;
   nextCount: number;
   selectedHotel?: SelectedHotel;
+  pendingHumanHandoffConsent?: boolean;
+  humanHandoff?: { handoffId: string; status: 'handed_off' };
   state: HotelSearchState;
   stage: LegacyHotelSearchStage;
   results: HotelBrowseResult[];
@@ -243,6 +245,7 @@ export class HotelSearchSessionService {
     await this.save({
       ...session,
       selectedHotel,
+      pendingHumanHandoffConsent: false,
       state: 'booking_provider_pending',
       stage: 'booking_provider_pending',
       updatedAt: now,
@@ -251,6 +254,36 @@ export class HotelSearchSessionService {
     });
 
     return selectedHotel;
+  }
+
+  async markHandoffConsentPending(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session?.selectedHotel) throw new Error('Selected hotel session is unavailable');
+    await this.save({ ...session, pendingHumanHandoffConsent: true, updatedAt: new Date().toISOString() });
+  }
+
+  async clearHandoffConsentPending(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session) return;
+    await this.save({ ...session, pendingHumanHandoffConsent: false, updatedAt: new Date().toISOString() });
+  }
+
+  async markHandedOff(userId: string, handoffId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session) throw new Error('Hotel session is unavailable for handoff lock');
+    await this.save({
+      ...session,
+      pendingHumanHandoffConsent: false,
+      humanHandoff: { handoffId, status: 'handed_off' },
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  async clearHandedOff(userId: string, handoffId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session || session.humanHandoff?.handoffId !== handoffId) return;
+    const { humanHandoff: _closed, ...preserved } = session;
+    await this.save({ ...preserved, updatedAt: new Date().toISOString() });
   }
 
   async get(userId: string): Promise<HotelSearchSession | null> {
@@ -324,6 +357,8 @@ export class HotelSearchSessionService {
       latestDisplayedBatchIndex: existing?.latestDisplayedBatchIndex ?? -1,
       nextCount: existing?.nextCount ?? 0,
       selectedHotel: existing?.selectedHotel,
+      pendingHumanHandoffConsent: existing?.pendingHumanHandoffConsent,
+      humanHandoff: existing?.humanHandoff,
       state: existing?.state ?? 'hotel_form_sent',
       stage: existing?.stage ?? 'awaiting_preferences',
       results: existing?.results ?? [],

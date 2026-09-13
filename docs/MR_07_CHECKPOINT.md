@@ -57,8 +57,6 @@ live WhatsApp delivery were not exercised in this local checkpoint.
 
 ## Next boundary (MR-08)
 
-Compose the service into the runtime using resolved durable user/session IDs,
-add authenticated operator endpoints or workers for assignment and closure,
-run SLA escalation on a scheduler, and exercise the migrations and queue
-consumer against Postgres. Do not enable the feature before those pieces and
-their end-to-end tests are present.
+Runtime composition, authenticated operator mutations, and scheduled SLA
+execution are implemented in MR-08. See `docs/MR_08_CHECKPOINT.md` for the
+remaining deployment and queue-consumer boundary.

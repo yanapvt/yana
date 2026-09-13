@@ -146,7 +146,22 @@ export class NearBookingHandoffService {
 
   async assign(handoffId: string, actorId: string, operatorId: string): Promise<HandoffMutationResult> {
     if (!this.authorizer || !(await this.authorizer.canAssign(actorId))) return { status: 'forbidden' };
-    const handoff = await this.store.assign(handoffId, operatorId);
+    const current = await this.store.findById(handoffId);
+    if (!current) return { status: 'forbidden' };
+    if (current.status === 'assigned' && current.operatorId === operatorId) {
+      return { status: 'updated', case: current };
+    }
+    if (current.status !== 'pending') return { status: 'forbidden' };
+    let handoff: HandoffCase;
+    try {
+      handoff = await this.store.assign(handoffId, operatorId);
+    } catch (error) {
+      const replay = await this.store.findById(handoffId);
+      if (replay?.status === 'assigned' && replay.operatorId === operatorId) {
+        return { status: 'updated', case: replay };
+      }
+      throw error;
+    }
     this.audit.info('handoff_assigned', { handoffId, operatorId, actorId });
     return { status: 'updated', case: handoff };
   }
@@ -156,7 +171,24 @@ export class NearBookingHandoffService {
     if (!current || !this.authorizer || !(await this.authorizer.canClose(actorId, current))) {
       return { status: 'forbidden' };
     }
-    const handoff = await this.store.updateStatus(handoffId, status);
+    if (current.status === status) {
+      await this.sessions.clearHandedOff(current.sessionId, handoffId);
+      return { status: 'updated', case: current };
+    }
+    if (current.status === 'resolved' || current.status === 'cancelled') {
+      return { status: 'forbidden' };
+    }
+    let handoff: HandoffCase;
+    try {
+      handoff = await this.store.updateStatus(handoffId, status);
+    } catch (error) {
+      const replay = await this.store.findById(handoffId);
+      if (replay?.status === status) {
+        await this.sessions.clearHandedOff(replay.sessionId, handoffId);
+        return { status: 'updated', case: replay };
+      }
+      throw error;
+    }
     await this.sessions.clearHandedOff(current.sessionId, handoffId);
     this.audit.info(`handoff_${status}`, { handoffId, sessionId: current.sessionId, actorId });
     return { status: 'updated', case: handoff };

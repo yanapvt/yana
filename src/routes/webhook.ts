@@ -118,6 +118,7 @@ import type { RestaurantBrowseResult } from '../services/GooglePlacesRestaurantB
 import type { ExcursionBrowseResult } from '../services/GooglePlacesExcursionBrowsingService.js';
 import type { TransportOption } from '../services/TransportProvider.js';
 import { handleTravelFailure, logSafeOperatorFailure } from '../services/SafeFailureService.js';
+import { getHumanHandoffRuntime } from '../services/handoff/HumanHandoffRuntime.js';
 
 const router = Router();
 const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
@@ -1388,6 +1389,29 @@ async function handleActiveHotelSearchSession(
   }
 
   if (session.stage === 'booking_provider_pending' || session.state === 'booking_provider_pending') {
+    if (session.humanHandoff) {
+      return 'Your request is already with a human concierge. YANA will not book or charge while the concierge is handling it.';
+    }
+    if (session.pendingHumanHandoffConsent) {
+      if (/^(?:no|not now|cancel)$/i.test(inboundText.trim())) {
+        await sessionService.clearHandoffConsentPending(userId);
+        return 'Okay, I will keep the request here. No details were shared, and no booking or payment was attempted.';
+      }
+      if (!isExplicitHandoffConsent(inboundText)) {
+        return 'Would you like me to share the minimum stay-request details with a human travel concierge? Reply "yes, connect me" to consent, or "no" to keep the request here.';
+      }
+      if (!session.selectedHotel) {
+        return 'Your selected stay is no longer available in this session. No handoff, booking, or payment was attempted.';
+      }
+      const handoff = await getHumanHandoffRuntime().requestHotelHandoff({
+        whatsappUserId: userId,
+        correlationId,
+        travelerConsented: true,
+        criteria: session.criteria,
+        selectedHotel: session.selectedHotel,
+      });
+      return handoff.reply;
+    }
     return session.selectedHotel
       ? buildBookingProviderBoundaryReply(session.selectedHotel.selectedHotelSnapshot.name)
       : 'I have your hotel selection saved. The booking provider check is the next integration boundary.';
@@ -1410,6 +1434,10 @@ async function handleActiveHotelSearchSession(
           userLanguage: 'en',
         }
       );
+      if (bookingCheck.status === 'browse_results') {
+        await sessionService.markHandoffConsentPending(userId);
+        return `${bookingCheck.reply}\n\nWould you like me to share the minimum stay-request details with a human travel concierge? Reply "yes, connect me" to consent.`;
+      }
       return bookingCheck.reply;
     }
 
@@ -2489,6 +2517,10 @@ function isNoExtraPreferenceCue(message: string): boolean {
 
 function isHotelRequestMessage(message: string): boolean {
   return /\b(hotel|stay|accommodation|room|resort|bnb|b&b)\b/i.test(message);
+}
+
+function isExplicitHandoffConsent(message: string): boolean {
+  return /^(?:yes[, ]+)?(?:connect me|share (?:it|them|the details)|human help|concierge|yes)$/i.test(message.trim());
 }
 
 function isFlightServiceRequestMessage(message: string): boolean {

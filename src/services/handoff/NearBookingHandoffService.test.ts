@@ -7,7 +7,8 @@ import {
 
 const config: HumanHandoffConfig = {
   enabled: true, nativeGroupEnabled: false, fallbackQueueEnabled: true,
-  slaMinutes: 30, queueName: 'travel-concierge',
+  slaMinutes: 30, queueName: 'travel-concierge', operatorToken: 'test-token',
+  slaPollSeconds: 60,
 };
 const request = {
   sessionId: 'session-1', userId: 'user-1', correlationId: 'corr-1',
@@ -163,6 +164,14 @@ describe('NearBookingHandoffService', () => {
     authorizer.canAssign.mockResolvedValueOnce(false);
     expect(await service.assign('handoff-1', 'actor-1', 'operator-1')).toEqual({ status: 'forbidden' });
     expect(store.assign).not.toHaveBeenCalled();
+  });
+
+  it('treats assignment replay for the same operator as idempotent', async () => {
+    const { service } = harness();
+    await service.requestHandoff(request);
+    await service.assign('handoff-1', 'actor-1', 'operator-1');
+    const replay = await service.assign('handoff-1', 'actor-1', 'operator-1');
+    expect(replay.status === 'updated' && replay.case.operatorId).toBe('operator-1');
   });
 
   it('requires authorization before closing an active case', async () => {
