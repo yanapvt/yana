@@ -35,6 +35,8 @@ export interface HumanHandoffConfig {
   operatorOidcIssuer?: string;
   operatorOidcClientId?: string;
   operatorOidcRedirectUri?: string;
+  operatorOidcAuthorizationEndpoint?: string;
+  operatorOidcTokenEndpoint?: string;
   operatorOidcRoleClaim: string;
   operatorOidcRoleMappingJson: string;
   operatorAuthRetentionDays: number;
@@ -80,6 +82,8 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
     operatorOidcIssuer: source.HUMAN_HANDOFF_OIDC_ISSUER?.trim() || undefined,
     operatorOidcClientId: source.HUMAN_HANDOFF_OIDC_CLIENT_ID?.trim() || undefined,
     operatorOidcRedirectUri: source.HUMAN_HANDOFF_OIDC_REDIRECT_URI?.trim() || undefined,
+    operatorOidcAuthorizationEndpoint: source.HUMAN_HANDOFF_OIDC_AUTHORIZATION_ENDPOINT?.trim() || undefined,
+    operatorOidcTokenEndpoint: source.HUMAN_HANDOFF_OIDC_TOKEN_ENDPOINT?.trim() || undefined,
     operatorOidcRoleClaim: source.HUMAN_HANDOFF_OIDC_ROLE_CLAIM?.trim() || 'roles',
     operatorOidcRoleMappingJson: source.HUMAN_HANDOFF_OIDC_ROLE_MAPPING_JSON?.trim() || '{}',
     operatorAuthRetentionDays: readPositiveInteger(source.HUMAN_HANDOFF_AUTH_RETENTION_DAYS, 30),
@@ -101,8 +105,8 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
   if (!['memory','postgres'].includes(config.operatorDashboardSessionStore)) throw new Error('Unsupported dashboard session store');
   if (config.operatorDashboardEnabled && !config.operatorDashboardLocalTokenEnabled && !config.operatorOidcEnabled) throw new Error('Dashboard requires an explicitly enabled authentication method');
   if (config.operatorDashboardEnabled && config.operatorDashboardSessionStore === 'postgres' && (!config.operatorDashboardSessionKeysJson || !config.operatorDashboardActiveKeyId)) throw new Error('Postgres dashboard sessions require encryption keys and an active key ID');
-  if (config.operatorOidcEnabled && (!config.operatorOidcIssuer || !config.operatorOidcClientId || !config.operatorOidcRedirectUri)) throw new Error('OIDC requires issuer, client ID, and redirect URI');
-  if (config.operatorOidcEnabled) { requireSafeEndpoint(config.operatorOidcIssuer!); requireSafeEndpoint(config.operatorOidcRedirectUri!); }
+  if (config.operatorOidcEnabled && (!config.operatorOidcIssuer || !config.operatorOidcClientId || !config.operatorOidcRedirectUri || !config.operatorOidcAuthorizationEndpoint || !config.operatorOidcTokenEndpoint)) throw new Error('OIDC requires issuer, client ID, exact redirect URI, authorization endpoint, and token endpoint');
+  if (config.operatorOidcEnabled) { requireSafeEndpoint(config.operatorOidcIssuer!); requireSafeEndpoint(config.operatorOidcRedirectUri!); requireSafeEndpoint(config.operatorOidcAuthorizationEndpoint!); requireSafeEndpoint(config.operatorOidcTokenEndpoint!); requireRoleMapping(config.operatorOidcRoleMappingJson); }
   return config;
 }
 
@@ -115,6 +119,14 @@ function requireSafeEndpoint(value: string): void {
 function hasOperatorIdentities(value?: string): boolean {
   if (!value) return false;
   try { const parsed = JSON.parse(value); return Array.isArray(parsed) && parsed.length > 0; } catch { return false; }
+}
+
+function requireRoleMapping(value: string): void {
+  try {
+    const mapping = JSON.parse(value) as unknown;
+    if (!mapping || Array.isArray(mapping) || typeof mapping !== 'object' || !Object.keys(mapping).length ||
+      !Object.values(mapping).every(role => ['viewer', 'operator', 'admin'].includes(String(role)))) throw new Error();
+  } catch { throw new Error('OIDC role mapping must map at least one claim value to viewer, operator, or admin'); }
 }
 
 function readBoolean(value: string | undefined, fallback: boolean): boolean {

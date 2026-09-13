@@ -16,6 +16,7 @@ describe('human handoff configuration', () => {
       operatorDashboardSessionStore: 'memory', operatorDashboardSessionKeysJson: undefined, operatorDashboardActiveKeyId: undefined,
       operatorDashboardLocalTokenEnabled: false, operatorOidcEnabled: false, operatorOidcIssuer: undefined, operatorOidcClientId: undefined,
       operatorOidcRedirectUri: undefined, operatorOidcRoleClaim: 'roles', operatorOidcRoleMappingJson: '{}', operatorAuthRetentionDays: 30,
+      operatorOidcAuthorizationEndpoint: undefined, operatorOidcTokenEndpoint: undefined,
     });
   });
 
@@ -53,6 +54,19 @@ describe('human handoff configuration', () => {
     expect(() => loadHumanHandoffConfig({
       HUMAN_HANDOFF_DASHBOARD_ENABLED: 'true',
       HUMAN_HANDOFF_OIDC_ENABLED: 'true',
-    })).toThrow('issuer, client ID, and redirect URI');
+    })).toThrow('issuer, client ID, exact redirect URI, authorization endpoint, and token endpoint');
+  });
+
+  it('rejects unsafe endpoints and deny-all OIDC role configuration', () => {
+    const configured = {
+      HUMAN_HANDOFF_DASHBOARD_ENABLED: 'true', HUMAN_HANDOFF_OIDC_ENABLED: 'true',
+      HUMAN_HANDOFF_OIDC_ISSUER: 'https://id.example', HUMAN_HANDOFF_OIDC_CLIENT_ID: 'yana',
+      HUMAN_HANDOFF_OIDC_REDIRECT_URI: 'https://ops.example/operator/oidc/callback',
+      HUMAN_HANDOFF_OIDC_AUTHORIZATION_ENDPOINT: 'https://id.example/authorize',
+      HUMAN_HANDOFF_OIDC_TOKEN_ENDPOINT: 'https://id.example/token',
+    };
+    expect(() => loadHumanHandoffConfig(configured)).toThrow('role mapping');
+    expect(() => loadHumanHandoffConfig({ ...configured, HUMAN_HANDOFF_OIDC_ROLE_MAPPING_JSON: '{"ops":"operator"}', HUMAN_HANDOFF_OIDC_TOKEN_ENDPOINT: 'http://id.example/token' })).toThrow('HTTPS');
+    expect(loadHumanHandoffConfig({ ...configured, HUMAN_HANDOFF_OIDC_ROLE_MAPPING_JSON: '{"ops":"operator"}' }).operatorOidcEnabled).toBe(true);
   });
 });
