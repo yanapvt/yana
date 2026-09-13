@@ -38,6 +38,7 @@ const REQUIRED_TABLES = [
   'registered_accommodations',
   'srilanka_accommodations',
   'rejected_hotel_inventory_audit',
+  'hotel_search_settings',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -56,6 +57,9 @@ const REQUIRED_INDEX_TYPES = {
     'idx_audit_logs_correlation_id',
     'idx_decision_logs_correlation_id',
     'idx_human_handoffs_correlation_id',
+    'human_handoffs_one_open_case_per_session_idx',
+    'human_handoffs_sla_due_idx',
+    'notifications_handoff_event_unique_idx',
   ],
   registered_accommodation_lookup: [
     'registered_accommodations_normalized_name_idx',
@@ -98,6 +102,9 @@ async function validateMigrations(): Promise<void> {
     '014_create_registered_accommodations.sql',
     '015_support_srilanka_accommodations.sql',
     '016_create_rejected_hotel_inventory_audit.sql',
+    '017_create_hotel_search_settings.sql',
+    '018_harden_human_handoffs.sql',
+    '019_idempotent_handoff_notifications.sql',
   ];
 
   let allContent = '';
@@ -126,7 +133,7 @@ async function validateMigrations(): Promise<void> {
   for (const [category, indexes] of Object.entries(REQUIRED_INDEX_TYPES)) {
     console.log(`\n  ${category}:`);
     for (const index of indexes) {
-      const regex = new RegExp(`CREATE INDEX (?:IF NOT EXISTS )?${index}`, 'i');
+      const regex = new RegExp(`CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?${index}`, 'i');
       if (regex.test(allContent)) {
         console.log(`    ✅ ${index}`);
       } else {

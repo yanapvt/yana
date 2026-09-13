@@ -85,6 +85,12 @@ describe('HotelSearchFlowService', () => {
         ],
       }),
     };
+    const supplierOrchestrator = { searchHotels: vi.fn() };
+    const registry = {
+      findEligible: vi.fn().mockResolvedValue([{ id: 'registry-colombo' }]),
+      matchGoogleResults: vi.fn().mockImplementation((results: unknown[]) => results.slice(0, 3)),
+      matchHotels: vi.fn(),
+    };
 
     const service = new HotelSearchFlowService({
       toolRegistry: {
@@ -94,6 +100,10 @@ describe('HotelSearchFlowService', () => {
         executeToolCall: vi.fn(),
       } as unknown as MCPInterface,
       browsingService: browsingService as any,
+      supplierConfigured: true,
+      supplierOrchestrator: supplierOrchestrator as any,
+      sltdaRegistryConfigured: true,
+      sltdaRegistryService: registry as any,
       providerConfigured: false,
     });
 
@@ -112,13 +122,85 @@ describe('HotelSearchFlowService', () => {
     expect(result.status).toBe('browse_results');
     expect(result.reply).toContain('Colombo Court Hotel');
     expect(result.reply).not.toContain('https://maps.google.com/?cid=1');
-    expect(result.reply).toContain('Reply "next"');
+    expect(result.reply).not.toContain('Reply "next"');
     expect(result.reply).not.toContain('Thumbnail:');
     expect(result.browseResponse?.results[0].googleMapsUri).toBe('https://maps.google.com/?cid=1');
     expect(result.browseResponse?.results[0].thumbnailUrl).toBe(
       'https://forms.yana.example/media/google-place-photo?name=places%2F1'
     );
-    expect(result.browseResponse?.results).toHaveLength(4);
+    expect(result.browseResponse?.results).toHaveLength(3);
+    expect(result.reply).not.toContain('Fourth Colombo Hotel');
+    expect(supplierOrchestrator.searchHotels).not.toHaveBeenCalled();
+  });
+
+  it('falls back to Google discovery results when the SLTDA filter removes every hotel', async () => {
+    const googleHotel = {
+      id: 'google-1',
+      googlePlaceId: 'google-1',
+      name: 'Colombo Discovery Hotel',
+      address: 'Colombo',
+      rating: 4.2,
+      reviewCount: 200,
+    };
+    const service = new HotelSearchFlowService({
+      browsingService: {
+        isConfigured: vi.fn().mockReturnValue(true),
+        searchHotels: vi.fn().mockResolvedValue({ provider: 'google_places', results: [googleHotel] }),
+      } as any,
+      sltdaRegistryConfigured: true,
+      sltdaRegistryService: {
+        findEligible: vi.fn().mockResolvedValue([]),
+        matchGoogleResults: vi.fn().mockReturnValue([]),
+        matchHotels: vi.fn(),
+      } as any,
+      searchSettingsProvider: {
+        getSettings: vi.fn().mockResolvedValue({
+          sltdaFilterEnabled: true,
+          zeroResultFallbackEnabled: true,
+          minimumGoogleRating: null,
+          minimumGoogleReviewCount: null,
+        }),
+      },
+    });
+
+    const result = await service.handleBrowseSearch(completeCriteria, { correlationId: 'fallback-1' });
+
+    expect(result.status).toBe('browse_results');
+    expect(result.browseResponse?.results).toEqual([googleHotel]);
+    expect(result.reply).toContain('Colombo Discovery Hotel');
+  });
+
+  it('can disable SLTDA filtering while keeping registry enrichment active', async () => {
+    const googleHotels = [
+      { id: 'google-1', name: 'Registered Hotel', rating: 4.5 },
+      { id: 'google-2', name: 'Discovery Hotel', rating: 4.1 },
+    ];
+    const service = new HotelSearchFlowService({
+      browsingService: {
+        isConfigured: vi.fn().mockReturnValue(true),
+        searchHotels: vi.fn().mockResolvedValue({ provider: 'google_places', results: googleHotels }),
+      } as any,
+      sltdaRegistryConfigured: true,
+      sltdaRegistryService: {
+        findEligible: vi.fn().mockResolvedValue([{ id: 'registry-1' }]),
+        matchGoogleResults: vi.fn().mockReturnValue([{ ...googleHotels[0], sltdaVerified: true }]),
+        matchHotels: vi.fn(),
+      } as any,
+      searchSettingsProvider: {
+        getSettings: vi.fn().mockResolvedValue({
+          sltdaFilterEnabled: false,
+          zeroResultFallbackEnabled: true,
+          minimumGoogleRating: null,
+          minimumGoogleReviewCount: null,
+        }),
+      },
+    });
+
+    const result = await service.handleBrowseSearch(completeCriteria, { correlationId: 'filter-off' });
+
+    expect(result.status).toBe('browse_results');
+    expect(result.browseResponse?.results).toHaveLength(2);
+    expect(result.browseResponse?.results.some((hotel) => hotel.name === 'Discovery Hotel')).toBe(true);
   });
 
   it('validates completed criteria before provider execution', async () => {
@@ -144,7 +226,7 @@ describe('HotelSearchFlowService', () => {
     expect(result.reply).toContain('valid check-in date');
   });
 
-  it('executes search_hotels and renders hotel results when provider is connected', async () => {
+  it('does not execute the legacy live provider during completed-intake exploration', async () => {
     const toolRegistry = {
       isToolAvailable: vi.fn().mockResolvedValue(true),
       registerTool: vi.fn(),
@@ -183,6 +265,12 @@ describe('HotelSearchFlowService', () => {
     const service = new HotelSearchFlowService({
       toolRegistry,
       mcpInterface,
+      browsingService: {
+        isConfigured: vi.fn().mockReturnValue(true),
+        searchHotels: vi.fn().mockResolvedValue({
+          provider: 'google_places', results: [{ name: 'Galle Face Hotel', address: 'Galle' }],
+        }),
+      } as any,
       providerConfigured: true,
     });
 
@@ -193,31 +281,12 @@ describe('HotelSearchFlowService', () => {
       userLanguage: 'en',
     });
 
-    expect(result.status).toBe('success');
-    expect(mcpInterface.executeToolCall).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tool: 'search_hotels',
-        params: expect.objectContaining({
-          location: 'Galle',
-          checkin_date: '2026-06-12',
-          checkout_date: '2026-06-15',
-          guests: 2,
-          budget: 120,
-          currency: 'USD',
-        }),
-      }),
-      expect.objectContaining({
-        correlationId: 'corr-3',
-        sessionId: 'session-3',
-        userId: 'user-3',
-      })
-    );
-    expect(result.reply).toContain('Found 1 hotel for Galle');
+    expect(result.status).toBe('browse_results');
+    expect(mcpInterface.executeToolCall).not.toHaveBeenCalled();
     expect(result.reply).toContain('Galle Face Hotel');
-    expect(result.renderedMessage?.messages[0]?.type).toBe('list');
   });
 
-  it('returns deterministic provider failure copy on tool failure', async () => {
+  it('ignores a legacy provider failure during Google exploration', async () => {
     const mcpInterface = {
       executeToolCall: vi.fn().mockResolvedValue({
         success: false,
@@ -240,6 +309,12 @@ describe('HotelSearchFlowService', () => {
         isToolAvailable: vi.fn().mockResolvedValue(true),
       } as unknown as ToolRegistry,
       mcpInterface,
+      browsingService: {
+        isConfigured: vi.fn().mockReturnValue(true),
+        searchHotels: vi.fn().mockResolvedValue({
+          provider: 'google_places', results: [{ name: 'Explore Hotel', address: 'Galle' }],
+        }),
+      } as any,
       providerConfigured: true,
     });
 
@@ -247,12 +322,19 @@ describe('HotelSearchFlowService', () => {
       correlationId: 'corr-4',
     });
 
-    expect(result.status).toBe('provider_failed');
-    expect(result.reply).toContain('hotel provider failed');
+    expect(result.status).toBe('browse_results');
+    expect(result.reply).toContain('Explore Hotel');
+    expect(mcpInterface.executeToolCall).not.toHaveBeenCalled();
   });
 
-  it('uses live supplier inventory before Google and keeps supplier tokens out of customer results', async () => {
+  it('uses live supplier inventory only at booking check and keeps supplier tokens out of customer results', async () => {
     const supplierOrchestrator = {
+      recheckRate: vi.fn(async (rate) => ({
+        supplier: rate.supplier,
+        status: 'success',
+        originalRate: rate,
+        result: { supplier: rate.supplier, supplierRateId: rate.supplierRateId, available: true, rate },
+      })),
       searchHotels: vi.fn().mockResolvedValue({
         correlationId: 'corr-live-inventory',
         partialFailure: false,
@@ -301,24 +383,140 @@ describe('HotelSearchFlowService', () => {
       providerConfigured: false,
     });
 
-    const result = await service.handleBrowseSearch(completeCriteria, {
-      correlationId: 'corr-live-inventory',
-    });
+    const result = await service.handleBookingCheck(
+      completeCriteria,
+      { name: 'Live Beach Hotel', address: 'Galle Road' },
+      { correlationId: 'corr-live-inventory' }
+    );
 
     expect(result.status).toBe('browse_results');
     expect(result.browseResponse?.provider).toBe('hotel_inventory');
     expect(result.reply).toContain('Ocean Deluxe');
-    expect(result.reply).toContain('Returned total: USD 240.00 total');
+    expect(result.reply).toContain('Ocean Deluxe: USD 240.00 total');
+    expect(result.reply).toContain('no reservation has been made');
     expect(result.reply).not.toContain('liteapi');
     expect(JSON.stringify(result.browseResponse)).not.toContain('private-offer-token');
     expect(browsingService.searchHotels).not.toHaveBeenCalled();
 
-    const completedResult = await service.handleCompletedIntake(completeCriteria, {
-      correlationId: 'corr-live-inventory-completed',
-    });
+    const completedResult = await service.handleBookingCheck(
+      completeCriteria,
+      { name: 'Live Beach Hotel', address: 'Galle Road' },
+      { correlationId: 'corr-live-inventory-completed' }
+    );
     expect(completedResult.browseResponse?.provider).toBe('hotel_inventory');
     expect(completedResult.reply).toContain('Ocean Deluxe');
     expect(completedResult.reply).not.toContain('liteapi');
+  });
+
+  it('falls back to another eligible supplier rate when the first recheck fails', async () => {
+    const hotel = {
+      yanaHotelId: 'yana-hotel-fallback', name: 'Fallback Hotel', destination: 'Galle',
+      country: 'Sri Lanka', address: 'Galle Road', images: [], amenities: [],
+      supplierReferences: [], rooms: [],
+    };
+    const makeRate = (supplier: string, roomId: string, token: string, amount: number) => ({
+      yanaHotelId: hotel.yanaHotelId, yanaRoomId: roomId, supplier,
+      supplierHotelId: `${supplier}-hotel`, supplierRateId: token,
+      checkIn: completeCriteria.checkinDate, checkOut: completeCriteria.checkoutDate,
+      occupancy: { adults: 2, children: 0, rooms: 1 }, roomName: `${supplier} room`,
+      normalizedRoomType: 'standard', importantRoomAttributes: [], mealPlan: 'BREAKFAST',
+      cancellationPolicy: { refundable: true, penalties: [], normalizedCode: 'FREE' },
+      paymentType: 'PREPAID', taxesIncluded: true, feesIncluded: true,
+      cost: { supplierNet: { amount, currency: 'USD' } }, priceBasis: 'RETAIL',
+      currency: 'USD', available: true, bookable: true,
+    });
+    const firstRate = makeRate('liteapi', 'room-1', 'secret-first-rate', 200);
+    const fallbackRate = makeRate('hotelbeds', 'room-2', 'secret-fallback-rate', 220);
+    const supplierOrchestrator = {
+      searchHotels: vi.fn().mockResolvedValue({
+        correlationId: 'corr-recheck-fallback', partialFailure: false, outcomes: [],
+        hotels: [hotel], rates: [firstRate, fallbackRate],
+      }),
+      recheckRate: vi.fn(async (rate) => rate.supplier === 'liteapi'
+        ? { supplier: rate.supplier, status: 'failed', originalRate: rate, error: 'unavailable' }
+        : {
+            supplier: rate.supplier, status: 'success', originalRate: rate,
+            result: { supplier: rate.supplier, supplierRateId: rate.supplierRateId, available: true, rate },
+          }),
+    };
+    const service = new HotelSearchFlowService({
+      supplierConfigured: true,
+      supplierOrchestrator: supplierOrchestrator as any,
+      browsingService: { isConfigured: vi.fn().mockReturnValue(true), searchHotels: vi.fn() } as any,
+      providerConfigured: false,
+    });
+
+    const result = await service.handleBookingCheck(
+      completeCriteria,
+      { name: hotel.name, address: hotel.address },
+      { correlationId: 'corr-recheck-fallback' }
+    );
+
+    expect(supplierOrchestrator.recheckRate).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe('browse_results');
+    expect(result.reply).toContain('hotelbeds room: USD 220.00 total');
+    expect(JSON.stringify(result)).not.toContain('secret-first-rate');
+    expect(JSON.stringify(result)).not.toContain('secret-fallback-rate');
+  });
+
+  it.each([
+    { recheckStatus: 'price_changed', refreshedAmount: 260, expected: 'changed the rate' },
+    { recheckStatus: 'unavailable', refreshedAmount: 240, expected: 'none passed a fresh availability and price recheck' },
+  ])('handles a $recheckStatus result without booking', async ({ recheckStatus, refreshedAmount, expected }) => {
+    const hotel = {
+      yanaHotelId: 'yana-hotel-recheck', name: 'Recheck Hotel', destination: 'Galle',
+      country: 'Sri Lanka', address: 'Galle Road', images: [], amenities: [],
+      supplierReferences: [], rooms: [],
+    };
+    const originalRate = {
+      yanaHotelId: hotel.yanaHotelId, yanaRoomId: 'room-recheck', supplier: 'liteapi',
+      supplierHotelId: 'supplier-hotel', supplierRateId: 'secret-original-token',
+      checkIn: completeCriteria.checkinDate, checkOut: completeCriteria.checkoutDate,
+      occupancy: { adults: 2, children: 0, rooms: 1 }, roomName: 'Ocean Room',
+      normalizedRoomType: 'ocean', importantRoomAttributes: [], mealPlan: 'BREAKFAST',
+      cancellationPolicy: { refundable: true, penalties: [], normalizedCode: 'FREE' },
+      paymentType: 'PREPAID', taxesIncluded: true, feesIncluded: true,
+      cost: { supplierNet: { amount: 240, currency: 'USD' } }, priceBasis: 'RETAIL',
+      currency: 'USD', available: true, bookable: true,
+    };
+    const refreshedRate = {
+      ...originalRate,
+      supplierRateId: 'secret-refreshed-token',
+      available: recheckStatus !== 'unavailable',
+      bookable: recheckStatus !== 'unavailable',
+      cost: { supplierNet: { amount: refreshedAmount, currency: 'USD' } },
+    };
+    const supplierOrchestrator = {
+      searchHotels: vi.fn().mockResolvedValue({
+        correlationId: 'corr-rate-change', partialFailure: false, outcomes: [],
+        hotels: [hotel], rates: [originalRate],
+      }),
+      recheckRate: vi.fn().mockResolvedValue({
+        supplier: 'liteapi', status: recheckStatus, originalRate,
+        result: {
+          supplier: 'liteapi', supplierRateId: refreshedRate.supplierRateId,
+          available: refreshedRate.available, rate: refreshedRate,
+          prebookToken: 'secret-prebook-token',
+        },
+      }),
+    };
+    const service = new HotelSearchFlowService({
+      supplierConfigured: true,
+      supplierOrchestrator: supplierOrchestrator as any,
+      browsingService: { isConfigured: vi.fn().mockReturnValue(true), searchHotels: vi.fn() } as any,
+      providerConfigured: false,
+    });
+
+    const result = await service.handleBookingCheck(
+      completeCriteria,
+      { name: hotel.name, address: hotel.address },
+      { correlationId: 'corr-rate-change' }
+    );
+
+    expect(result.status).toBe('provider_not_connected');
+    expect(result.reply).toContain(expected);
+    expect(result.reply).toContain('No stay was booked');
+    expect(JSON.stringify(result)).not.toMatch(/secret-original-token|secret-refreshed-token|secret-prebook-token/);
   });
 
   it('does not call the live supplier when the enabled SLTDA gate has no eligible records', async () => {
@@ -339,9 +537,11 @@ describe('HotelSearchFlowService', () => {
       providerConfigured: false,
     });
 
-    const result = await service.handleBrowseSearch(completeCriteria, {
-      correlationId: 'corr-no-registered-hotels',
-    });
+    const result = await service.handleBookingCheck(
+      completeCriteria,
+      { id: 'google-selected', googlePlaceId: 'google-selected', name: 'Selected Hotel' },
+      { correlationId: 'corr-no-registered-hotels' }
+    );
 
     expect(result.status).toBe('provider_not_connected');
     expect(result.reply).toContain('have not requested live room rates');
@@ -370,6 +570,12 @@ describe('HotelSearchFlowService', () => {
       bookable: true,
     };
     const supplierOrchestrator = {
+      recheckRate: vi.fn(async (rate) => ({
+        supplier: rate.supplier,
+        status: 'success',
+        originalRate: rate,
+        result: { supplier: rate.supplier, supplierRateId: rate.supplierRateId, available: true, rate },
+      })),
       searchHotels: vi.fn().mockResolvedValue({
         correlationId: 'corr-verified', partialFailure: false, outcomes: [], hotels: [hotel],
         rates: [
@@ -399,7 +605,11 @@ describe('HotelSearchFlowService', () => {
       providerConfigured: false,
     });
 
-    const result = await service.handleBrowseSearch(completeCriteria, { correlationId: 'corr-verified' });
+    const result = await service.handleBookingCheck(
+      completeCriteria,
+      google,
+      { correlationId: 'corr-verified' }
+    );
 
     expect(supplierOrchestrator.searchHotels).toHaveBeenCalledOnce();
     expect(result.browseResponse?.results).toHaveLength(1);
@@ -459,9 +669,11 @@ describe('HotelSearchFlowService', () => {
       providerConfigured: false,
     });
 
-    const result = await service.handleBrowseSearch(completeCriteria, {
-      correlationId: 'corr-unregistered',
-    });
+    const result = await service.handleBookingCheck(
+      completeCriteria,
+      { id: 'google-unregistered', googlePlaceId: 'google-unregistered', name: 'Unregistered Supplier Hotel', address: 'Galle Road' },
+      { correlationId: 'corr-unregistered' }
+    );
 
     expect(result.status).toBe('provider_not_connected');
     expect(result.reply).not.toContain('Unregistered Supplier Hotel');

@@ -4,10 +4,28 @@ import type { HotelSupplierAdapter } from './HotelSupplierAdapter.js';
 import type {
   HotelSearchRequest,
   NormalizedHotelRate,
+  PrebookResult,
   SupplierHotelSearchResult,
   SupplierId,
   YanaHotel,
 } from './types.js';
+import { classifyFailure } from '../SafeFailureService.js';
+
+export type RateRecheckStatus =
+  | 'success'
+  | 'price_changed'
+  | 'unavailable'
+  | 'disabled'
+  | 'not_registered'
+  | 'failed';
+
+export interface RateRecheckOutcome {
+  supplier: SupplierId;
+  status: RateRecheckStatus;
+  originalRate: NormalizedHotelRate;
+  result?: PrebookResult;
+  error?: string;
+}
 
 export type SupplierExecutionStatus =
   | 'success'
@@ -110,6 +128,53 @@ export class HotelSupplierOrchestrator {
     };
   }
 
+  async recheckRate(
+    rate: NormalizedHotelRate,
+    correlationId: string
+  ): Promise<RateRecheckOutcome> {
+    const registration = this.registrations.find(({ config }) => config.supplier === rate.supplier);
+    if (!registration || !registration.config.enabled) {
+      return { supplier: rate.supplier, status: 'disabled', originalRate: rate };
+    }
+    if (!registration.adapter) {
+      return { supplier: rate.supplier, status: 'not_registered', originalRate: rate };
+    }
+
+    try {
+      const result = await this.withTimeout(
+        () => registration.adapter!.recheckRate(rate, correlationId),
+        registration.config.timeoutMs
+      );
+      if (!result.available || !result.rate.available || !result.rate.bookable) {
+        return { supplier: rate.supplier, status: 'unavailable', originalRate: rate, result };
+      }
+      const changed =
+        result.rate.currency !== rate.currency ||
+        result.rate.cost.supplierNet.amount !== rate.cost.supplierNet.amount;
+      return {
+        supplier: rate.supplier,
+        status: changed ? 'price_changed' : 'success',
+        originalRate: rate,
+        result,
+      };
+    } catch (error) {
+      const failureCategory = classifyFailure(error);
+      this.logger.warn('supplier_rate_recheck_failed', {
+        supplier: rate.supplier,
+        correlationId,
+        yanaHotelId: rate.yanaHotelId,
+        yanaRoomId: rate.yanaRoomId,
+        category: failureCategory,
+      });
+      return {
+        supplier: rate.supplier,
+        status: 'failed',
+        originalRate: rate,
+        error: `supplier_rate_recheck_${failureCategory}`,
+      };
+    }
+  }
+
   getHealth(): SupplierHealthSnapshot[] {
     const now = this.clock();
     return this.registrations.map(({ config, adapter }) => {
@@ -175,17 +240,18 @@ export class HotelSupplierOrchestrator {
       }
     }
 
-    const message = lastError instanceof Error ? lastError.message : 'Supplier search failed';
-    this.recordFailure(state, config, message);
+    const failureCategory = classifyFailure(lastError);
+    const safeError = lastStatus === 'timeout' ? 'supplier_timeout' : `supplier_search_${failureCategory}`;
+    this.recordFailure(state, config, safeError);
     this.logger.warn('supplier_search_failed', {
       supplier: config.supplier,
       correlationId: request.correlationId,
       attempts: totalAttempts,
       durationMs: this.clock() - startedAt,
       status: lastStatus,
-      error: message,
+      category: failureCategory,
     });
-    return this.outcome(config.supplier, lastStatus, totalAttempts, startedAt, undefined, message);
+    return this.outcome(config.supplier, lastStatus, totalAttempts, startedAt, undefined, safeError);
   }
 
   private logRateAttribution(

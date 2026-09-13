@@ -63,14 +63,14 @@ export class LogisticsSearchFlowService {
   ): string {
     const hasMore = nextOffset < totalResults;
     const lines = [
-      `I found these transport options from ${criteria.pickupLocation ?? 'your pickup'} to ${criteria.destination ?? 'your destination'}.`,
+      `I prepared illustrative transport request options from ${criteria.pickupLocation ?? 'your pickup'} to ${criteria.destination ?? 'your destination'}. These are not live provider inventory or confirmed quotes.`,
       criteria.additionalPreferences ? `I included your preference: ${criteria.additionalPreferences}.` : undefined,
       '',
       ...options.map((option, index) => buildTransportOptionText(index + 1, option)),
       '',
       hasMore
-        ? 'Reply "next" to see the next 3 suggestions, "details 1", or "book 1".'
-        : 'Which transport option would you like me to arrange? Reply book 1, book 2, or book 3 from the latest list.',
+        ? 'Reply "next" to see the next 3 suggestions, "details 1", or "book 1" to request an operator quote.'
+        : 'Which option should I send for an operator quote and availability check? Reply book 1, book 2, or book 3 from the latest list.',
     ].filter((line): line is string => typeof line === 'string');
 
     return lines.join('\n');
@@ -138,10 +138,10 @@ function buildTransportOptionText(displayNumber: number, option: TransportOption
   return [
     `${displayNumber}. ${option.provider}`,
     `Vehicle: ${option.vehicle}`,
-    `Estimated price: ${option.estimatedPrice}`,
+    `Quote status: ${option.estimatedPrice}`,
     `Vehicle type: ${option.vehicleType}`,
-    `Capacity: ${option.capacity}`,
-    `Estimated duration: ${option.estimatedDuration}`,
+    `Suggested capacity: ${option.capacity} (operator must confirm vehicle fit)`,
+    `Duration status: ${option.estimatedDuration}`,
   ].join('\n');
 }
 

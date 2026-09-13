@@ -4,20 +4,26 @@ YANA treats the existing local `srilanka_accommodations` table as a registration
 licence-verification source. It is not a room availability or pricing source.
 Only data obtained with appropriate permission should be imported.
 
-## Search sequence
+## Exploration sequence
 
 1. Collect customer destination, dates, occupancy, budget and preferences.
-2. Search Google Places when configured for candidate enrichment.
-3. Query eligible local SLTDA records for the requested location.
-4. When verification is required and no eligible record exists, stop before
-   calling a live inventory supplier.
-5. Search enabled live inventory suppliers.
-6. Deterministically match supplier hotels to local registry records and Google
-   candidates.
-7. Exclude unverified hotels when the verification gate is enabled.
-8. Exclude same-currency rates above the total budget for the stay and rooms.
-9. Rank verified results by returned total and Google rating.
-10. Send customer-safe WhatsApp cards and retain structured internal logs.
+2. Search Google Places discovery results without calling live inventory suppliers.
+3. Deterministically match Google candidates to eligible local SLTDA records.
+4. When strict verification is enabled, remove unmatched Google candidates.
+5. Rank and show verified discovery cards in batches of three.
+6. Treat Google price levels as exploration signals, not confirmed room rates.
+
+## Booking-check sequence
+
+1. The customer selects a displayed hotel with `book N`.
+2. Query eligible local SLTDA records for the selected destination.
+3. Stop when strict verification is enabled and no eligible record or deterministic
+   selected-hotel match exists.
+4. Search enabled live inventory suppliers for the requested dates and occupancy.
+5. Match supplier hotels to the selected Google result and an eligible SLTDA record.
+6. Exclude unverified, unavailable, unbookable and over-budget rates.
+7. Return customer-safe live room/rate options and retain structured internal logs.
+8. Recheck the selected rate again before any future booking/payment transaction.
 
 ## Configuration
 
@@ -26,12 +32,30 @@ SLTDA_REGISTRY_ENABLED=true
 SLTDA_REQUIRE_VERIFIED_HOTELS=true
 SLTDA_MATCH_MIN_CONFIDENCE=0.80
 HOTEL_SUPPLIER_REJECTION_AUDIT_ENABLED=true
+ADMIN_CONTROL_TOKEN=<long-random-secret>
 ```
 
 Keep the feature disabled until migration `015_support_srilanka_accommodations.sql`
 has run and authorized records are present. The migration preserves an existing
 table and its rows, creating only missing compatibility indexes. On a fresh
 database it creates the import table with the established scraper schema.
+
+## Runtime exploration controls
+
+After migration `017_create_hotel_search_settings.sql` is applied, an authenticated
+operator can open `/admin/hotel-search`. The browser uses HTTP Basic authentication;
+enter any username and use `ADMIN_CONTROL_TOKEN` as the password.
+
+The page controls strict SLTDA exploration filtering, minimum Google rating, and
+minimum Google review count. The zero-result filter safeguard is always enabled.
+Settings are stored in
+Postgres and take effect on the next search without restarting PM2. If no database
+row exists, the SLTDA default comes from `SLTDA_REQUIRE_VERIFIED_HOTELS` and the
+zero-result fallback defaults to enabled.
+
+Keep the admin route behind HTTPS. When `ADMIN_CONTROL_TOKEN` is empty, the route
+returns 404. The fallback can only restore hotels actually returned by Google; it
+cannot manufacture results if Google itself returns none or fails.
 
 ## Required import fields
 

@@ -110,6 +110,7 @@ export interface SessionState {
   pendingOptions?: PendingOption[];
   bookingProgress?: BookingProgress;
   paymentProgress?: PaymentProgress;
+  humanHandoff?: { handoffId: string; status: 'handed_off' };
 }
 
 export interface ConversationMessage {

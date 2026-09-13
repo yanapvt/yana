@@ -94,4 +94,47 @@ describe('MetaWhatsAppOutboundService', () => {
     expect(payload.interactive.action.cards[0].body.text.length).toBeLessThan(160);
     expect(payload.interactive.action.cards[1].body.text.length).toBeLessThan(160);
   });
+
+  it('renders transport cards as unconfirmed quote requests in Meta', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { MetaWhatsAppOutboundService } = await import('./MetaWhatsAppOutboundService.js');
+    const service = new MetaWhatsAppOutboundService();
+    const transportCard = (number: number) => ({
+      body: [
+        `${number}. Van transfer request`,
+        'Status: request option only — not live inventory or a confirmed quote',
+        'Vehicle: Van transfer',
+        'Quote status: Not quoted; an operator must confirm price',
+        'Suggested capacity: 7 (operator must confirm fit)',
+        'Duration status: Not estimated; operator must confirm route time',
+        `Request operator quote: reply book ${number}`,
+        `More info: reply details ${number}`,
+      ].join('\n'),
+      mediaUrl: `https://example.com/transport-${number}.jpg`,
+    });
+
+    const sent = await service.sendWhatsAppMessages('whatsapp:+94777269221', [
+      { body: 'These are illustrative request options, not live provider inventory.' },
+      transportCard(1),
+      transportCard(2),
+    ]);
+
+    expect(sent).toBe(true);
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const payload = JSON.parse(String(request.body));
+    const firstCard = payload.interactive.action.cards[0];
+    expect(firstCard.action.buttons[0]).toEqual({
+      type: 'quick_reply',
+      quick_reply: { id: 'book 1', title: 'Request Quote' },
+    });
+    expect(firstCard.body.text).toContain('request option only');
+    expect(firstCard.body.text).toContain('Quote Not quoted');
+    expect(firstCard.body.text).not.toMatch(/rating|book now/i);
+  });
 });

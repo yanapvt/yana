@@ -1017,11 +1017,9 @@ function formatDailyPlan(day: DailyItineraryPlan): string {
 
 function buildLogisticsBookingCompletionMessage(): string {
   return [
-    'Perfect!',
+    'Thank you — your transport quote request is prepared.',
     '',
-    "I've prepared your transport booking.",
-    '',
-    'The next step is to check live availability and confirm pricing with the transport provider.',
+    'No vehicle, availability, or price is confirmed yet. A transport operator must review the request and provide a quote before you decide whether to proceed.',
   ].join('\n');
 }
 

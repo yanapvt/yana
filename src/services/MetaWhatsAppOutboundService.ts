@@ -145,6 +145,8 @@ export class MetaWhatsAppOutboundService {
           action: {
             cards: carouselCards.map((message, index) => {
               const displayNumber = index + 1;
+              const isQuoteRequest = /request operator quote/i.test(message.body);
+              const isStayRequest = /request this stay/i.test(message.body);
               return {
                 type: 'button',
                 card_index: index,
@@ -163,7 +165,7 @@ export class MetaWhatsAppOutboundService {
                       type: 'quick_reply',
                       quick_reply: {
                         id: `book ${displayNumber}`,
-                        title: 'Book Now',
+                        title: isQuoteRequest ? 'Request Quote' : isStayRequest ? 'Request Stay' : 'Book Now',
                       },
                     },
                     {
@@ -274,6 +276,8 @@ function buildCarouselCardBody(body: string): string {
     extractField(cleanedLines, 'Price signal') ??
     extractField(cleanedLines, 'Price level') ??
     extractField(cleanedLines, 'Estimated price');
+  const quoteStatus = extractField(cleanedLines, 'Quote status');
+  const requestStatus = extractField(cleanedLines, 'Status');
   const category = extractField(cleanedLines, 'Category');
   const room = extractField(cleanedLines, 'Room');
   const mealPlan = extractField(cleanedLines, 'Meal plan');
@@ -281,15 +285,17 @@ function buildCarouselCardBody(body: string): string {
   const registration = extractField(cleanedLines, 'Sri Lanka Tourism registration');
   const cuisine = extractField(cleanedLines, 'Cuisine');
   const vehicle = extractField(cleanedLines, 'Vehicle');
-  const capacity = extractField(cleanedLines, 'Capacity');
-  const duration = extractField(cleanedLines, 'Estimated duration');
+  const capacity = extractField(cleanedLines, 'Capacity') ?? extractField(cleanedLines, 'Suggested capacity');
+  const duration = extractField(cleanedLines, 'Estimated duration') ?? extractField(cleanedLines, 'Duration status');
   const location = extractField(cleanedLines, 'Location') ?? extractField(cleanedLines, 'Address');
   const reason = extractField(cleanedLines, 'Why Yana picked it');
 
   const compactLines = [
     title ? truncateText(stripEmoji(title), 42) : undefined,
+    requestStatus ? truncateText(requestStatus, 54) : undefined,
     rating ? `Rating ${truncateText(rating, 30)}` : undefined,
     price ? `Price ${truncateText(price, 24)}` : undefined,
+    quoteStatus ? `Quote ${truncateText(quoteStatus, 42)}` : undefined,
     room ? `Room ${truncateText(room, 30)}` : undefined,
     mealPlan ? truncateText(mealPlan, 24) : undefined,
     cancellation ? truncateText(cancellation, 20) : undefined,

@@ -6,6 +6,34 @@ import {
 } from './SltdaRegistryService.js';
 
 describe('SltdaRegistryService', () => {
+  it('filters Google exploration results to deterministic SLTDA matches', () => {
+    const service = new SltdaRegistryService(
+      { findEligibleByLocation: vi.fn() },
+      0.8,
+      { info: vi.fn(), warn: vi.fn() }
+    );
+    const results = service.matchGoogleResults(
+      [
+        { id: 'google-amaya', googlePlaceId: 'google-amaya', name: 'Amaya Hills', address: 'Heerassagala, Kandy' },
+        { id: 'google-other', googlePlaceId: 'google-other', name: 'Unregistered Guest House', address: 'Kandy' },
+      ],
+      [{
+        id: 'reg-amaya', propertyName: 'Amaya Hills', normalizedName: 'amaya hills',
+        address: 'P.O. BOX. 16, HEERASSAGALA, KANDY', localAuthority: 'Kandy',
+        registrationNumber: 'SLTDA/SQA/HC/088', licenceValidUntil: '2026-12-31',
+      }],
+      'corr-google-filter'
+    );
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        googlePlaceId: 'google-amaya',
+        sltdaVerified: true,
+        sltdaLicenceValidUntil: '2026-12-31',
+      }),
+    ]);
+  });
+
   it('maps the existing srilanka_accommodations schema', () => {
     expect(mapSriLankaAccommodationRow({
       record_key: 'slt-1',

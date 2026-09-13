@@ -55,7 +55,8 @@ function result(supplier: SupplierId): SupplierHotelSearchResult {
 
 function adapter(
   supplier: SupplierId,
-  searchHotels: HotelSupplierAdapter['searchHotels']
+  searchHotels: HotelSupplierAdapter['searchHotels'],
+  recheckRate: HotelSupplierAdapter['recheckRate'] = vi.fn()
 ): HotelSupplierAdapter {
   return {
     supplier,
@@ -63,11 +64,47 @@ function adapter(
     searchHotels,
     getHotelDetails: vi.fn(),
     getRates: vi.fn(),
-    recheckRate: vi.fn(),
+    recheckRate,
     prebook: vi.fn(),
     book: vi.fn(),
     cancelBooking: vi.fn(),
     getBooking: vi.fn(),
+  };
+}
+
+function rate(overrides: Partial<NormalizedHotelRate> = {}): NormalizedHotelRate {
+  return {
+    yanaHotelId: 'yana-hotel-1',
+    yanaRoomId: 'yana-room-1',
+    supplier: 'liteapi',
+    supplierHotelId: 'supplier-hotel-1',
+    supplierRateId: 'sensitive-rate-token',
+    checkIn: '2026-09-20',
+    checkOut: '2026-09-23',
+    occupancy: { adults: 2, children: 0, rooms: 1 },
+    roomName: 'Deluxe Room',
+    normalizedRoomType: 'deluxe',
+    importantRoomAttributes: [],
+    mealPlan: 'BREAKFAST',
+    cancellationPolicy: { refundable: true, penalties: [], normalizedCode: 'FREE' },
+    paymentType: 'PREPAID',
+    taxesIncluded: true,
+    feesIncluded: true,
+    cost: {
+      supplierNet: { amount: 300, currency: 'USD' },
+      mandatoryTaxes: { amount: 0, currency: 'USD' },
+      mandatoryFees: { amount: 0, currency: 'USD' },
+      paymentProcessing: { amount: 0, currency: 'USD' },
+      fxConversion: { amount: 0, currency: 'USD' },
+      supplierBookingFees: { amount: 0, currency: 'USD' },
+      otherUnavoidableCosts: { amount: 0, currency: 'USD' },
+    },
+    priceBasis: 'NET',
+    currency: 'USD',
+    available: true,
+    bookable: true,
+    commercialCapabilities: capabilities,
+    ...overrides,
   };
 }
 
@@ -113,7 +150,7 @@ describe('HotelSupplierOrchestrator', () => {
     expect(response.outcomes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ supplier: 'liteapi', status: 'success' }),
-        expect.objectContaining({ supplier: 'hotelbeds', status: 'failed', error: 'HBX unavailable' }),
+        expect.objectContaining({ supplier: 'hotelbeds', status: 'failed', error: 'supplier_search_provider_outage' }),
       ])
     );
   });
@@ -192,6 +229,68 @@ describe('HotelSupplierOrchestrator', () => {
       'disabled',
       'not_registered',
     ]);
+  });
+
+  it('fails closed when rate recheck is disabled or the adapter is not registered', async () => {
+    const selectedRate = rate();
+    const disabled = new HotelSupplierOrchestrator(
+      [config('liteapi', { enabled: false })],
+      [adapter('liteapi', async () => result('liteapi'))],
+      silentLogger
+    );
+    const unregistered = new HotelSupplierOrchestrator(
+      [config('liteapi')],
+      [],
+      silentLogger
+    );
+
+    expect((await disabled.recheckRate(selectedRate, 'corr-disabled')).status).toBe('disabled');
+    expect((await unregistered.recheckRate(selectedRate, 'corr-unregistered')).status).toBe('not_registered');
+  });
+
+  it.each([
+    { name: 'unchanged', amount: 300, available: true, bookable: true, expected: 'success' },
+    { name: 'price change', amount: 340, available: true, bookable: true, expected: 'price_changed' },
+    { name: 'unavailable', amount: 300, available: false, bookable: false, expected: 'unavailable' },
+  ])('classifies a $name rate recheck', async ({ amount, available, bookable, expected }) => {
+    const selectedRate = rate();
+    const refreshedRate = rate({
+      available,
+      bookable,
+      cost: {
+        ...selectedRate.cost,
+        supplierNet: { amount, currency: 'USD' },
+      },
+    });
+    const recheck = vi.fn().mockResolvedValue({
+      supplier: 'liteapi',
+      supplierRateId: 'refreshed-sensitive-token',
+      available,
+      rate: refreshedRate,
+      prebookToken: 'sensitive-prebook-token',
+    });
+    const orchestrator = new HotelSupplierOrchestrator(
+      [config('liteapi')],
+      [adapter('liteapi', async () => result('liteapi'), recheck)],
+      silentLogger
+    );
+
+    expect((await orchestrator.recheckRate(selectedRate, 'corr-recheck')).status).toBe(expected);
+    expect(recheck).toHaveBeenCalledWith(selectedRate, 'corr-recheck');
+  });
+
+  it('returns a sanitized failure outcome when a supplier recheck fails', async () => {
+    const selectedRate = rate();
+    const orchestrator = new HotelSupplierOrchestrator(
+      [config('liteapi')],
+      [adapter('liteapi', async () => result('liteapi'), vi.fn().mockRejectedValue(new Error('prebook unavailable')))],
+      silentLogger
+    );
+
+    const outcome = await orchestrator.recheckRate(selectedRate, 'corr-recheck-failed');
+
+    expect(outcome).toMatchObject({ status: 'failed', error: 'supplier_rate_recheck_provider_outage' });
+    expect(JSON.stringify(silentLogger.warn.mock.calls.at(-1))).not.toContain('sensitive-rate-token');
   });
 
   it('logs internal rate attribution without exposing the supplier offer token', async () => {

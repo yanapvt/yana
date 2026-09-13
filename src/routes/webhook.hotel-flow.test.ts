@@ -4,6 +4,7 @@ import type { InboundMessage } from '../types/core.js';
 const handleMessageMock = vi.fn();
 const handleCompletedIntakeMock = vi.fn();
 const handleBrowseSearchMock = vi.fn();
+const handleBookingCheckMock = vi.fn();
 const buildBrowseResultsPageReplyMock = vi.fn();
 const profileGateCheckMock = vi.fn();
 const saveProfileGateRequestMock = vi.fn();
@@ -75,6 +76,7 @@ vi.mock('../services/HotelSearchFlowService.js', () => ({
   getHotelSearchFlowService: () => ({
     handleCompletedIntake: handleCompletedIntakeMock,
     handleBrowseSearch: handleBrowseSearchMock,
+    handleBookingCheck: handleBookingCheckMock,
     buildBrowseResultsPageReply: buildBrowseResultsPageReplyMock,
   }),
 }));
@@ -301,6 +303,10 @@ describe('webhook hotel search flow', () => {
     sendWhatsAppMessagesMock.mockResolvedValue(true);
     twilioOutboundConfiguredMock.mockReturnValue(true);
     buildBrowseResultsPageReplyMock.mockReturnValue('Next page reply');
+    handleBookingCheckMock.mockResolvedValue({
+      status: 'browse_results',
+      reply: 'I rechecked Hotel 1 at USD 100.00 total. No reservation has been made.',
+    });
     buildRestaurantBrowseResultsPageReplyMock.mockReturnValue('Next restaurant page reply');
     buildExcursionBrowseResultsPageReplyMock.mockReturnValue('Next excursion page reply');
     buildLogisticsOptionsPageReplyMock.mockReturnValue('Next transport page reply');
@@ -425,6 +431,70 @@ describe('webhook hotel search flow', () => {
     expect(reply).toContain('fresh hotel form link');
     expect(reply).toContain('https://forms.yana.example/forms/hotel/');
     expect(reply).not.toContain("I've already sent the hotel form");
+  });
+
+  it.each([
+    'Find me a return flight from London to Colombo.',
+    'Can you compare airfare to Sri Lanka?',
+    'I want to book airline tickets.',
+  ])('honestly declines unsupported flight search and booking: %s', async (message) => {
+    const reply = await processInboundMessage(buildTextMessage(message), 'corr-flight-unsupported');
+
+    expect(reply).toContain('Flight search and booking are not available through Yana yet.');
+    expect(reply).toContain('airline or a trusted flight-booking platform');
+    expect(reply).not.toMatch(/confirmed|live availability|handoff/i);
+    expect(handleMessageMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).not.toHaveBeenCalled();
+  });
+
+  it('declines flight search without collecting a profile for an unavailable service', async () => {
+    profileGateCheckMock.mockResolvedValue({ complete: false });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('Find me a flight to Colombo'),
+      'corr-flight-no-profile'
+    );
+
+    expect(reply).toContain('Flight search and booking are not available through Yana yet.');
+    expect(profileGateCheckMock).not.toHaveBeenCalled();
+    expect(saveProfileGateRequestMock).not.toHaveBeenCalled();
+  });
+
+  it('declines a flight request before an active hotel session can consume it', async () => {
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      stage: 'results',
+      criteria: { location: 'Galle Fort' },
+      results: [{ name: 'Hotel 1' }],
+      nextOffset: 0,
+      updatedAt: '2026-06-01T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(
+      buildTextMessage('Instead, find me a flight to Colombo'),
+      'corr-flight-active-session'
+    );
+
+    expect(reply).toContain('Flight search and booking are not available through Yana yet.');
+    expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'I need an airport pickup for my flight UL101',
+    'Book an airport transfer for flight UL101',
+  ])('keeps flight details in an airport-transfer request on the logistics path: %s', async (message) => {
+    process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
+
+    const reply = await processInboundMessage(buildTextMessage(message), 'corr-flight-number-transfer');
+
+    expect(reply).toContain('quick transport request form');
+    expect(reply).toContain('https://forms.yana.example/forms/logistics/');
+    expect(saveTransportFormSentMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      message,
+      expect.objectContaining({ preferredName: 'Sam' })
+    );
   });
 
   it.each([
@@ -1551,8 +1621,9 @@ describe('webhook hotel search flow', () => {
 
     const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-26');
 
-    expect(result.reply).toContain('transcription is not configured yet');
-    expect(result.reply).toContain('TRANSCRIPTION_API_KEY');
+    expect(result.reply).toContain('Voice notes are temporarily unavailable');
+    expect(result.reply).toContain('human help');
+    expect(result.reply).not.toMatch(/TRANSCRIPTION_API_KEY|LLM_API_KEY|TRANSCRIPTION_MODEL/);
   });
 
   it('returns a Twilio setup error when voice media cannot be downloaded without real credentials', async () => {
@@ -1562,9 +1633,9 @@ describe('webhook hotel search flow', () => {
 
     const result = await processWebhookPayload(buildAudioPayload(), 'corr-webhook-27');
 
-    expect(result.reply).toContain('cannot download WhatsApp audio');
-    expect(result.reply).toContain('TWILIO_ACCOUNT_SID');
-    expect(result.reply).toContain('TWILIO_AUTH_TOKEN');
+    expect(result.reply).toContain('cannot access that voice note');
+    expect(result.reply).toContain('human help');
+    expect(result.reply).not.toMatch(/TWILIO_ACCOUNT_SID|TWILIO_AUTH_TOKEN/);
   });
 
   it('returns a retry message when Twilio media download fails', async () => {
@@ -1866,7 +1937,7 @@ describe('webhook hotel search flow', () => {
     expect(reply).toContain('book 1');
   });
 
-  it('saves hotel selection and opens the booking provider boundary', async () => {
+  it('saves hotel selection and runs the live booking-stage provider check', async () => {
     getHotelSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       whatsappUserId: 'whatsapp:+15550009999',
@@ -1890,9 +1961,13 @@ describe('webhook hotel search flow', () => {
     const reply = await processInboundMessage(buildTextMessage('book 1'), 'corr-webhook-17');
 
     expect(selectHotelMock).toHaveBeenCalledWith('whatsapp:+15550009999', 1);
-    expect(reply).toContain("I've selected Hotel 1");
-    expect(reply).toContain('Hotelbeds or LiteAPI');
-    expect(reply).not.toContain('confirmed availability');
+    expect(handleBookingCheckMock).toHaveBeenCalledWith(
+      { location: 'Galle Fort' },
+      { id: 'place-1', name: 'Hotel 1' },
+      expect.objectContaining({ correlationId: 'corr-webhook-17' })
+    );
+    expect(reply).toContain('I rechecked Hotel 1');
+    expect(reply).toContain('No reservation has been made');
   });
 
   it('replays ready results when async outbound did not deliver them', async () => {
@@ -2148,7 +2223,9 @@ describe('webhook hotel search flow', () => {
     expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
       expect.arrayContaining([
-        expect.objectContaining({ body: expect.stringContaining('I found these transport options') }),
+        expect.objectContaining({ body: expect.stringContaining('not live provider inventory or confirmed quotes') }),
+        expect.objectContaining({ body: expect.stringContaining('Quote status:') }),
+        expect.objectContaining({ body: expect.stringContaining('Request operator quote') }),
         expect.objectContaining({ body: expect.stringContaining('Why Yana picked it:') }),
       ]),
       { voice: undefined, from: 'whatsapp:+15550000000' }
@@ -2212,9 +2289,23 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('book 1'), 'corr-logistics-book');
 
-    expect(reply).toContain('short transport booking form');
+    expect(reply).toContain('short transport quote-request form');
+    expect(reply).toContain('does not book a vehicle or confirm availability or price');
     expect(reply).toContain('https://forms.yana.example/forms/logistics_booking/');
     expect(selectTransportOptionMock).toHaveBeenCalledWith('whatsapp:+15550009999', 1);
+  });
+
+  it('keeps a submitted transport request at an honest operator-confirmation boundary', async () => {
+    getLogisticsSearchSessionMock.mockResolvedValue(buildLogisticsSession({
+      stage: 'provider_pending',
+      state: 'provider_pending',
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('is my request ready'), 'corr-logistics-pending');
+
+    expect(reply).toContain('transport quote request is prepared');
+    expect(reply).toContain('No vehicle, availability, or price is confirmed');
+    expect(reply).toContain('operator must review it');
   });
 
   it('clears transport state on reset', async () => {

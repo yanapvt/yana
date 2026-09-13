@@ -65,6 +65,41 @@ export class SltdaRegistryService {
     return records;
   }
 
+  matchGoogleResults(
+    googleResults: HotelBrowseResult[],
+    records: RegisteredAccommodation[],
+    correlationId: string
+  ): HotelBrowseResult[] {
+    const verified: HotelBrowseResult[] = [];
+    for (const google of googleResults) {
+      const best = records
+        .map((registry) => ({ registry, confidence: googleRegistryConfidence(google, registry) }))
+        .sort((left, right) => right.confidence - left.confidence)[0];
+      if (!best || best.confidence < this.minimumConfidence) continue;
+      verified.push({
+        ...google,
+        sltdaVerified: true,
+        sltdaLicenceValidUntil: best.registry.licenceValidUntil,
+      });
+      this.logger.info('[SLTDARegistry] google_hotel_match_verified', {
+        correlationId,
+        googlePlaceId: google.googlePlaceId ?? google.id,
+        registryRecordId: best.registry.id,
+        registrationNumber: best.registry.registrationNumber,
+        licenceValidUntil: best.registry.licenceValidUntil,
+        matchConfidence: best.confidence,
+      });
+    }
+    this.logger.info('[SLTDARegistry] google_registry_filter_completed', {
+      correlationId,
+      googleCandidates: googleResults.length,
+      eligibleRegistryRecords: records.length,
+      verifiedGoogleResults: verified.length,
+      rejectedGoogleResults: googleResults.length - verified.length,
+    });
+    return verified;
+  }
+
   matchHotels(
     hotels: YanaHotel[],
     records: RegisteredAccommodation[],
@@ -184,6 +219,23 @@ function googleConfidence(hotel: YanaHotel, google: HotelBrowseResult): number {
   const name = tokenSimilarity(normalize(hotel.name), normalize(google.name));
   const address = tokenSimilarity(normalize(hotel.address ?? hotel.destination), normalize(google.address ?? ''));
   return name * 0.75 + address * 0.25;
+}
+
+function googleRegistryConfidence(
+  google: HotelBrowseResult,
+  registry: RegisteredAccommodation
+): number {
+  const googleName = normalize(google.name);
+  const registryName = normalize(registry.normalizedName || registry.propertyName);
+  let score = googleName === registryName
+    ? 0.7
+    : tokenSimilarity(googleName, registryName) * 0.55;
+  const googleAddress = normalize(google.address ?? '');
+  const registryAddress = normalize(
+    `${registry.normalizedAddress ?? registry.address ?? ''} ${registry.district ?? ''} ${registry.localAuthority ?? ''}`
+  );
+  score += tokenSimilarity(googleAddress, registryAddress) * 0.3;
+  return Math.min(1, Number(score.toFixed(3)));
 }
 
 function tokenSimilarity(left: string, right: string): number {

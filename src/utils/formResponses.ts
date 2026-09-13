@@ -111,7 +111,7 @@ export function buildLogisticsCollectionResponse(formLink: string): string {
 
 export function buildLogisticsBookingCollectionResponse(formLink: string): string {
   return [
-    'Perfect. Please complete this short transport booking form so I can prepare the provider availability check:',
+    'Please complete this short transport quote-request form. This does not book a vehicle or confirm availability or price:',
     '',
     formLink,
     '',

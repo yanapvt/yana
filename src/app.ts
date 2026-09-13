@@ -12,6 +12,7 @@ import formsRouter from './routes/forms.js';
 import mediaRouter from './routes/media.js';
 import itineraryWorkspaceRouter from './routes/itineraryWorkspace.js';
 import legalRouter from './routes/legal.js';
+import hotelSearchAdminRouter from './routes/hotelSearchAdmin.js';
 
 /**
  * Creates and configures the Express application
@@ -53,6 +54,9 @@ export function createApp(): Express {
 
   // Mount public legal pages required by platform providers
   app.use('/', legalRouter);
+
+  // Protected operational controls (disabled unless ADMIN_CONTROL_TOKEN is set).
+  app.use('/', hotelSearchAdminRouter);
 
   // Mount demo/playground routes
   app.use('/demo', demoRouter);
