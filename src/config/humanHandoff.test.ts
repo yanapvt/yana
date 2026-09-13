@@ -11,7 +11,7 @@ describe('human handoff configuration', () => {
       queueMaxAttempts: 5, queueBackoffSeconds: 30, queuePollSeconds: 10,
       alertQueueDepth: 100, alertOldestMinutes: 15, stagingDrillEnabled: false,
       staffPublicationEnabled: false, staffPublicationProvider: 'none', staffPublicationEndpoint: undefined, staffPublicationAuthToken: undefined,
-      alertDeliveryEnabled: false, alertDeliveryEndpoint: undefined, alertDeliveryAuthToken: undefined,
+      providerTimeoutMs: 10000, alertDeliveryEnabled: false, alertDeliveryProvider: 'none', alertDeliveryEndpoint: undefined, alertDeliveryAuthToken: undefined,
     });
   });
 
@@ -25,5 +25,10 @@ describe('human handoff configuration', () => {
   it('requires scoped operator identities when enabled', () => {
     expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_ENABLED: 'true' }))
       .toThrow('HUMAN_HANDOFF_OPERATOR_IDENTITIES_JSON');
+  });
+  it('requires explicit supported providers only when a delivery path is enabled', () => {
+    expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_STAFF_PUBLICATION_ENABLED:'true', HUMAN_HANDOFF_STAFF_PUBLICATION_PROVIDER:'none' })).toThrow('provider and endpoint');
+    expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_ALERT_DELIVERY_ENABLED:'true', HUMAN_HANDOFF_ALERT_DELIVERY_PROVIDER:'other', HUMAN_HANDOFF_ALERT_DELIVERY_ENDPOINT:'https://example.test' })).toThrow('provider and endpoint');
+    expect(() => loadHumanHandoffConfig({ HUMAN_HANDOFF_ALERT_DELIVERY_ENABLED:'true', HUMAN_HANDOFF_ALERT_DELIVERY_PROVIDER:'http', HUMAN_HANDOFF_ALERT_DELIVERY_ENDPOINT:'http://example.test' })).toThrow('HTTPS');
   });
 });

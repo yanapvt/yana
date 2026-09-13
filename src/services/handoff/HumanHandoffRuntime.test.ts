@@ -8,7 +8,7 @@ const config: HumanHandoffConfig = {
   queueProcessingEnabled: false, queueWorkerId: 'test-worker', queueLeaseSeconds: 60,
   queueMaxAttempts: 5, queueBackoffSeconds: 30, queuePollSeconds: 10,
   alertQueueDepth: 100, alertOldestMinutes: 15, stagingDrillEnabled: false,
-  staffPublicationEnabled: false, staffPublicationProvider: 'none', alertDeliveryEnabled: false,
+  staffPublicationEnabled: false, staffPublicationProvider: 'none', providerTimeoutMs: 10000, alertDeliveryEnabled: false, alertDeliveryProvider: 'none',
 };
 const selection = {
   selectedHotelId: 'public-place', selectedFromBatchIndex: 0, selectedDisplayNumber: 1,

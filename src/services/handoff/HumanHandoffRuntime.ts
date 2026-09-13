@@ -127,9 +127,9 @@ export function getHumanHandoffRuntime(): HumanHandoffRuntime {
     const queueStore = new PostgresHandoffQueueStore();
     const unavailablePublisher = { publish: async () => { throw Object.assign(new Error('provider unavailable'), { code: 'STAFF_PROVIDER_UNAVAILABLE' }); } };
     const publisher = config.staffPublicationEndpoint
-      ? new HttpStaffPublicationAdapter(config.staffPublicationEndpoint, config.staffPublicationAuthToken) : unavailablePublisher;
+      ? new HttpStaffPublicationAdapter(config.staffPublicationEndpoint, config.staffPublicationAuthToken, fetch, config.providerTimeoutMs) : unavailablePublisher;
     const alerts = new HandoffAlertService(config.alertDeliveryEnabled, new PostgresAlertStore(),
-      config.alertDeliveryEndpoint ? new HttpAlertAdapter(config.alertDeliveryEndpoint, config.alertDeliveryAuthToken) : { deliver: async () => { throw Object.assign(new Error('unavailable'), { code: 'ALERT_PROVIDER_UNAVAILABLE' }); } });
+      config.alertDeliveryEndpoint ? new HttpAlertAdapter(config.alertDeliveryEndpoint, config.alertDeliveryAuthToken, fetch, config.providerTimeoutMs) : { deliver: async () => { throw Object.assign(new Error('unavailable'), { code: 'ALERT_PROVIDER_UNAVAILABLE' }); } });
     const queue = new HandoffQueueService(queueStore, new StaffPublicationHandler(config.staffPublicationEnabled, publisher), {
       workerId: config.queueWorkerId, leaseSeconds: config.queueLeaseSeconds,
       maxAttempts: config.queueMaxAttempts, backoffSeconds: config.queueBackoffSeconds,

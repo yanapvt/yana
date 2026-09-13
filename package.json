@@ -15,6 +15,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:validate": "tsx src/db/validate-migrations.ts",
     "hotel:liteapi:smoke": "tsx scripts/liteapi-smoke-test.ts",
+    "handoff:staging-drill": "tsx scripts/handoff-staging-drill.ts",
+    "security:audit": "tsx scripts/secret-audit.ts",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",

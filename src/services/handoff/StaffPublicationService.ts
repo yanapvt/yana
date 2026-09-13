@@ -16,11 +16,11 @@ export class StaffPublicationHandler implements HandoffQueueHandler {
 }
 
 export class HttpStaffPublicationAdapter implements StaffPublicationAdapter {
-  constructor(private readonly endpoint: string, private readonly authToken?: string, private readonly request: typeof fetch = fetch) {}
+  constructor(private readonly endpoint: string, private readonly authToken?: string, private readonly request: typeof fetch = fetch, private readonly timeoutMs = 10000) {}
   async publish(event: { eventId: string; handoffId: string; type: string; correlationId: string }): Promise<{ receiptId: string }> {
     const response = await this.request(this.endpoint, { method: 'POST', headers: {
       'content-type': 'application/json', 'idempotency-key': event.eventId, ...(this.authToken ? { authorization: `Bearer ${this.authToken}` } : {}),
-    }, body: JSON.stringify(event) });
+    }, body: JSON.stringify(event), signal: AbortSignal.timeout(this.timeoutMs) });
     if (!response.ok) throw Object.assign(new Error('publication failed'), { code: response.status >= 500 ? 'STAFF_PROVIDER_UNAVAILABLE' : 'STAFF_PROVIDER_REJECTED' });
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (typeof body.receiptId !== 'string' || !body.receiptId) throw Object.assign(new Error('missing receipt'), { code: 'STAFF_PROVIDER_INVALID_RESPONSE' });

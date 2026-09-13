@@ -19,7 +19,9 @@ export interface HumanHandoffConfig {
   staffPublicationProvider: string;
   staffPublicationEndpoint?: string;
   staffPublicationAuthToken?: string;
+  providerTimeoutMs: number;
   alertDeliveryEnabled: boolean;
+  alertDeliveryProvider: string;
   alertDeliveryEndpoint?: string;
   alertDeliveryAuthToken?: string;
 }
@@ -48,7 +50,9 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
     staffPublicationProvider: source.HUMAN_HANDOFF_STAFF_PUBLICATION_PROVIDER?.trim() || 'none',
     staffPublicationEndpoint: source.HUMAN_HANDOFF_STAFF_PUBLICATION_ENDPOINT?.trim() || undefined,
     staffPublicationAuthToken: source.HUMAN_HANDOFF_STAFF_PUBLICATION_AUTH_TOKEN?.trim() || undefined,
+    providerTimeoutMs: readPositiveInteger(source.HUMAN_HANDOFF_PROVIDER_TIMEOUT_MS, 10000),
     alertDeliveryEnabled: readBoolean(source.HUMAN_HANDOFF_ALERT_DELIVERY_ENABLED, false),
+    alertDeliveryProvider: source.HUMAN_HANDOFF_ALERT_DELIVERY_PROVIDER?.trim() || 'none',
     alertDeliveryEndpoint: source.HUMAN_HANDOFF_ALERT_DELIVERY_ENDPOINT?.trim() || undefined,
     alertDeliveryAuthToken: source.HUMAN_HANDOFF_ALERT_DELIVERY_AUTH_TOKEN?.trim() || undefined,
   };
@@ -61,10 +65,18 @@ export function loadHumanHandoffConfig(source: EnvironmentSource = process.env):
   if (config.staffPublicationEnabled && (config.staffPublicationProvider !== 'http' || !config.staffPublicationEndpoint)) {
     throw new Error('Enabled staff publication requires a provider and endpoint');
   }
-  if (config.alertDeliveryEnabled && !config.alertDeliveryEndpoint) {
-    throw new Error('Enabled handoff alert delivery requires an endpoint');
+  if (config.alertDeliveryEnabled && (config.alertDeliveryProvider !== 'http' || !config.alertDeliveryEndpoint)) {
+    throw new Error('Enabled handoff alert delivery requires a provider and endpoint');
   }
+  if (config.staffPublicationEnabled) requireSafeEndpoint(config.staffPublicationEndpoint!);
+  if (config.alertDeliveryEnabled) requireSafeEndpoint(config.alertDeliveryEndpoint!);
   return config;
+}
+
+function requireSafeEndpoint(value: string): void {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('Handoff provider endpoint must be a valid URL'); }
+  if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw new Error('Handoff provider endpoint must use HTTPS');
 }
 
 function hasOperatorIdentities(value?: string): boolean {

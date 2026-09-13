@@ -54,3 +54,5 @@ environment, execute the real migrated staging drill with infrastructure fault
 injection, establish operational runbooks and dashboards, and remediate legacy
 repository secrets. It must not introduce booking or payment without a separate
 approved transaction design.
+
+Implemented in `docs/MR_11_CHECKPOINT.md`.

@@ -19,10 +19,10 @@ export class HandoffAlertService {
   }
 }
 export class HttpAlertAdapter implements AlertAdapter {
-  constructor(private readonly endpoint: string, private readonly token?: string, private readonly request: typeof fetch = fetch) {}
+  constructor(private readonly endpoint: string, private readonly token?: string, private readonly request: typeof fetch = fetch, private readonly timeoutMs = 10000) {}
   async deliver(alert: { alertId: string; reason: string }): Promise<void> {
     const response = await this.request(this.endpoint, { method: 'POST', headers: { 'content-type':'application/json','idempotency-key':alert.alertId,
-      ...(this.token ? { authorization:`Bearer ${this.token}` } : {}) }, body: JSON.stringify(alert) });
+      ...(this.token ? { authorization:`Bearer ${this.token}` } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(this.timeoutMs) });
     if (!response.ok) throw Object.assign(new Error('alert failed'), { code: 'ALERT_PROVIDER_FAILED' });
   }
 }

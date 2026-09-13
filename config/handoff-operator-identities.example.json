@@ -1,0 +1,9 @@
+[
+  {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "tokenSha256": "replace-with-64-character-lowercase-sha256-hash",
+    "roles": ["viewer"],
+    "expiresAt": "2099-01-01T00:00:00.000Z",
+    "revoked": false
+  }
+]
