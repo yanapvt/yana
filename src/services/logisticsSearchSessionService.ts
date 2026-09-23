@@ -3,6 +3,7 @@ import type { BasicProfileForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
 import { defaultSearchFlowEngine } from './SearchFlowEngine.js';
 import type { LogisticsBookingRequest, LogisticsSearchCriteria } from './logisticsRequestMapper.js';
+import { logInfrastructureFallback } from './InfrastructureLog.js';
 import type { TransportOption } from './TransportProvider.js';
 import {
   PostgresLogisticsSearchSessionRepository,
@@ -215,7 +216,7 @@ export class LogisticsSearchSessionService {
     try {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
-      console.warn('[LogisticsSearchSessionService] Durable session clear failed:', error);
+      logInfrastructureFallback('logistics_session', 'durable_clear', 'memory_only');
     }
   }
 
@@ -229,7 +230,7 @@ export class LogisticsSearchSessionService {
     try {
       await this.repository.upsert(normalized);
     } catch (error) {
-      console.warn('[LogisticsSearchSessionService] Durable session save failed:', error);
+      logInfrastructureFallback('logistics_session', 'durable_save', 'memory_only');
     }
   }
 
@@ -237,7 +238,7 @@ export class LogisticsSearchSessionService {
     try {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
-      console.warn('[LogisticsSearchSessionService] Durable session lookup failed:', error);
+      logInfrastructureFallback('logistics_session', 'durable_lookup', 'none');
       return null;
     }
   }

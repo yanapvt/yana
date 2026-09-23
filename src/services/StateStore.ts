@@ -9,6 +9,7 @@
 import { createClient, RedisClientType } from 'redis';
 import { env } from '../config/environment.js';
 import { SessionState } from '../types/core.js';
+import { logInfrastructureFallback } from './InfrastructureLog.js';
 
 // ============================================================================
 // Types
@@ -104,7 +105,6 @@ export class StateStore {
       this.connected = true; // REST API doesn't need connection
     } else {
       // Use standard Redis client
-      console.log('Using standard Redis client');
       this.client = createClient({
         socket: {
           host: env.redis.host,
@@ -117,8 +117,8 @@ export class StateStore {
       }) as RedisClientType;
 
       // Error handling for standard Redis
-      (this.client as RedisClientType).on('error', (err) => {
-        console.error('Redis Client Error:', err);
+      (this.client as RedisClientType).on('error', () => {
+        logInfrastructureFallback('redis', 'connection', 'memory');
       });
 
       (this.client as RedisClientType).on('connect', () => {
@@ -156,7 +156,7 @@ export class StateStore {
         await (this.client as RedisClientType).connect();
       } catch (error) {
         this.connected = false;
-        console.warn('[StateStore] Redis is unavailable; using in-memory session fallback');
+        logInfrastructureFallback('redis', 'connection', 'memory');
       }
     }
   }

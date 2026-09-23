@@ -4,6 +4,7 @@ import { getStateStore, type StateStore } from './StateStore.js';
 import { getTwilioOutboundService } from './twilioOutboundService.js';
 import type { RestaurantBrowseResult } from './GooglePlacesRestaurantBrowsingService.js';
 import type { RestaurantSearchCriteria } from './restaurantRequestMapper.js';
+import { logInfrastructureFallback } from './InfrastructureLog.js';
 import { defaultSearchFlowEngine } from './SearchFlowEngine.js';
 import {
   PostgresRestaurantSearchSessionRepository,
@@ -222,7 +223,7 @@ export class RestaurantSearchSessionService {
     try {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
-      console.warn('[RestaurantSearchSessionService] Durable session clear failed:', error);
+      logInfrastructureFallback('restaurant_session', 'durable_clear', 'memory_only');
     }
   }
 
@@ -236,7 +237,7 @@ export class RestaurantSearchSessionService {
     try {
       await this.repository.upsert(normalized);
     } catch (error) {
-      console.warn('[RestaurantSearchSessionService] Durable session save failed:', error);
+      logInfrastructureFallback('restaurant_session', 'durable_save', 'memory_only');
     }
   }
 
@@ -244,7 +245,7 @@ export class RestaurantSearchSessionService {
     try {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
-      console.warn('[RestaurantSearchSessionService] Durable session lookup failed:', error);
+      logInfrastructureFallback('restaurant_session', 'durable_lookup', 'none');
       return null;
     }
   }

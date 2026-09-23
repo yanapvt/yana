@@ -304,6 +304,9 @@ function validateProviderConfig(config: EnvironmentConfig): void {
     if (!config.openwa.sessionId) {
       errors.push({ path: ['openwa', 'sessionId'], message: 'OPENWA_SESSION_ID is required when WHATSAPP_PROVIDER=openwa' });
     }
+    if (!config.openwa.webhookSecret) {
+      errors.push({ path: ['openwa', 'webhookSecret'], message: 'OPENWA_WEBHOOK_SECRET is required when WHATSAPP_PROVIDER=openwa' });
+    }
   }
 
   if (config.whatsapp.provider === 'meta') {

@@ -8,10 +8,18 @@ interface SendOpenWaOptions {
   from?: string;
 }
 
+interface OpenWaOutboundConfig { baseUrl?: string; apiKey?: string; sessionId?: string }
+interface OpenWaLogger { warn(message: string, details?: Record<string, unknown>): void; error(message: string, details?: Record<string, unknown>): void }
+
 const OPENWA_TEXT_LIMIT = 3500;
 const OPENWA_MEDIA_CAPTION_LIMIT = 1024;
 
 export class OpenWaOutboundService {
+  constructor(
+    private readonly config: OpenWaOutboundConfig = env.openwa,
+    private readonly fetcher: typeof fetch = fetch,
+    private readonly logger: OpenWaLogger = console
+  ) {}
   async sendWhatsAppText(to: string, body: string): Promise<boolean> {
     let sentAny = false;
     for (const part of splitWhatsAppText(body, OPENWA_TEXT_LIMIT)) {
@@ -62,7 +70,7 @@ export class OpenWaOutboundService {
   }
 
   isConfigured(): boolean {
-    return Boolean(env.openwa.baseUrl && env.openwa.apiKey && env.openwa.sessionId);
+    return Boolean(this.config.baseUrl && this.config.apiKey && this.config.sessionId);
   }
 
   private async sendTextMessage(to: string, text: string): Promise<boolean> {
@@ -71,19 +79,19 @@ export class OpenWaOutboundService {
       return false;
     }
 
-    const response = await fetch(this.buildUrl('/messages/send-text'), {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify({
-        chatId: toOpenWaChatId(to),
-        text,
-      }),
-    });
+    let response: Response;
+    try {
+      response = await this.fetcher(this.buildUrl('/messages/send-text'), {
+        method: 'POST', headers: this.headers(),
+        body: JSON.stringify({ chatId: toOpenWaChatId(to), text }),
+      });
+    } catch {
+      this.logger.error('openwa_send_failed', { category: 'connection', retryAttempted: false });
+      return false;
+    }
 
     if (!response.ok) {
-      console.error(
-        `[OpenWaOutboundService] Failed to send WhatsApp text: ${response.status} ${await response.text()}`
-      );
+      this.logger.error('openwa_send_failed', { category: 'http', status: response.status, retryAttempted: false });
       return false;
     }
 
@@ -97,7 +105,7 @@ export class OpenWaOutboundService {
     }
 
     const captionParts = splitWhatsAppText(caption, OPENWA_MEDIA_CAPTION_LIMIT);
-    const response = await fetch(this.buildUrl('/messages/send-image'), {
+    const response = await this.fetcher(this.buildUrl('/messages/send-image'), {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({
@@ -108,9 +116,7 @@ export class OpenWaOutboundService {
     });
 
     if (!response.ok) {
-      console.error(
-        `[OpenWaOutboundService] Failed to send WhatsApp image: ${response.status} ${await response.text()}`
-      );
+      this.logger.error('openwa_image_send_failed', { category: 'http', status: response.status, retryAttempted: false });
       return false;
     }
 
@@ -156,15 +162,15 @@ export class OpenWaOutboundService {
   }
 
   private buildUrl(path: string): string {
-    const baseUrl = env.openwa.baseUrl?.replace(/\/$/, '');
-    const sessionId = encodeURIComponent(env.openwa.sessionId || '');
+    const baseUrl = this.config.baseUrl?.replace(/\/$/, '');
+    const sessionId = encodeURIComponent(this.config.sessionId || '');
     return `${baseUrl}/api/sessions/${sessionId}${path}`;
   }
 
   private headers(): Record<string, string> {
     return {
       'Content-Type': 'application/json',
-      'X-API-Key': env.openwa.apiKey || '',
+      'X-API-Key': this.config.apiKey || '',
     };
   }
 }

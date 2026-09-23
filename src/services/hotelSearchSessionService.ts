@@ -13,6 +13,7 @@ import {
   type HotelSearchSessionRepository,
 } from '../storage/hotelSearchSessionRepository.js';
 import type { HotelRecheckReceipt } from './handoff/HotelRecheckReceiptService.js';
+import { logInfrastructureFallback } from './InfrastructureLog.js';
 
 export type HotelSearchState =
   | 'profile_required'
@@ -317,7 +318,7 @@ export class HotelSearchSessionService {
     try {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
-      console.warn('[HotelSearchSessionService] Durable session clear failed:', error);
+      logInfrastructureFallback('hotel_session', 'durable_clear', 'memory_only');
     }
   }
 
@@ -332,7 +333,7 @@ export class HotelSearchSessionService {
     try {
       await this.repository.upsert(normalized);
     } catch (error) {
-      console.warn('[HotelSearchSessionService] Durable session save failed:', error);
+      logInfrastructureFallback('hotel_session', 'durable_save', 'memory_only');
     }
     this.scheduleReminder(normalized);
   }
@@ -341,7 +342,7 @@ export class HotelSearchSessionService {
     try {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
-      console.warn('[HotelSearchSessionService] Durable session lookup failed:', error);
+      logInfrastructureFallback('hotel_session', 'durable_lookup', 'none');
       return null;
     }
   }
