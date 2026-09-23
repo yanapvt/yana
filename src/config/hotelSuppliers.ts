@@ -19,6 +19,7 @@ export interface HotelSupplierProviderConfig extends HotelSupplierRuntimePolicy 
   affiliateId?: string;
   siteId?: string;
   marginPercent?: number;
+  sandboxBookingEnabled?: boolean;
 }
 
 export interface HotelSupplierEnvironment {
@@ -106,6 +107,7 @@ function readProvider(
     affiliateId: optional(source[`${prefix}_AFFILIATE_ID`]),
     siteId: optional(source[`${prefix}_SITE_ID`]),
     marginPercent: optionalPercentage(source[`${prefix}_MARGIN_PERCENT`]),
+    sandboxBookingEnabled: readBoolean(source[`${prefix}_SANDBOX_BOOKING_ENABLED`], false),
     ...readPolicy(source, prefix, globalPolicy),
   };
 }

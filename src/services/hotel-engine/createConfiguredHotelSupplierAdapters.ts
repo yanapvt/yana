@@ -14,6 +14,7 @@ export function createConfiguredHotelSupplierAdapters(
           baseUrl: config.baseUrl,
           apiKey: config.apiKey,
           marginPercent: config.marginPercent,
+          sandboxBookingEnabled: config.sandboxBookingEnabled,
         })
       );
     }

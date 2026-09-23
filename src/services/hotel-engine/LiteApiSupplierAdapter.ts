@@ -21,6 +21,7 @@ export interface LiteApiSupplierAdapterConfig {
   guestNationality?: string;
   capabilities?: Partial<SupplierCommercialCapabilities>;
   marginPercent?: number;
+  sandboxBookingEnabled?: boolean;
 }
 
 interface LiteApiMoney {
@@ -100,6 +101,10 @@ interface LiteApiPrebookResponse {
   data?: (LiteApiHotelRate & { prebookId?: string; transactionId?: string })[] | (LiteApiHotelRate & { prebookId?: string; transactionId?: string });
 }
 
+interface LiteApiBookingResponse {
+  data?: { bookingId?: string; status?: string; hotelConfirmationCode?: string; confirmationCode?: string };
+}
+
 const DEFAULT_CAPABILITIES: SupplierCommercialCapabilities = {
   supportsNetRates: false,
   supportsMarkup: false,
@@ -118,6 +123,7 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
   private readonly guestNationality: string;
   private readonly bookingBaseUrl: string;
   private readonly marginPercent?: number;
+  private readonly sandboxBookingEnabled: boolean;
 
   constructor(config: LiteApiSupplierAdapterConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
@@ -125,6 +131,7 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
     this.guestNationality = (config.guestNationality ?? 'LK').toUpperCase();
     this.bookingBaseUrl = deriveBookingBaseUrl(this.baseUrl);
     this.marginPercent = config.marginPercent;
+    this.sandboxBookingEnabled = config.sandboxBookingEnabled === true;
     this.capabilities = { ...DEFAULT_CAPABILITIES, ...config.capabilities };
   }
 
@@ -212,16 +219,35 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
     return { supplier: this.supplier, supplierRateId: normalized.supplierRateId, available: true, rate: normalized, prebookToken: prebookId };
   }
 
-  async book(_request: BookingRequest): Promise<SupplierBooking> {
-    throw new Error('LiteAPI booking is not enabled in the live-search prerequisite slice');
+  async book(request: BookingRequest, correlationId: string): Promise<SupplierBooking> {
+    if (!this.sandboxBookingEnabled) throw new Error('LiteAPI sandbox booking is disabled');
+    if (!request.prebookToken) throw new Error('LiteAPI booking requires a prebook identifier');
+    const holder = normalizeGuest(request.guestDetails[0]);
+    const response = await this.request<LiteApiBookingResponse>('/rates/book', {
+      method: 'POST', headers: { 'X-Correlation-Id': correlationId },
+      body: JSON.stringify({
+        prebookId: request.prebookToken,
+        clientReference: request.customerReference,
+        holder,
+        guests: request.guestDetails.map((guest, index) => ({ occupancyNumber: index + 1, ...normalizeGuest(guest) })),
+        payment: { method: 'ACC_CREDIT_CARD' },
+      }),
+    }, this.bookingBaseUrl);
+    return normalizeBooking(response);
   }
 
   async cancelBooking(): Promise<SupplierBooking> {
     throw new Error('LiteAPI cancellation is not enabled in the live-search prerequisite slice');
   }
 
-  async getBooking(): Promise<SupplierBooking> {
-    throw new Error('LiteAPI booking lookup is not enabled in the live-search prerequisite slice');
+  async getBooking(supplierBookingId: string, correlationId: string): Promise<SupplierBooking> {
+    if (!this.sandboxBookingEnabled) throw new Error('LiteAPI sandbox booking lookup is disabled');
+    const response = await this.request<LiteApiBookingResponse>(
+      `/bookings/${encodeURIComponent(supplierBookingId)}`,
+      { method: 'GET', headers: { 'X-Correlation-Id': correlationId } },
+      this.bookingBaseUrl
+    );
+    return normalizeBooking(response, supplierBookingId);
   }
 
   private normalizeSearchResponse(
@@ -442,4 +468,26 @@ function safeError(error: unknown): string {
   } catch {
     return 'Unknown supplier error';
   }
+}
+
+function normalizeGuest(value: Record<string, unknown> | undefined): Record<string, string> {
+  const guest = value ?? {};
+  const required = ['firstName', 'lastName', 'email'] as const;
+  const result: Record<string, string> = {};
+  for (const key of required) {
+    const field = typeof guest[key] === 'string' ? guest[key].trim() : '';
+    if (!field) throw new Error(`LiteAPI booking requires guest ${key}`);
+    result[key] = field;
+  }
+  return result;
+}
+
+function normalizeBooking(response: LiteApiBookingResponse, fallbackId?: string): SupplierBooking {
+  const data = response.data ?? {};
+  const bookingId = data.bookingId ?? fallbackId;
+  if (!bookingId) throw new Error('LiteAPI booking response did not contain a booking identifier');
+  const rawStatus = data.status?.toUpperCase();
+  const status: SupplierBooking['status'] = rawStatus === 'CONFIRMED'
+    ? 'CONFIRMED' : rawStatus === 'CANCELLED' ? 'CANCELLED' : rawStatus === 'FAILED' ? 'FAILED' : 'PENDING';
+  return { supplier: 'liteapi', supplierBookingId: bookingId, status, confirmationCode: data.hotelConfirmationCode ?? data.confirmationCode };
 }

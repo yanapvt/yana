@@ -172,6 +172,32 @@ describe('LiteApiSupplierAdapter', () => {
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ offerId: 'offer-1', usePaymentSdk: false });
     expect(result).toMatchObject({ available: true, prebookToken: 'prebook-safe-id', rate: { cost: { supplierNet: { amount: 105 } } } });
   });
+
+  it('keeps sandbox booking disabled unless explicitly enabled', async () => {
+    const adapter = new LiteApiSupplierAdapter({ baseUrl: 'https://example.test', apiKey: 'key' });
+    await expect(adapter.book({
+      supplierRateId: 'offer', prebookToken: 'prebook', customerReference: 'ref',
+      guestDetails: [{ firstName: 'Test', lastName: 'Traveler', email: 'traveler@example.test' }],
+    }, 'corr')).rejects.toThrow('disabled');
+  });
+
+  it('submits the documented sandbox confirmation request and normalizes the booking', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, json: async () => ({ data: { bookingId: 'booking-safe-id', status: 'CONFIRMED', hotelConfirmationCode: 'confirmation-safe' } }),
+    } as Response);
+    const adapter = new LiteApiSupplierAdapter({ baseUrl: 'https://api.liteapi.travel/v3.0', apiKey: 'key', sandboxBookingEnabled: true });
+    const result = await adapter.book({
+      supplierRateId: 'offer', prebookToken: 'prebook', customerReference: 'ref',
+      guestDetails: [{ firstName: 'Test', lastName: 'Traveler', email: 'traveler@example.test' }],
+    }, 'corr');
+
+    expect(fetchMock).toHaveBeenCalledWith('https://book.liteapi.travel/v3.0/rates/book', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toMatchObject({
+      prebookId: 'prebook', clientReference: 'ref', payment: { method: 'ACC_CREDIT_CARD' },
+      holder: { firstName: 'Test', lastName: 'Traveler' },
+    });
+    expect(result).toMatchObject({ supplierBookingId: 'booking-safe-id', status: 'CONFIRMED' });
+  });
 });
 
 function normalizedRate() {

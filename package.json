@@ -19,6 +19,7 @@
     "db:validate": "tsx src/db/validate-migrations.ts",
     "hotel:liteapi:smoke": "tsx scripts/liteapi-smoke-test.ts",
     "hotel:liteapi:prebook-smoke": "tsx scripts/liteapi-prebook-smoke.ts",
+    "hotel:liteapi:booking-smoke": "tsx scripts/liteapi-sandbox-booking-smoke.ts",
     "handoff:staging-drill": "tsx scripts/handoff-staging-drill.ts",
     "openwa:smoke": "tsx scripts/openwa-local-smoke.ts",
     "security:audit": "tsx scripts/secret-audit.ts",
