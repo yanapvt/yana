@@ -13,6 +13,7 @@ export function createConfiguredHotelSupplierAdapters(
         new LiteApiSupplierAdapter({
           baseUrl: config.baseUrl,
           apiKey: config.apiKey,
+          marginPercent: config.marginPercent,
         })
       );
     }

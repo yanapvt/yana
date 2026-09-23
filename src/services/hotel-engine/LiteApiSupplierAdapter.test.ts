@@ -51,6 +51,7 @@ describe('LiteApiSupplierAdapter', () => {
     const adapter = new LiteApiSupplierAdapter({
       baseUrl: 'https://api.liteapi.travel/v3.0',
       apiKey: 'test-key',
+      marginPercent: 15,
     });
     const response = await adapter.searchHotels({
       destination: 'Bentota, Sri Lanka',
@@ -78,6 +79,7 @@ describe('LiteApiSupplierAdapter', () => {
       roomMapping: true,
       includeHotelData: true,
       sessionId: 'corr-liteapi-test',
+      margin: 15,
     });
     expect(response.hotels[0]).toMatchObject({
       name: 'Example Bentota Resort',
@@ -154,7 +156,7 @@ describe('LiteApiSupplierAdapter', () => {
       ok: true,
       json: async () => ({
         prebookId: 'prebook-safe-id',
-        data: { hotelId: 'hotel-1', roomTypes: [{ offerId: 'offer-1', rates: [{
+        data: { hotelId: 'hotel-1', roomTypes: [{ rates: [{
           name: 'Room', boardName: 'Breakfast', netRate: { total: [{ amount: 105, currency: 'USD' }] },
         }] }] },
       }),

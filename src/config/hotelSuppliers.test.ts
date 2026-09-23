@@ -33,11 +33,17 @@ describe('hotel supplier environment', () => {
       LITEAPI_ENABLED: 'true',
       LITEAPI_API_KEY: 'test-secret',
       LITEAPI_TIMEOUT_MS: '8000',
+      LITEAPI_MARGIN_PERCENT: '15',
     });
     const liteapi = configuration.providers.find((provider) => provider.supplier === 'liteapi');
 
     expect(configuration.enabled).toBe(true);
-    expect(liteapi).toMatchObject({ enabled: true, timeoutMs: 8000, maxRetries: 3 });
+    expect(liteapi).toMatchObject({ enabled: true, timeoutMs: 8000, maxRetries: 3, marginPercent: 15 });
+  });
+
+  it('rejects an invalid supplier margin percentage', () => {
+    expect(() => loadHotelSupplierEnvironment({ LITEAPI_MARGIN_PERCENT: '101' }))
+      .toThrow('Expected percentage between 0 and 100');
   });
 
   it('rejects an enabled supplier without required credentials', () => {

@@ -20,6 +20,7 @@ export interface LiteApiSupplierAdapterConfig {
   apiKey: string;
   guestNationality?: string;
   capabilities?: Partial<SupplierCommercialCapabilities>;
+  marginPercent?: number;
 }
 
 interface LiteApiMoney {
@@ -116,12 +117,14 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
   private readonly apiKey: string;
   private readonly guestNationality: string;
   private readonly bookingBaseUrl: string;
+  private readonly marginPercent?: number;
 
   constructor(config: LiteApiSupplierAdapterConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
     this.guestNationality = (config.guestNationality ?? 'LK').toUpperCase();
     this.bookingBaseUrl = deriveBookingBaseUrl(this.baseUrl);
+    this.marginPercent = config.marginPercent;
     this.capabilities = { ...DEFAULT_CAPABILITIES, ...config.capabilities };
   }
 
@@ -151,6 +154,7 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
         maxRatesPerHotel: 5,
         includeHotelData: true,
         sessionId: request.correlationId,
+        ...(this.marginPercent === undefined ? {} : { margin: this.marginPercent }),
       }),
     });
 
@@ -187,7 +191,15 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
       body: JSON.stringify({ offerId: rate.supplierRateId, usePaymentSdk: false }),
     }, this.bookingBaseUrl);
     const data = Array.isArray(response.data) ? response.data : response.data ? [response.data] : [];
-    const normalizedResponse = this.normalizeSearchResponse({ ...response, data: data.map((item) => ({ ...item, hotelId: item.hotelId ?? rate.supplierHotelId })) }, {
+    const normalizedData = data.map((item) => ({
+      ...item,
+      hotelId: item.hotelId ?? rate.supplierHotelId,
+      roomTypes: item.roomTypes?.map((roomType) => ({
+        ...roomType,
+        offerId: roomType.offerId ?? rate.supplierRateId,
+      })),
+    }));
+    const normalizedResponse = this.normalizeSearchResponse({ ...response, data: normalizedData }, {
       destination: '', checkIn: rate.checkIn, checkOut: rate.checkOut, occupancy: rate.occupancy,
       currency: rate.currency, hotelIds: [rate.supplierHotelId], correlationId,
     });

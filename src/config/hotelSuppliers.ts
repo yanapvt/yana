@@ -18,6 +18,7 @@ export interface HotelSupplierProviderConfig extends HotelSupplierRuntimePolicy 
   apiSecret?: string;
   affiliateId?: string;
   siteId?: string;
+  marginPercent?: number;
 }
 
 export interface HotelSupplierEnvironment {
@@ -104,8 +105,18 @@ function readProvider(
     apiSecret: optional(source[`${prefix}_API_SECRET`]),
     affiliateId: optional(source[`${prefix}_AFFILIATE_ID`]),
     siteId: optional(source[`${prefix}_SITE_ID`]),
+    marginPercent: optionalPercentage(source[`${prefix}_MARGIN_PERCENT`]),
     ...readPolicy(source, prefix, globalPolicy),
   };
+}
+
+function optionalPercentage(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error(`Expected percentage between 0 and 100, received: ${value}`);
+  }
+  return parsed;
 }
 
 function readPolicy(
