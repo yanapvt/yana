@@ -8,3 +8,4 @@ export * from './HotelSupplierOrchestrator.js';
 export * from './createConfiguredHotelSupplierOrchestrator.js';
 export * from './createConfiguredHotelSupplierAdapters.js';
 export * from './LiteApiSupplierAdapter.js';
+export * from './HotelPurchaseProofService.js';
