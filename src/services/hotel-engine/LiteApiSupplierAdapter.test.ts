@@ -146,6 +146,40 @@ describe('LiteApiSupplierAdapter', () => {
       occupancy: { adults: 2, children: 0, rooms: 1 },
       currency: 'USD',
       correlationId: 'corr-error',
-    })).rejects.toThrow('LiteAPI request failed with 401: unauthorized');
+    })).rejects.toThrow('LiteAPI request failed with status 401');
+  });
+
+  it('prebooks the selected offer against the booking host and returns a refreshed rate', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        prebookId: 'prebook-safe-id',
+        data: { hotelId: 'hotel-1', roomTypes: [{ offerId: 'offer-1', rates: [{
+          name: 'Room', boardName: 'Breakfast', netRate: { total: [{ amount: 105, currency: 'USD' }] },
+        }] }] },
+      }),
+    } as Response);
+    const adapter = new LiteApiSupplierAdapter({
+      baseUrl: 'https://api.liteapi.travel/v3.0', apiKey: 'test-key',
+      capabilities: { supportsNetRates: true, supportsMarkup: true },
+    });
+    const original = normalizedRate();
+    const result = await adapter.recheckRate(original, 'corr-prebook');
+
+    expect(fetchMock).toHaveBeenCalledWith('https://book.liteapi.travel/v3.0/rates/prebook', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ offerId: 'offer-1', usePaymentSdk: false });
+    expect(result).toMatchObject({ available: true, prebookToken: 'prebook-safe-id', rate: { cost: { supplierNet: { amount: 105 } } } });
   });
 });
+
+function normalizedRate() {
+  return {
+    yanaHotelId: 'hotel', yanaRoomId: 'room', supplier: 'liteapi' as const, supplierHotelId: 'hotel-1', supplierRateId: 'offer-1',
+    checkIn: '2026-10-01', checkOut: '2026-10-02', occupancy: { adults: 2, children: 0, rooms: 1 }, roomName: 'Room', normalizedRoomType: 'room',
+    importantRoomAttributes: [], mealPlan: 'BREAKFAST' as const, cancellationPolicy: { refundable: true, penalties: [], normalizedCode: 'REF' },
+    paymentType: 'PREPAID' as const, taxesIncluded: true, feesIncluded: true,
+    cost: { supplierNet: { amount: 100, currency: 'USD' }, mandatoryTaxes: { amount: 0, currency: 'USD' }, mandatoryFees: { amount: 0, currency: 'USD' }, paymentProcessing: { amount: 0, currency: 'USD' }, fxConversion: { amount: 0, currency: 'USD' }, supplierBookingFees: { amount: 0, currency: 'USD' }, otherUnavoidableCosts: { amount: 0, currency: 'USD' } },
+    priceBasis: 'NET' as const, currency: 'USD', available: true, bookable: true,
+    commercialCapabilities: { supportsNetRates: true, supportsMarkup: true, supportsDiscount: false, supportsPublicDisplay: true, requiresClosedUserGroup: false, requiresRedirect: false, supportsOnlineBooking: true },
+  };
+}

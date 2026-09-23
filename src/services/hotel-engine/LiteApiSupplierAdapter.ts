@@ -90,6 +90,15 @@ interface LiteApiSearchResponse {
   sandbox?: boolean;
 }
 
+interface LiteApiPrebookResponse {
+  prebookId?: string;
+  transactionId?: string;
+  hotels?: LiteApiHotelData[];
+  error?: unknown;
+  sandbox?: boolean;
+  data?: (LiteApiHotelRate & { prebookId?: string; transactionId?: string })[] | (LiteApiHotelRate & { prebookId?: string; transactionId?: string });
+}
+
 const DEFAULT_CAPABILITIES: SupplierCommercialCapabilities = {
   supportsNetRates: false,
   supportsMarkup: false,
@@ -106,11 +115,13 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly guestNationality: string;
+  private readonly bookingBaseUrl: string;
 
   constructor(config: LiteApiSupplierAdapterConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
     this.guestNationality = (config.guestNationality ?? 'LK').toUpperCase();
+    this.bookingBaseUrl = deriveBookingBaseUrl(this.baseUrl);
     this.capabilities = { ...DEFAULT_CAPABILITIES, ...config.capabilities };
   }
 
@@ -162,12 +173,31 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
     return (await this.searchHotels(request)).rates;
   }
 
-  async recheckRate(): Promise<PrebookResult> {
-    throw new Error('LiteAPI prebook/recheck is not enabled in the live-search prerequisite slice');
+  async recheckRate(rate: NormalizedHotelRate, correlationId: string): Promise<PrebookResult> {
+    return this.prebook(rate, correlationId);
   }
 
-  async prebook(): Promise<PrebookResult> {
-    throw new Error('LiteAPI prebook is not enabled in the live-search prerequisite slice');
+  async prebook(rate: NormalizedHotelRate, correlationId: string): Promise<PrebookResult> {
+    if (rate.supplier !== this.supplier || !rate.supplierRateId) {
+      throw new Error('LiteAPI prebook requires a LiteAPI offer identifier');
+    }
+    const response = await this.request<LiteApiPrebookResponse>('/rates/prebook', {
+      method: 'POST',
+      headers: { 'X-Correlation-Id': correlationId },
+      body: JSON.stringify({ offerId: rate.supplierRateId, usePaymentSdk: false }),
+    }, this.bookingBaseUrl);
+    const data = Array.isArray(response.data) ? response.data : response.data ? [response.data] : [];
+    const normalizedResponse = this.normalizeSearchResponse({ ...response, data: data.map((item) => ({ ...item, hotelId: item.hotelId ?? rate.supplierHotelId })) }, {
+      destination: '', checkIn: rate.checkIn, checkOut: rate.checkOut, occupancy: rate.occupancy,
+      currency: rate.currency, hotelIds: [rate.supplierHotelId], correlationId,
+    });
+    const normalized = normalizedResponse.rates.find((candidate) => candidate.supplierRateId === rate.supplierRateId)
+      ?? normalizedResponse.rates[0];
+    const prebookId = response.prebookId ?? (!Array.isArray(response.data) ? response.data?.prebookId : undefined);
+    if (!prebookId || !normalized) {
+      throw new Error('LiteAPI prebook response did not contain a usable refreshed rate');
+    }
+    return { supplier: this.supplier, supplierRateId: normalized.supplierRateId, available: true, rate: normalized, prebookToken: prebookId };
   }
 
   async book(_request: BookingRequest): Promise<SupplierBooking> {
@@ -299,8 +329,8 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
     };
   }
 
-  private async request<T>(path: string, init: RequestInit): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+  private async request<T>(path: string, init: RequestInit, baseUrl = this.baseUrl): Promise<T> {
+    const response = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers: {
         Accept: 'application/json',
@@ -310,11 +340,16 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
       },
     });
     if (!response.ok) {
-      const responseText = await response.text();
-      throw new Error(`LiteAPI request failed with ${response.status}: ${responseText.slice(0, 500)}`);
+      throw new Error(`LiteAPI request failed with status ${response.status}`);
     }
     return (await response.json()) as T;
   }
+}
+
+function deriveBookingBaseUrl(searchBaseUrl: string): string {
+  const url = new URL(searchBaseUrl);
+  if (url.hostname === 'api.liteapi.travel') url.hostname = 'book.liteapi.travel';
+  return url.toString().replace(/\/$/, '');
 }
 
 function readRatePrice(
