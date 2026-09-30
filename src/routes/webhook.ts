@@ -120,6 +120,12 @@ import type { TransportOption } from '../services/TransportProvider.js';
 import { handleTravelFailure, logSafeOperatorFailure } from '../services/SafeFailureService.js';
 import { getHumanHandoffRuntime } from '../services/handoff/HumanHandoffRuntime.js';
 import { getHotelRecheckReceiptService } from '../services/handoff/HotelRecheckReceiptService.js';
+import {
+  getTravelJourneyStateService,
+  resolveJourneyMode,
+  type JourneyMode,
+  type JourneyService,
+} from '../services/TravelJourneyStateService.js';
 
 const router = Router();
 const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
@@ -241,9 +247,12 @@ export async function processNormalizedInboundMessage(
     };
   }
 
+  const userText = extractMessageText(voiceInput.inboundMessage) ?? '';
   const reply = await processInboundMessage(voiceInput.inboundMessage, correlationId, {
     voicePreferred: Boolean(voiceInput.transcript),
   });
+  await synchronizeTravelJourneyState(voiceInput.inboundMessage.from, userText);
+
   if (voiceInput.transcript) {
     return {
       inboundMessage: voiceInput.inboundMessage,
@@ -325,6 +334,10 @@ export async function processInboundMessage(
 
   if (explicitServiceSwitchReply) {
     return explicitServiceSwitchReply;
+  }
+
+  if (isBroadExploreRequest(userMessage)) {
+    return 'Of course. What would you like to explore: hotels, excursions, restaurants, or transport?';
   }
 
   const activeItinerarySession = await getItinerarySessionService().get(inboundMessage.from);
@@ -519,7 +532,14 @@ export async function processInboundMessage(
       userProfile: {
         nationality: userContext.country,
       },
-      availableSchemas: ['search_hotels'],
+      availableSchemas: [
+        'search_hotels',
+        'search_restaurants',
+        'search_excursions',
+        'search_transport',
+        'plan_itinerary',
+        'general_inquiry',
+      ],
     });
 
     console.log(
@@ -648,11 +668,16 @@ export async function processInboundMessage(
     return 'I can help with that. Could you tell me a little more about what you need for this trip?';
   } catch (error) {
     if (error instanceof LLMServiceError) {
-      return handleTravelFailure('planning', correlationId, error).reply;
+      handleTravelFailure('planning', correlationId, error);
+      return buildIntentClarificationReply();
     }
 
     throw error;
   }
+}
+
+function buildIntentClarificationReply(): string {
+  return 'I’d love to help with Colombo. Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations? Tell me which sounds closest and I’ll take it from there.';
 }
 
 type VoiceInputResult =
@@ -1246,6 +1271,24 @@ async function handleActiveExcursionSearchSession(
   }
 
   if (session.stage === 'results') {
+    if (session.results.length === 0) {
+      if (/\b(search again|try again|retry)\b/i.test(inboundText)) {
+        const criteria = session.criteria;
+        await sessionService.saveSearching(userId, criteria);
+
+        if (getWhatsAppOutboundService().isConfigured()) {
+          void searchExcursionsAndNotify(userId, outboundFrom, criteria, correlationId, options);
+          return 'That earlier search did not return options. I am running it again now and will send any matches here.';
+        }
+
+        const retryResult = await searchExcursions(userId, criteria, correlationId);
+        await saveExcursionSearchResults(userId, criteria, retryResult, 0);
+        return retryResult.reply;
+      }
+
+      return 'I could not find experience suggestions from the earlier search. Reply "search again" and I will retry, or send a different activity or destination.';
+    }
+
     const bookSelection = parseNumberedCue(inboundText, 'book');
     if (bookSelection) {
       const selectedExperience = await sessionService.selectExperience(userId, bookSelection);
@@ -1307,6 +1350,21 @@ async function handleActiveExcursionSearchSession(
   }
 
   if (session.stage === 'searching') {
+    const searchStartedAt = Date.parse(session.updatedAt);
+    if (!Number.isFinite(searchStartedAt) || Date.now() - searchStartedAt > 2 * 60 * 1000) {
+      const criteria = session.criteria;
+      await sessionService.saveSearching(userId, criteria);
+
+      if (getWhatsAppOutboundService().isConfigured()) {
+        void searchExcursionsAndNotify(userId, outboundFrom, criteria, correlationId, options);
+        return 'The earlier search stalled, so I am restarting it now. I will send any experience matches here.';
+      }
+
+      const retryResult = await searchExcursions(userId, criteria, correlationId);
+      await saveExcursionSearchResults(userId, criteria, retryResult, 0);
+      return retryResult.reply;
+    }
+
     return 'I am still checking the best experience matches for you. I will send the options here as soon as they are ready.';
   }
 
@@ -1898,6 +1956,88 @@ async function resetConversation(
   return `${buildWelcomeMessage(userContext)}\n\nI have cleared the active request. Tell me what you would like to do next, or say "resume" if you want me to check for a saved request.`;
 }
 
+async function synchronizeTravelJourneyState(userId: string, userText: string): Promise<void> {
+  try {
+    const [hotel, restaurant, excursion, logistics, itinerary] = await Promise.all([
+      getHotelSearchSessionService().get(userId),
+      getRestaurantSearchSessionService().get(userId),
+      getExcursionSearchSessionService().get(userId),
+      getLogisticsSearchSessionService().get(userId),
+      getItinerarySessionService().get(userId),
+    ]);
+
+    const activeSessions: Array<{
+      service: JourneyService;
+      updatedAt: string;
+      stage: string;
+    }> = [];
+    if (hotel && hotel.state !== 'reset') {
+      activeSessions.push({ service: 'hotel', updatedAt: hotel.updatedAt, stage: hotel.stage });
+    }
+    if (restaurant && restaurant.state !== 'reset') {
+      activeSessions.push({ service: 'restaurant', updatedAt: restaurant.updatedAt, stage: restaurant.stage });
+    }
+    if (excursion && excursion.state !== 'reset') {
+      activeSessions.push({ service: 'excursion', updatedAt: excursion.updatedAt, stage: excursion.stage });
+    }
+    if (logistics && logistics.state !== 'reset') {
+      activeSessions.push({ service: 'transport', updatedAt: logistics.updatedAt, stage: logistics.stage });
+    }
+    if (itinerary && itinerary.state !== 'completed') {
+      activeSessions.push({ service: 'itinerary', updatedAt: itinerary.updatedAt, stage: itinerary.state });
+    }
+
+    const activeSession = activeSessions.sort(
+      (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+    )[0];
+    const inferredService = inferJourneyService(userText);
+    const activeService = isBroadExploreRequest(userText)
+      ? undefined
+      : inferredService ?? activeSession?.service;
+    const isBookingStage = Boolean(activeSession && isBookingStageForJourney(activeSession));
+    const mode: JourneyMode = isPlainChatMessage(userText) && !isBookingStage
+      ? 'chat'
+      : resolveJourneyMode({
+          message: userText,
+          activeService,
+          bookingStageActive: isBookingStage,
+        });
+
+    await getTravelJourneyStateService().set(userId, mode, activeService);
+  } catch {
+    // Journey-state bookkeeping is auxiliary; never block a customer reply on it.
+    console.warn('[TravelJourneyState] Could not update conversation mode');
+  }
+}
+
+function isBookingStageForJourney(session: { service: JourneyService; stage: string }): boolean {
+  if (session.service === 'hotel') return session.stage === 'booking_provider_pending';
+  if (session.service === 'restaurant') return session.stage === 'reservation_pending';
+  if (session.service === 'excursion' || session.service === 'transport') {
+    return session.stage === 'booking_form' || session.stage === 'provider_pending';
+  }
+  return session.stage === 'awaiting_booking';
+}
+
+function isPlainChatMessage(message: string): boolean {
+  return isGreeting(message) ||
+    /^(?:thanks|thank you|okay|ok|cool|great|all good|how are you)[.!? ]*$/i.test(message.trim());
+}
+
+function isBroadExploreRequest(message: string): boolean {
+  return /\b(?:i(?:'m| am) just exploring|i want to explore|let(?:'s| us) explore|help me explore|what can i explore)\b/i.test(message) &&
+    !inferJourneyService(message);
+}
+
+function inferJourneyService(message: string): JourneyService | undefined {
+  if (isHotelRequestMessage(message)) return 'hotel';
+  if (isRestaurantRequestMessage(message)) return 'restaurant';
+  if (isExcursionRequestMessage(message)) return 'excursion';
+  if (isLogisticsRequestMessage(message)) return 'transport';
+  if (isItineraryRequestMessage(message)) return 'itinerary';
+  return undefined;
+}
+
 async function resumeConversation(userId: string): Promise<string | null> {
   const hotelSession = await getHotelSearchSessionService().get(userId);
 
@@ -2142,11 +2282,30 @@ async function searchExcursionsAndNotify(
 
     if (excursionSearchResult.browseResponse?.results.length) {
       const firstPage = excursionSearchResult.browseResponse.results.slice(0, 3);
-      const delivered = await getWhatsAppOutboundService().sendWhatsAppMessages(
-        userId,
-        buildExcursionResultCardReply(criteria, firstPage),
-        { voice: options.voicePreferred, from: outboundFrom }
-      );
+      const outbound = getWhatsAppOutboundService();
+      let delivered = false;
+
+      try {
+        delivered = await outbound.sendWhatsAppMessages(
+          userId,
+          buildExcursionResultCardReply(criteria, firstPage),
+          { voice: options.voicePreferred, from: outboundFrom }
+        );
+      } catch (error) {
+        console.warn(`[${correlationId}] Excursion result cards failed; falling back to text`, error);
+      }
+
+      if (!delivered) {
+        try {
+          delivered = await outbound.sendWhatsAppReply(userId, excursionSearchResult.reply, {
+            voice: options.voicePreferred,
+            from: outboundFrom,
+          });
+        } catch (error) {
+          console.warn(`[${correlationId}] Excursion text fallback delivery failed`, error);
+        }
+      }
+
       await saveExcursionSearchResults(
         userId,
         criteria,
@@ -2156,6 +2315,7 @@ async function searchExcursionsAndNotify(
       return;
     }
 
+    await saveExcursionSearchResults(userId, criteria, excursionSearchResult, 0);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       excursionSearchResult.reply,
@@ -2163,6 +2323,7 @@ async function searchExcursionsAndNotify(
     );
   } catch (error) {
     const safeFailure = handleTravelFailure('excursion', correlationId, error);
+    await getExcursionSearchSessionService().saveResults(userId, criteria, [], 0);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       safeFailure.reply,
@@ -2274,14 +2435,12 @@ async function saveExcursionSearchResults(
   excursionSearchResult: ExcursionSearchFlowResult,
   nextOffset: number
 ): Promise<void> {
-  if (excursionSearchResult.browseResponse?.results.length) {
-    await getExcursionSearchSessionService().saveResults(
-      userId,
-      criteria,
-      excursionSearchResult.browseResponse.results,
-      nextOffset
-    );
-  }
+  await getExcursionSearchSessionService().saveResults(
+    userId,
+    criteria,
+    excursionSearchResult.browseResponse?.results ?? [],
+    nextOffset
+  );
 }
 
 async function saveLogisticsSearchResults(
@@ -3222,7 +3381,7 @@ async function enrichLogisticsResultsForWhatsApp(
   return buildLogisticsResultCardReply(session.criteria, latestBatch);
 }
 
-async function buildWebhookReply(
+export async function buildWebhookReply(
   userId: string,
   reply: string,
   voicePreferred: boolean,

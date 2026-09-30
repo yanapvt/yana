@@ -3,7 +3,7 @@ import { Router, Request, Response } from 'express';
 import { assignCorrelationId } from '../middleware/correlationId.js';
 import { webhookRateLimiter } from '../middleware/rateLimiting.js';
 import { env } from '../config/environment.js';
-import { processNormalizedInboundMessage } from './webhook.js';
+import { buildWebhookReply, processNormalizedInboundMessage } from './webhook.js';
 import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
 import { getInboundIdempotencyService, type IdempotencyDecision } from '../services/InboundIdempotencyService.js';
 import {
@@ -70,11 +70,20 @@ async function processOpenWaInboundAsync(
 ): Promise<void> {
   try {
     const processed = await processNormalizedInboundMessage(inboundMessage, correlationId);
-    const delivered = await getOpenWaOutboundService().sendWhatsAppReply(
+    const outbound = getOpenWaOutboundService();
+    const enrichedReply = await buildWebhookReply(
       inboundMessage.from,
       processed.reply,
-      { voice: processed.inboundMessage.inputType === 'voice' }
+      false,
+      correlationId
     );
+    const delivered = typeof enrichedReply === 'string'
+      ? await outbound.sendWhatsAppReply(inboundMessage.from, enrichedReply, {
+          voice: processed.inboundMessage.inputType === 'voice',
+        })
+      : await outbound.sendWhatsAppMessages(inboundMessage.from, enrichedReply, {
+          voice: processed.inboundMessage.inputType === 'voice',
+        });
 
     if (!delivered) {
       console.warn(

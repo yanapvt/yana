@@ -9,6 +9,10 @@ import {
   loadHotelSupplierEnvironment,
   type HotelSupplierEnvironment,
 } from './hotelSuppliers.js';
+import {
+  loadExcursionSupplierEnvironment,
+  type ExcursionSupplierEnvironment,
+} from './excursionSuppliers.js';
 
 // Load environment variables from .env file
 config();
@@ -113,6 +117,7 @@ const EnvironmentSchema = z.object({
 
   // Multi-supplier hotel inventory orchestration
   hotelSuppliers: z.custom<HotelSupplierEnvironment>(),
+  excursionSuppliers: z.custom<ExcursionSupplierEnvironment>(),
 
   sltdaRegistry: z.object({
     enabled: z.boolean().default(false),
@@ -238,6 +243,7 @@ function loadEnvironmentConfig(): EnvironmentConfig {
     },
 
     hotelSuppliers: loadHotelSupplierEnvironment(),
+    excursionSuppliers: loadExcursionSupplierEnvironment(),
 
     sltdaRegistry: {
       enabled: process.env.SLTDA_REGISTRY_ENABLED === 'true',

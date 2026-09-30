@@ -146,7 +146,6 @@ export class MetaWhatsAppOutboundService {
             cards: carouselCards.map((message, index) => {
               const displayNumber = index + 1;
               const isQuoteRequest = /request operator quote/i.test(message.body);
-              const isStayRequest = /request this stay/i.test(message.body);
               return {
                 type: 'button',
                 card_index: index,
@@ -165,7 +164,7 @@ export class MetaWhatsAppOutboundService {
                       type: 'quick_reply',
                       quick_reply: {
                         id: `book ${displayNumber}`,
-                        title: isQuoteRequest ? 'Request Quote' : isStayRequest ? 'Request Stay' : 'Book Now',
+                        title: isQuoteRequest ? 'Request Quote' : 'Book Now',
                       },
                     },
                     {
@@ -291,24 +290,32 @@ function buildCarouselCardBody(body: string): string {
   const reason = extractField(cleanedLines, 'Why Yana picked it');
 
   const compactLines = [
-    title ? truncateText(stripEmoji(title), 42) : undefined,
-    requestStatus ? truncateText(requestStatus, 54) : undefined,
-    rating ? `Rating ${truncateText(rating, 30)}` : undefined,
-    price ? `Price ${truncateText(price, 24)}` : undefined,
-    quoteStatus ? `Quote ${truncateText(quoteStatus, 42)}` : undefined,
-    room ? `Room ${truncateText(room, 30)}` : undefined,
-    mealPlan ? truncateText(mealPlan, 24) : undefined,
-    cancellation ? truncateText(cancellation, 20) : undefined,
-    registration ? `Registered ${truncateText(registration, 28)}` : undefined,
-    vehicle ? truncateText(vehicle, 34) : undefined,
-    capacity ? `Capacity ${truncateText(capacity, 18)}` : undefined,
-    duration ? truncateText(duration, 30) : undefined,
-    category ? truncateText(category, 32) : cuisine ? truncateText(cuisine, 32) : undefined,
-    location ? truncateText(compactLocation(location), 34) : undefined,
-    reason ? truncateText(compactReason(reason), 42) : undefined,
+    title ? `${detectCardEmoji(body)} ${truncateText(stripEmoji(title), 39)}` : undefined,
+    requestStatus ? `ℹ️ ${truncateText(requestStatus, 51)}` : undefined,
+    rating ? `⭐ ${truncateText(rating, 30)}` : undefined,
+    price ? `💰 ${truncateText(price, 27)}` : undefined,
+    quoteStatus ? `💬 ${truncateText(quoteStatus, 42)}` : undefined,
+    room ? `🛏️ ${truncateText(room, 30)}` : undefined,
+    mealPlan ? `🍽️ ${truncateText(mealPlan, 24)}` : undefined,
+    cancellation ? `↩️ ${truncateText(cancellation, 20)}` : undefined,
+    registration ? `✅ ${truncateText(registration, 28)}` : undefined,
+    vehicle ? `🚘 ${truncateText(vehicle, 34)}` : undefined,
+    capacity ? `👥 ${truncateText(capacity, 22)}` : undefined,
+    duration ? `⏱️ ${truncateText(duration, 30)}` : undefined,
+    category ? `🎯 ${truncateText(category, 32)}` : cuisine ? `🍜 ${truncateText(cuisine, 32)}` : undefined,
+    location ? `📍 ${truncateText(compactLocation(location), 34)}` : undefined,
+    reason ? `✨ ${truncateText(compactReason(reason), 42)}` : undefined,
   ].filter((line): line is string => typeof line === 'string' && line.trim().length > 0);
 
   return truncateText(compactLines.join('\n'), META_CAROUSEL_CARD_BODY_LIMIT);
+}
+
+function detectCardEmoji(body: string): string {
+  if (body.includes('🏨')) return '🏨';
+  if (body.includes('🍽️')) return '🍽️';
+  if (body.includes('🧭')) return '🧭';
+  if (body.includes('🚗') || body.includes('🚘')) return '🚗';
+  return '✨';
 }
 
 function extractField(lines: string[], label: string): string | undefined {

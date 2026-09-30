@@ -86,8 +86,8 @@ describe('MetaWhatsAppOutboundService', () => {
       { type: 'quick_reply', quick_reply: { id: 'details 2', title: 'Details' } },
     ]);
     expect(payload.interactive.action.cards[0].body.text).toContain('1. Hotel One');
-    expect(payload.interactive.action.cards[0].body.text).toContain('Rating 4.8/5');
-    expect(payload.interactive.action.cards[0].body.text).toContain('Strong reviews + location');
+    expect(payload.interactive.action.cards[0].body.text).toContain('⭐ 4.8/5');
+    expect(payload.interactive.action.cards[0].body.text).toContain('✨ Strong reviews + location');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('View on Google Maps');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('Smart view');
     expect(payload.interactive.action.cards[0].body.text).not.toContain('Book now');
@@ -134,7 +134,7 @@ describe('MetaWhatsAppOutboundService', () => {
       quick_reply: { id: 'book 1', title: 'Request Quote' },
     });
     expect(firstCard.body.text).toContain('request option only');
-    expect(firstCard.body.text).toContain('Quote Not quoted');
+    expect(firstCard.body.text).toContain('💬 Not quoted');
     expect(firstCard.body.text).not.toMatch(/rating|book now/i);
   });
 });

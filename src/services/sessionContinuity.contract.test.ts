@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HotelSearchSessionService } from './hotelSearchSessionService.js';
+import { ExcursionSearchSessionService } from './excursionSearchSessionService.js';
 import { InMemoryHotelSearchSessionRepository } from '../storage/hotelSearchSessionRepository.js';
 
 class InstanceStateStore {
@@ -30,5 +31,22 @@ describe('shared session continuity contract', () => {
   it('fails safely after restart when durable state is unavailable', async () => {
     const durable = { upsert: vi.fn(), clearActiveByUserId: vi.fn(), findLatestActiveByUserId: vi.fn().mockRejectedValue(new Error('secret database detail')) };
     expect(await new HotelSearchSessionService(new InstanceStateStore() as any, durable).get('whatsapp:test-user-1')).toBeNull();
+  });
+
+  it('moves an excursion session out of searching when a search has no results', async () => {
+    const store = new InstanceStateStore();
+    const repository = { upsert: vi.fn(), findLatestActiveByUserId: vi.fn(), clearActiveByUserId: vi.fn() };
+    const sessions = new ExcursionSearchSessionService(store as any, repository);
+    const userId = 'whatsapp:test-user-2';
+
+    await sessions.saveSearching(userId, { destination: 'Colombo' });
+    await sessions.saveResults(userId, { destination: 'Colombo' }, [], 0);
+
+    expect(await sessions.get(userId)).toMatchObject({
+      stage: 'results',
+      state: 'showing_results',
+      results: [],
+      nextOffset: 0,
+    });
   });
 });

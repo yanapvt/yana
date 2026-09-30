@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { InboundMessage } from '../types/core.js';
+import { LLMServiceError } from '../services/LLMService.js';
 
 const handleMessageMock = vi.fn();
 const handleCompletedIntakeMock = vi.fn();
@@ -1867,12 +1868,40 @@ describe('webhook hotel search flow', () => {
       confidence: 0.32,
     });
 
-    const reply = await processInboundMessage(buildTextMessage('hmm maybe'), 'corr-webhook-style-4');
+    const reply = await processInboundMessage(
+      buildTextMessage('I’m coming to Colombo tomorrow, what can I do?'),
+      'corr-webhook-style-4'
+    );
 
     expect(reply).toContain('are you looking for help with accommodation');
     expect(reply).toContain('transport, food, activities, or a full itinerary');
+    expect(llmDecideMock).toHaveBeenCalledWith(expect.objectContaining({
+      availableSchemas: expect.arrayContaining([
+        'search_hotels',
+        'search_restaurants',
+        'search_excursions',
+        'search_transport',
+        'plan_itinerary',
+        'general_inquiry',
+      ]),
+    }));
     expectNoInternalPresentationTerms(reply);
     expect(reply).not.toContain('unclear');
+  });
+
+  it('asks a conversational intent clarification when the LLM decision is unavailable', async () => {
+    handleMessageMock.mockResolvedValue({ handled: false });
+    llmDecideMock.mockRejectedValue(new LLMServiceError('provider unavailable', 'UNAVAILABLE', true));
+
+    const reply = await processInboundMessage(
+      buildTextMessage('I’m coming to Colombo tomorrow, what can I do?'),
+      'corr-webhook-llm-unavailable-clarify'
+    );
+
+    expect(reply).toContain('things to do or excursions');
+    expect(reply).toContain('a hotel, restaurants, transport, a full trip plan');
+    expect(reply).toContain('local recommendations');
+    expect(reply).not.toContain('could not complete');
   });
 
   it('uses the ConversationManager trip-planning template in the webhook path', async () => {

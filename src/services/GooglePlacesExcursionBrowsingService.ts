@@ -56,11 +56,45 @@ export class GooglePlacesExcursionBrowsingService {
       return { provider: 'google_places', results: [] };
     }
 
+    const maxResults = options.maxResults ?? 9;
+    const primaryResults = await this.searchPlaces(buildTextQuery(criteria), inferIncludedType(criteria), maxResults);
+    let places = primaryResults;
+
+    // Detailed activity preferences can over-constrain Google's discovery query.
+    // If it returns only a couple of matches, broaden to destination-level ideas.
+    if (places.length < 3 && criteria.destination?.trim()) {
+      const broadResults = await this.searchPlaces(`things to do in ${criteria.destination}`, undefined, maxResults);
+      const seen = new Set(places.map((place) => place.id).filter((id): id is string => Boolean(id)));
+      places = [...places, ...broadResults.filter((place) => !place.id || !seen.has(place.id))];
+    }
+
+    return {
+      provider: 'google_places',
+      results: places.slice(0, maxResults).map((place) => ({
+        id: place.id,
+        name: place.displayName?.text ?? 'Experience result',
+        category: inferCategoryLabel(place.types, criteria),
+        address: place.formattedAddress,
+        rating: place.rating,
+        reviewCount: place.userRatingCount,
+        priceRange: formatPriceLevel(place.priceLevel) ?? criteria.budget,
+        shortDescription: place.editorialSummary?.text,
+        googleMapsUri: place.googleMapsUri,
+        thumbnailUrl: buildPhotoUrl(place.photos?.[0]?.name),
+      })),
+    };
+  }
+
+  private async searchPlaces(
+    textQuery: string,
+    includedType: string | undefined,
+    maxResults: number
+  ): Promise<NonNullable<GooglePlacesSearchTextResponse['places']>> {
     const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Goog-Api-Key': this.apiKey,
+        'X-Goog-Api-Key': this.apiKey!,
         'X-Goog-FieldMask': [
           'places.id',
           'places.displayName',
@@ -75,9 +109,9 @@ export class GooglePlacesExcursionBrowsingService {
         ].join(','),
       },
       body: JSON.stringify({
-        textQuery: buildTextQuery(criteria),
-        includedType: inferIncludedType(criteria),
-        maxResultCount: options.maxResults ?? 9,
+        textQuery,
+        ...(includedType ? { includedType } : {}),
+        maxResultCount: maxResults,
         languageCode: 'en',
       }),
     });
@@ -89,22 +123,7 @@ export class GooglePlacesExcursionBrowsingService {
     }
 
     const data = (await response.json()) as GooglePlacesSearchTextResponse;
-
-    return {
-      provider: 'google_places',
-      results: (data.places ?? []).slice(0, options.maxResults ?? 9).map((place) => ({
-        id: place.id,
-        name: place.displayName?.text ?? 'Experience result',
-        category: inferCategoryLabel(place.types, criteria),
-        address: place.formattedAddress,
-        rating: place.rating,
-        reviewCount: place.userRatingCount,
-        priceRange: formatPriceLevel(place.priceLevel) ?? criteria.budget,
-        shortDescription: place.editorialSummary?.text,
-        googleMapsUri: place.googleMapsUri,
-        thumbnailUrl: buildPhotoUrl(place.photos?.[0]?.name),
-      })),
-    };
+    return data.places ?? [];
   }
 }
 

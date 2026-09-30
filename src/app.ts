@@ -4,6 +4,7 @@
  */
 
 import express, { Express } from 'express';
+import { fileURLToPath } from 'node:url';
 import webhookRoutes from './routes/webhook.js';
 import openWaWebhookRoutes from './routes/openWaWebhook.js';
 import metaWhatsAppWebhookRoutes from './routes/metaWhatsAppWebhook.js';
@@ -34,6 +35,16 @@ export function createApp(): Express {
 
   // Parse JSON bodies
   app.use(express.json({ verify: captureRawBody }));
+
+  // Shared YANA brand assets used by every secure collection form.
+  app.use(
+    '/assets',
+    express.static(fileURLToPath(new URL('../public/assets', import.meta.url)), {
+      fallthrough: false,
+      immutable: true,
+      maxAge: '1d',
+    })
+  );
 
   // Health check endpoint
   app.get('/health', (req, res) => {

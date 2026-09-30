@@ -13,12 +13,14 @@ interface OpenWaLogger { warn(message: string, details?: Record<string, unknown>
 
 const OPENWA_TEXT_LIMIT = 3500;
 const OPENWA_MEDIA_CAPTION_LIMIT = 1024;
+const OPENWA_SEND_GAP_MS = 350;
 
 export class OpenWaOutboundService {
   constructor(
     private readonly config: OpenWaOutboundConfig = env.openwa,
     private readonly fetcher: typeof fetch = fetch,
-    private readonly logger: OpenWaLogger = console
+    private readonly logger: OpenWaLogger = console,
+    private readonly pause: (milliseconds: number) => Promise<void> = delay
   ) {}
   async sendWhatsAppText(to: string, body: string): Promise<boolean> {
     let sentAny = false;
@@ -39,10 +41,13 @@ export class OpenWaOutboundService {
     }
 
     let sentAny = false;
-    for (const message of messages) {
+    for (const [index, message] of messages.entries()) {
+      if (index > 0) {
+        await this.pause(OPENWA_SEND_GAP_MS);
+      }
       const sent =
         message.mediaUrl && isPublicHttpsUrl(message.mediaUrl)
-          ? await this.sendTextWithOptionalImage(to, message.body, message.mediaUrl)
+          ? await this.sendImageCardWithTextFallback(to, message.mediaUrl, message.body)
           : await this.sendWhatsAppText(to, message.body);
       sentAny = sentAny || sent;
     }
@@ -128,20 +133,27 @@ export class OpenWaOutboundService {
     return sentAny;
   }
 
-  private async sendTextWithOptionalImage(
+  private async sendImageCardWithTextFallback(
     to: string,
-    text: string,
-    mediaUrl: string
+    mediaUrl: string,
+    caption: string
   ): Promise<boolean> {
-    const textSent = await this.sendWhatsAppText(to, text);
-
+    let imageSent = false;
     try {
-      const imageSent = await this.sendImageMessage(to, mediaUrl, '');
-      return textSent || imageSent;
-    } catch (error) {
-      console.error('[OpenWaOutboundService] Optional image send failed after text card:', error);
-      return textSent;
+      imageSent = await this.sendImageMessage(to, mediaUrl, extractCardTitle(caption));
+    } catch {
+      this.logger.error('openwa_image_send_failed', {
+        category: 'connection',
+        retryAttempted: false,
+      });
     }
+
+    // OpenWA can acknowledge an image URL before WhatsApp has actually fetched
+    // it. Always follow the image with the complete text card so local testing
+    // cannot stop at the carousel intro after a silent downstream media failure.
+    await this.pause(OPENWA_SEND_GAP_MS);
+    const textSent = await this.sendWhatsAppText(to, caption);
+    return imageSent || textSent;
   }
 
   private async sendVoiceReply(to: string, text: string): Promise<boolean> {
@@ -177,6 +189,14 @@ export class OpenWaOutboundService {
 
 function isPublicHttpsUrl(value?: string): value is string {
   return typeof value === 'string' && /^https:\/\//i.test(value);
+}
+
+function extractCardTitle(caption: string): string {
+  return caption.split('\n').find((line) => line.trim().length > 0)?.trim().slice(0, OPENWA_MEDIA_CAPTION_LIMIT) || 'Yana recommendation';
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 let openWaOutboundServiceInstance: OpenWaOutboundService | null = null;
