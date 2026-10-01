@@ -2,6 +2,7 @@ import type { HotelSearchCriteria } from './HotelIntakeService.js';
 
 export interface HotelBrowseResult {
   id?: string;
+  googlePlaceId?: string;
   name: string;
   address?: string;
   rating?: number;
@@ -9,15 +10,24 @@ export interface HotelBrowseResult {
   priceRange?: string;
   googleMapsUri?: string;
   thumbnailUrl?: string;
+  roomName?: string;
+  mealPlan?: string;
+  refundable?: boolean;
+  rateAmount?: number;
+  rateCurrency?: string;
+  priceBasis?: 'NET' | 'RETAIL' | 'UNKNOWN';
+  sltdaVerified?: boolean;
+  sltdaLicenceValidUntil?: string;
 }
 
 export interface HotelBrowseResponse {
   results: HotelBrowseResult[];
-  provider: 'google_places';
+  provider: 'google_places' | 'hotel_inventory';
 }
 
 interface GooglePlacesHotelBrowsingConfig {
   apiKey?: string;
+  enabled?: boolean;
 }
 
 interface GooglePlacesSearchTextResponse {
@@ -43,20 +53,24 @@ interface SearchHotelsOptions {
 
 export class GooglePlacesHotelBrowsingService {
   private apiKey?: string;
+  private enabled: boolean;
 
   constructor(config: GooglePlacesHotelBrowsingConfig = {}) {
     this.apiKey = config.apiKey ?? process.env.GOOGLE_PLACES_API_KEY;
+    this.enabled =
+      config.enabled ?? process.env.HOTEL_GOOGLE_PLACES_ENABLED !== 'false';
   }
 
   isConfigured(): boolean {
-    return Boolean(this.apiKey);
+    return this.enabled && Boolean(this.apiKey);
   }
 
   async searchHotels(
     criteria: HotelSearchCriteria,
     options: SearchHotelsOptions = {}
   ): Promise<HotelBrowseResponse> {
-    if (!this.apiKey) {
+    const apiKey = this.apiKey;
+    if (!this.enabled || !apiKey) {
       return { provider: 'google_places', results: [] };
     }
 
@@ -64,7 +78,7 @@ export class GooglePlacesHotelBrowsingService {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Goog-Api-Key': this.apiKey,
+        'X-Goog-Api-Key': apiKey,
         'X-Goog-FieldMask': [
           'places.id',
           'places.displayName',
@@ -94,6 +108,7 @@ export class GooglePlacesHotelBrowsingService {
       provider: 'google_places',
       results: (data.places ?? []).slice(0, options.maxResults ?? 9).map((place) => ({
         id: place.id,
+        googlePlaceId: place.id,
         name: place.displayName?.text ?? 'Hotel result',
         address: place.formattedAddress,
         rating: place.rating,

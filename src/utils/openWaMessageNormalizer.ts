@@ -214,7 +214,7 @@ function getOpenWaMessageId(
   return (
     getString(message.messageId) ||
     getString(payload.id) ||
-    `openwa-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    ''
   );
 }
 

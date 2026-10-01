@@ -4,6 +4,7 @@
  */
 
 import express, { Express } from 'express';
+import { fileURLToPath } from 'node:url';
 import webhookRoutes from './routes/webhook.js';
 import openWaWebhookRoutes from './routes/openWaWebhook.js';
 import metaWhatsAppWebhookRoutes from './routes/metaWhatsAppWebhook.js';
@@ -12,6 +13,9 @@ import formsRouter from './routes/forms.js';
 import mediaRouter from './routes/media.js';
 import itineraryWorkspaceRouter from './routes/itineraryWorkspace.js';
 import legalRouter from './routes/legal.js';
+import hotelSearchAdminRouter from './routes/hotelSearchAdmin.js';
+import humanHandoffAdminRouter from './routes/humanHandoffAdmin.js';
+import operatorDashboardRouter from './routes/operatorDashboard.js';
 
 /**
  * Creates and configures the Express application
@@ -31,6 +35,16 @@ export function createApp(): Express {
 
   // Parse JSON bodies
   app.use(express.json({ verify: captureRawBody }));
+
+  // Shared YANA brand assets used by every secure collection form.
+  app.use(
+    '/assets',
+    express.static(fileURLToPath(new URL('../public/assets', import.meta.url)), {
+      fallthrough: false,
+      immutable: true,
+      maxAge: '1d',
+    })
+  );
 
   // Health check endpoint
   app.get('/health', (req, res) => {
@@ -53,6 +67,11 @@ export function createApp(): Express {
 
   // Mount public legal pages required by platform providers
   app.use('/', legalRouter);
+
+  // Protected operational controls (disabled unless ADMIN_CONTROL_TOKEN is set).
+  app.use('/', hotelSearchAdminRouter);
+  app.use('/', humanHandoffAdminRouter);
+  app.use('/', operatorDashboardRouter);
 
   // Mount demo/playground routes
   app.use('/demo', demoRouter);

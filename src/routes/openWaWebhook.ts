@@ -3,9 +3,9 @@ import { Router, Request, Response } from 'express';
 import { assignCorrelationId } from '../middleware/correlationId.js';
 import { webhookRateLimiter } from '../middleware/rateLimiting.js';
 import { env } from '../config/environment.js';
-import { processNormalizedInboundMessage } from './webhook.js';
+import { buildWebhookReply, processNormalizedInboundMessage } from './webhook.js';
 import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
-import { getStateStore } from '../services/StateStore.js';
+import { getInboundIdempotencyService, type IdempotencyDecision } from '../services/InboundIdempotencyService.js';
 import {
   isOpenWaOutboundEcho,
   normalizeOpenWaInboundMessage,
@@ -13,7 +13,6 @@ import {
 } from '../utils/openWaMessageNormalizer.js';
 
 const router = Router();
-const MESSAGE_ID_TTL_SECONDS = 24 * 60 * 60;
 
 router.post(
   '/webhook/openwa',
@@ -35,35 +34,32 @@ router.post(
       }
 
       const inboundMessage = normalizeOpenWaInboundMessage(payload);
-      const duplicate = await isDuplicateOpenWaMessage(
+      const deduplication = await claimOpenWaMessage(
         getOpenWaDeduplicationKey(req) || inboundMessage.messageId,
         correlationId
       );
 
-      if (duplicate) {
-        console.log(
-          `[${correlationId}] Ignoring duplicate OpenWA message: ${inboundMessage.messageId}`
-        );
+      if (deduplication === 'unavailable') {
+        res.status(503).json({ ok: false, error: 'Webhook idempotency unavailable' });
+        return;
+      }
+      if (deduplication === 'duplicate') {
+        console.log('openwa_webhook_duplicate', { correlationId, redacted: true });
         res.status(200).json({ ok: true, duplicate: true });
         return;
       }
 
-      console.log(
-        `[${correlationId}] OpenWA message from ${inboundMessage.from}: type=${inboundMessage.type}`
-      );
-      console.log(
-        `[${correlationId}] OpenWA payload summary:`,
-        JSON.stringify(buildOpenWaPayloadSummary(payload), null, 2)
-      );
+      console.log('openwa_webhook_accepted', {
+        correlationId,
+        ...buildOpenWaPayloadSummary(payload),
+        redacted: true,
+      });
 
       res.status(200).json({ ok: true, accepted: true });
       void processOpenWaInboundAsync(inboundMessage, correlationId);
     } catch (error) {
-      console.error(`[${correlationId}] Error processing OpenWA webhook:`, error);
-      res.status(200).json({
-        ok: false,
-        reply: "Sorry, I hit a temporary issue while replying. Please send that again and I'll pick it up.",
-      });
+      console.error('openwa_webhook_rejected', { correlationId, category: 'invalid_or_unavailable' });
+      res.status(503).json({ ok: false, error: 'Webhook processing unavailable' });
     }
   }
 );
@@ -74,19 +70,28 @@ async function processOpenWaInboundAsync(
 ): Promise<void> {
   try {
     const processed = await processNormalizedInboundMessage(inboundMessage, correlationId);
-    const delivered = await getOpenWaOutboundService().sendWhatsAppReply(
+    const outbound = getOpenWaOutboundService();
+    const enrichedReply = await buildWebhookReply(
       inboundMessage.from,
       processed.reply,
-      { voice: processed.inboundMessage.inputType === 'voice' }
+      false,
+      correlationId
     );
+    const delivered = typeof enrichedReply === 'string'
+      ? await outbound.sendWhatsAppReply(inboundMessage.from, enrichedReply, {
+          voice: processed.inboundMessage.inputType === 'voice',
+        })
+      : await outbound.sendWhatsAppMessages(inboundMessage.from, enrichedReply, {
+          voice: processed.inboundMessage.inputType === 'voice',
+        });
 
     if (!delivered) {
       console.warn(
         `[${correlationId}] OpenWA accepted inbound message but outbound reply was not delivered`
       );
     }
-  } catch (error) {
-    console.error(`[${correlationId}] Error processing OpenWA message after acknowledgement:`, error);
+  } catch {
+    console.error('openwa_webhook_async_failure', { correlationId, category: 'processing_or_delivery' });
   }
 }
 
@@ -110,20 +115,14 @@ function buildOpenWaPayloadSummary(payload: OpenWaWebhookPayload): Record<string
     : {};
 
   return {
-    event: payload.event,
-    type: payload.type,
-    dataKeys: Object.keys(data),
-    selectedKeys: Object.keys(selected),
-    messageId: selected.id || selected.messageId,
-    from: selected.from || selected.chatId || selected.sender,
+    dataFieldCount: Object.keys(data).length,
+    selectedFieldCount: Object.keys(selected).length,
     messageType: selected.type,
     hasBody: typeof selected.body === 'string' && selected.body.length > 0,
     hasText: typeof selected.text === 'string' && selected.text.length > 0,
-    mimetype: selected.mimetype || selected.mimeType || media.mimetype || media.mimeType,
+    hasMimeType: Boolean(selected.mimetype || selected.mimeType || media.mimetype || media.mimeType),
     hasMediaUrl: Boolean(selected.mediaUrl || selected.url),
-    mediaKeys: Object.keys(media),
-    mediaOmitted: media.omitted,
-    mediaSizeBytes: media.sizeBytes,
+    mediaFieldCount: Object.keys(media).length,
   };
 }
 
@@ -137,7 +136,7 @@ function isValidOpenWaWebhook(req: Request): boolean {
     return false;
   }
 
-  const body = JSON.stringify(req.body ?? {});
+  const body = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
   const expected = crypto
     .createHmac('sha256', env.openwa.webhookSecret)
     .update(body)
@@ -174,34 +173,14 @@ function timingSafeEqual(received: string, expected: string): boolean {
   return crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
 }
 
-async function isDuplicateOpenWaMessage(
+async function claimOpenWaMessage(
   messageId: string,
   correlationId: string
-): Promise<boolean> {
+): Promise<IdempotencyDecision> {
   if (!messageId) {
-    return false;
+    return 'unavailable';
   }
-
-  try {
-    const stateStore = getStateStore();
-    if (!stateStore.isConnected()) {
-      await stateStore.connect();
-    }
-
-    const result = await stateStore.getClient().set(
-      `webhook:openwa:message:${messageId}`,
-      correlationId,
-      {
-        NX: true,
-        EX: MESSAGE_ID_TTL_SECONDS,
-      }
-    );
-
-    return result === null;
-  } catch (error) {
-    console.error(`[${correlationId}] OpenWA deduplication failed:`, error);
-    return false;
-  }
+  return getInboundIdempotencyService().claim('openwa', messageId, correlationId, 'repeatable_external_effect');
 }
 
 export default router;

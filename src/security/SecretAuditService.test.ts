@@ -1,0 +1,2 @@
+import{describe,expect,it}from'vitest';import{redactFinding,summarizeFindings}from'./SecretAuditService.js';
+describe('SecretAuditService',()=>{it('reports only path, kind, and irreversible short fingerprint',()=>{const secret='do-not-print-this-private-value';const result=redactFinding('config/file.json','private_key',secret);expect(JSON.stringify(result)).not.toContain(secret);expect(result.fingerprint).toHaveLength(12);expect(summarizeFindings([result,result]).paths).toEqual(['config/file.json']);});});

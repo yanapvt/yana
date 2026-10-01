@@ -3,6 +3,7 @@ import type { BasicProfileForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
 import type { ExcursionBrowseResult } from './GooglePlacesExcursionBrowsingService.js';
 import type { ExcursionBookingRequest, ExcursionSearchCriteria } from './excursionRequestMapper.js';
+import { logInfrastructureFallback } from './InfrastructureLog.js';
 import { defaultSearchFlowEngine } from './SearchFlowEngine.js';
 import {
   PostgresExcursionSearchSessionRepository,
@@ -217,7 +218,7 @@ export class ExcursionSearchSessionService {
     try {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
-      console.warn('[ExcursionSearchSessionService] Durable session clear failed:', error);
+      logInfrastructureFallback('excursion_session', 'durable_clear', 'memory_only');
     }
   }
 
@@ -227,7 +228,7 @@ export class ExcursionSearchSessionService {
     try {
       await this.repository.upsert(normalized);
     } catch (error) {
-      console.warn('[ExcursionSearchSessionService] Durable session save failed:', error);
+      logInfrastructureFallback('excursion_session', 'durable_save', 'memory_only');
     }
   }
 
@@ -235,7 +236,7 @@ export class ExcursionSearchSessionService {
     try {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
-      console.warn('[ExcursionSearchSessionService] Durable session lookup failed:', error);
+      logInfrastructureFallback('excursion_session', 'durable_lookup', 'none');
       return null;
     }
   }

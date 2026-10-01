@@ -3,6 +3,7 @@ import type { BasicProfileForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
 import type { GeneratedItinerary } from './ItineraryPlannerService.js';
 import type { ItineraryCriteria } from './itineraryRequestMapper.js';
+import { logInfrastructureFallback } from './InfrastructureLog.js';
 import {
   PostgresItinerarySessionRepository,
   type ItinerarySessionRepository,
@@ -141,7 +142,7 @@ export class ItinerarySessionService {
     try {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
-      console.warn('[ItinerarySessionService] Durable session clear failed:', error);
+      logInfrastructureFallback('itinerary_session', 'durable_clear', 'memory_only');
     }
   }
 
@@ -151,7 +152,7 @@ export class ItinerarySessionService {
     try {
       await this.repository.upsert(normalized);
     } catch (error) {
-      console.warn('[ItinerarySessionService] Durable session save failed:', error);
+      logInfrastructureFallback('itinerary_session', 'durable_save', 'memory_only');
     }
   }
 
@@ -159,7 +160,7 @@ export class ItinerarySessionService {
     try {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
-      console.warn('[ItinerarySessionService] Durable session lookup failed:', error);
+      logInfrastructureFallback('itinerary_session', 'durable_lookup', 'none');
       return null;
     }
   }

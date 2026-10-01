@@ -12,6 +12,7 @@ describe('GooglePlacesHotelBrowsingService', () => {
       json: async () => ({
         places: [
           {
+            id: 'google-place-1',
             displayName: { text: 'Colombo Court Hotel' },
             formattedAddress: 'Colombo 03, Sri Lanka',
             rating: 4.3,
@@ -52,11 +53,28 @@ describe('GooglePlacesHotelBrowsingService', () => {
       maxResultCount: 9,
     });
     expect(response.results[0]).toMatchObject({
+      id: 'google-place-1',
+      googlePlaceId: 'google-place-1',
       name: 'Colombo Court Hotel',
       googleMapsUri: 'https://maps.google.com/?cid=1',
       priceRange: '$$$',
       thumbnailUrl:
         'http://localhost:3000/media/google-place-photo?name=places%2Fplace-1%2Fphotos%2Fphoto-1',
     });
+  });
+
+  it('does not call Google Places when hotel discovery is disabled', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const service = new GooglePlacesHotelBrowsingService({
+      apiKey: 'test-google-key',
+      enabled: false,
+    });
+
+    expect(service.isConfigured()).toBe(false);
+    await expect(service.searchHotels({ location: 'Colombo' })).resolves.toEqual({
+      provider: 'google_places',
+      results: [],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

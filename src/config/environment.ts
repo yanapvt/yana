@@ -5,6 +5,14 @@
 
 import { config } from 'dotenv';
 import { z } from 'zod';
+import {
+  loadHotelSupplierEnvironment,
+  type HotelSupplierEnvironment,
+} from './hotelSuppliers.js';
+import {
+  loadExcursionSupplierEnvironment,
+  type ExcursionSupplierEnvironment,
+} from './excursionSuppliers.js';
 
 // Load environment variables from .env file
 config();
@@ -105,6 +113,17 @@ const EnvironmentSchema = z.object({
     secretKey: z.string().optional(),
     publicKey: z.string().optional(),
     host: z.string().url().default('https://api.nango.dev'),
+  }),
+
+  // Multi-supplier hotel inventory orchestration
+  hotelSuppliers: z.custom<HotelSupplierEnvironment>(),
+  excursionSuppliers: z.custom<ExcursionSupplierEnvironment>(),
+
+  sltdaRegistry: z.object({
+    enabled: z.boolean().default(false),
+    requireVerifiedHotels: z.boolean().default(true),
+    minimumMatchConfidence: z.number().min(0).max(1).default(0.8),
+    rejectedInventoryAuditEnabled: z.boolean().default(false),
   }),
 
   // Feature Flags
@@ -223,6 +242,17 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       host: process.env.NANGO_HOST || 'https://api.nango.dev',
     },
 
+    hotelSuppliers: loadHotelSupplierEnvironment(),
+    excursionSuppliers: loadExcursionSupplierEnvironment(),
+
+    sltdaRegistry: {
+      enabled: process.env.SLTDA_REGISTRY_ENABLED === 'true',
+      requireVerifiedHotels: process.env.SLTDA_REQUIRE_VERIFIED_HOTELS !== 'false',
+      minimumMatchConfidence: parseFloat(process.env.SLTDA_MATCH_MIN_CONFIDENCE || '0.80'),
+      rejectedInventoryAuditEnabled:
+        process.env.HOTEL_SUPPLIER_REJECTION_AUDIT_ENABLED === 'true',
+    },
+
     features: {
       ttsEnabled: process.env.FEATURE_TTS_ENABLED === 'true',
       proactiveMessagingEnabled: process.env.FEATURE_PROACTIVE_MESSAGING_ENABLED === 'true',
@@ -279,6 +309,9 @@ function validateProviderConfig(config: EnvironmentConfig): void {
     }
     if (!config.openwa.sessionId) {
       errors.push({ path: ['openwa', 'sessionId'], message: 'OPENWA_SESSION_ID is required when WHATSAPP_PROVIDER=openwa' });
+    }
+    if (!config.openwa.webhookSecret) {
+      errors.push({ path: ['openwa', 'webhookSecret'], message: 'OPENWA_WEBHOOK_SECRET is required when WHATSAPP_PROVIDER=openwa' });
     }
   }
 

@@ -12,6 +12,8 @@ import {
   PostgresHotelSearchSessionRepository,
   type HotelSearchSessionRepository,
 } from '../storage/hotelSearchSessionRepository.js';
+import type { HotelRecheckReceipt } from './handoff/HotelRecheckReceiptService.js';
+import { logInfrastructureFallback } from './InfrastructureLog.js';
 
 export type HotelSearchState =
   | 'profile_required'
@@ -54,6 +56,9 @@ export interface HotelSearchSession {
   latestDisplayedBatchIndex: number;
   nextCount: number;
   selectedHotel?: SelectedHotel;
+  recheckReceipt?: HotelRecheckReceipt;
+  pendingHumanHandoffConsent?: boolean;
+  humanHandoff?: { handoffId: string; status: 'handed_off' };
   state: HotelSearchState;
   stage: LegacyHotelSearchStage;
   results: HotelBrowseResult[];
@@ -243,6 +248,8 @@ export class HotelSearchSessionService {
     await this.save({
       ...session,
       selectedHotel,
+      recheckReceipt: undefined,
+      pendingHumanHandoffConsent: false,
       state: 'booking_provider_pending',
       stage: 'booking_provider_pending',
       updatedAt: now,
@@ -251,6 +258,42 @@ export class HotelSearchSessionService {
     });
 
     return selectedHotel;
+  }
+
+  async markHandoffConsentPending(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session?.selectedHotel) throw new Error('Selected hotel session is unavailable');
+    await this.save({ ...session, pendingHumanHandoffConsent: true, updatedAt: new Date().toISOString() });
+  }
+
+  async saveRecheckReceipt(userId: string, receipt: HotelRecheckReceipt): Promise<void> {
+    const session = await this.get(userId);
+    if (!session?.selectedHotel) throw new Error('Selected hotel session is unavailable');
+    await this.save({ ...session, recheckReceipt: receipt, updatedAt: new Date().toISOString() });
+  }
+
+  async clearHandoffConsentPending(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session) return;
+    await this.save({ ...session, pendingHumanHandoffConsent: false, updatedAt: new Date().toISOString() });
+  }
+
+  async markHandedOff(userId: string, handoffId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session) throw new Error('Hotel session is unavailable for handoff lock');
+    await this.save({
+      ...session,
+      pendingHumanHandoffConsent: false,
+      humanHandoff: { handoffId, status: 'handed_off' },
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  async clearHandedOff(userId: string, handoffId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session || session.humanHandoff?.handoffId !== handoffId) return;
+    const { humanHandoff: _closed, ...preserved } = session;
+    await this.save({ ...preserved, updatedAt: new Date().toISOString() });
   }
 
   async get(userId: string): Promise<HotelSearchSession | null> {
@@ -275,7 +318,7 @@ export class HotelSearchSessionService {
     try {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
-      console.warn('[HotelSearchSessionService] Durable session clear failed:', error);
+      logInfrastructureFallback('hotel_session', 'durable_clear', 'memory_only');
     }
   }
 
@@ -290,7 +333,7 @@ export class HotelSearchSessionService {
     try {
       await this.repository.upsert(normalized);
     } catch (error) {
-      console.warn('[HotelSearchSessionService] Durable session save failed:', error);
+      logInfrastructureFallback('hotel_session', 'durable_save', 'memory_only');
     }
     this.scheduleReminder(normalized);
   }
@@ -299,7 +342,7 @@ export class HotelSearchSessionService {
     try {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
-      console.warn('[HotelSearchSessionService] Durable session lookup failed:', error);
+      logInfrastructureFallback('hotel_session', 'durable_lookup', 'none');
       return null;
     }
   }
@@ -324,6 +367,9 @@ export class HotelSearchSessionService {
       latestDisplayedBatchIndex: existing?.latestDisplayedBatchIndex ?? -1,
       nextCount: existing?.nextCount ?? 0,
       selectedHotel: existing?.selectedHotel,
+      recheckReceipt: existing?.recheckReceipt,
+      pendingHumanHandoffConsent: existing?.pendingHumanHandoffConsent,
+      humanHandoff: existing?.humanHandoff,
       state: existing?.state ?? 'hotel_form_sent',
       stage: existing?.stage ?? 'awaiting_preferences',
       results: existing?.results ?? [],

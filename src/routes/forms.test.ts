@@ -62,7 +62,10 @@ describe('external form routes', () => {
       hotel: 'Hotel request',
       restaurant: 'Restaurant request',
       itinerary: 'Trip planning',
+      excursion: 'Excursion request',
+      excursion_booking: 'Excursion booking request',
       logistics: 'Transport request',
+      logistics_booking: 'Transport booking request',
     } as const;
 
     for (const [type, heading] of Object.entries(formHeadings)) {
@@ -75,9 +78,20 @@ describe('external form routes', () => {
 
       expect(response.status).toBe(200);
       expect(html).toContain(heading);
+      expect(html).toContain('src="/assets/yana-logo.png"');
+      expect(html).toContain('YANA — Your AI Navigation Agent');
       expect(html).toContain('name="_csrf"');
       expect(response.headers.get('cache-control')).toBe('no-store');
     }
+  });
+
+  it('serves the shared YANA logo used by every form', async () => {
+    const response = await fetch(`${origin}/assets/yana-logo.png`);
+    const bytes = await response.arrayBuffer();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/png');
+    expect(bytes.byteLength).toBeGreaterThan(100_000);
   });
 
   it('validates and stores a sanitized profile, then consumes its token', async () => {

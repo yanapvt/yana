@@ -117,14 +117,23 @@ import type { HotelBrowseResult } from '../services/GooglePlacesHotelBrowsingSer
 import type { RestaurantBrowseResult } from '../services/GooglePlacesRestaurantBrowsingService.js';
 import type { ExcursionBrowseResult } from '../services/GooglePlacesExcursionBrowsingService.js';
 import type { TransportOption } from '../services/TransportProvider.js';
+import { handleTravelFailure, logSafeOperatorFailure } from '../services/SafeFailureService.js';
+import { getHumanHandoffRuntime } from '../services/handoff/HumanHandoffRuntime.js';
+import { getHotelRecheckReceiptService } from '../services/handoff/HotelRecheckReceiptService.js';
+import {
+  getTravelJourneyStateService,
+  resolveJourneyMode,
+  type JourneyMode,
+  type JourneyService,
+} from '../services/TravelJourneyStateService.js';
 
 const router = Router();
 const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
   "Sorry, I couldn't clearly read that voice note. Could you send it again or type your request?";
 const VOICE_OPENAI_CONFIG_ERROR_MESSAGE =
-  'Voice notes are almost ready, but transcription is not configured yet. Please add TRANSCRIPTION_API_KEY or LLM_API_KEY, and TRANSCRIPTION_MODEL, then try again. You can type your request for now.';
+  'Voice notes are temporarily unavailable. Please type your request for now or ask for human help.';
 const VOICE_TWILIO_CONFIG_ERROR_MESSAGE =
-  'Voice notes are almost ready, but I cannot download WhatsApp audio until real Twilio credentials are configured. Please add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN, or type your request for now.';
+  'I cannot access that voice note right now. Please type your request or ask for human help.';
 const VOICE_DOWNLOAD_ERROR_MESSAGE =
   "Sorry, I couldn't download that voice note from WhatsApp. Could you send it again or type your request?";
 const VOICE_TOO_LARGE_ERROR_MESSAGE =
@@ -179,7 +188,8 @@ router.post(
       const whatsappReply = await buildWebhookReply(
         normalizedInput.from,
         reply,
-        normalizedInput.inputType === 'voice'
+        normalizedInput.inputType === 'voice',
+        correlationId
       );
       const twiml = toTwiml(whatsappReply);
       const deliveredAsync = await deliverWebhookReplyThroughTwilio(
@@ -203,10 +213,7 @@ router.post(
     } catch (error) {
       // Log the error but still return 200 to Twilio
       // We don't want Twilio to retry on our internal errors
-      console.error(
-        `[${correlationId}] Error processing webhook:`,
-        error
-      );
+      logSafeOperatorFailure(console, 'webhook_processing_failed', correlationId, error);
       
       // If we haven't sent a response yet, send a friendly message instead of a blank 200.
       if (!res.headersSent) {
@@ -240,9 +247,12 @@ export async function processNormalizedInboundMessage(
     };
   }
 
+  const userText = extractMessageText(voiceInput.inboundMessage) ?? '';
   const reply = await processInboundMessage(voiceInput.inboundMessage, correlationId, {
     voicePreferred: Boolean(voiceInput.transcript),
   });
+  await synchronizeTravelJourneyState(voiceInput.inboundMessage.from, userText);
+
   if (voiceInput.transcript) {
     return {
       inboundMessage: voiceInput.inboundMessage,
@@ -261,6 +271,12 @@ export async function processInboundMessage(
   correlationId: string,
   options: { voicePreferred?: boolean } = {}
 ): Promise<string> {
+  const inboundText = extractMessageText(inboundMessage);
+
+  if (inboundText && isFlightServiceRequestMessage(inboundText)) {
+    return buildUnsupportedFlightServiceReply();
+  }
+
   const profileGateResult = await getProfileGate().check(inboundMessage.from);
 
   if (!profileGateResult.complete) {
@@ -273,7 +289,6 @@ export async function processInboundMessage(
     return buildProfileCollectionResponse(buildProfileFormLink(token));
   }
 
-  const inboundText = extractMessageText(inboundMessage);
   const userContext = getInboundUserContext(inboundMessage);
 
   if (!inboundText) {
@@ -307,6 +322,10 @@ export async function processInboundMessage(
     correlationId
   );
 
+  if (isFlightServiceRequestMessage(userMessage)) {
+    return buildUnsupportedFlightServiceReply();
+  }
+
   const explicitServiceSwitchReply = await handleExplicitServiceSwitch(
     inboundMessage.from,
     userMessage,
@@ -315,6 +334,10 @@ export async function processInboundMessage(
 
   if (explicitServiceSwitchReply) {
     return explicitServiceSwitchReply;
+  }
+
+  if (isBroadExploreRequest(userMessage)) {
+    return 'Of course. What would you like to explore: hotels, excursions, restaurants, or transport?';
   }
 
   const activeItinerarySession = await getItinerarySessionService().get(inboundMessage.from);
@@ -509,7 +532,14 @@ export async function processInboundMessage(
       userProfile: {
         nationality: userContext.country,
       },
-      availableSchemas: ['search_hotels'],
+      availableSchemas: [
+        'search_hotels',
+        'search_restaurants',
+        'search_excursions',
+        'search_transport',
+        'plan_itinerary',
+        'general_inquiry',
+      ],
     });
 
     console.log(
@@ -638,14 +668,16 @@ export async function processInboundMessage(
     return 'I can help with that. Could you tell me a little more about what you need for this trip?';
   } catch (error) {
     if (error instanceof LLMServiceError) {
-      console.error(
-        `[${correlationId}] LLM decision failed (${error.code}, retryable=${error.retryable}): ${error.message}`
-      );
-      return 'I received your message, but the AI service failed while processing it. Please check the server logs.';
+      handleTravelFailure('planning', correlationId, error);
+      return buildIntentClarificationReply();
     }
 
     throw error;
   }
+}
+
+function buildIntentClarificationReply(): string {
+  return 'I’d love to help with Colombo. Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations? Tell me which sounds closest and I’ll take it from there.';
 }
 
 type VoiceInputResult =
@@ -717,9 +749,7 @@ async function transcribeVoiceInputIfNeeded(
     };
   } catch (error) {
     if (error instanceof SpeechToTextServiceError) {
-      console.error(
-        `[${correlationId}] Voice transcription failed (${error.code}, retryable=${error.retryable}): ${error.message}`
-      );
+      handleTravelFailure('voice', correlationId, error);
       return { status: 'error', message: buildVoiceTranscriptionErrorMessage(error) };
     }
 
@@ -1241,6 +1271,24 @@ async function handleActiveExcursionSearchSession(
   }
 
   if (session.stage === 'results') {
+    if (session.results.length === 0) {
+      if (/\b(search again|try again|retry)\b/i.test(inboundText)) {
+        const criteria = session.criteria;
+        await sessionService.saveSearching(userId, criteria);
+
+        if (getWhatsAppOutboundService().isConfigured()) {
+          void searchExcursionsAndNotify(userId, outboundFrom, criteria, correlationId, options);
+          return 'That earlier search did not return options. I am running it again now and will send any matches here.';
+        }
+
+        const retryResult = await searchExcursions(userId, criteria, correlationId);
+        await saveExcursionSearchResults(userId, criteria, retryResult, 0);
+        return retryResult.reply;
+      }
+
+      return 'I could not find experience suggestions from the earlier search. Reply "search again" and I will retry, or send a different activity or destination.';
+    }
+
     const bookSelection = parseNumberedCue(inboundText, 'book');
     if (bookSelection) {
       const selectedExperience = await sessionService.selectExperience(userId, bookSelection);
@@ -1302,6 +1350,21 @@ async function handleActiveExcursionSearchSession(
   }
 
   if (session.stage === 'searching') {
+    const searchStartedAt = Date.parse(session.updatedAt);
+    if (!Number.isFinite(searchStartedAt) || Date.now() - searchStartedAt > 2 * 60 * 1000) {
+      const criteria = session.criteria;
+      await sessionService.saveSearching(userId, criteria);
+
+      if (getWhatsAppOutboundService().isConfigured()) {
+        void searchExcursionsAndNotify(userId, outboundFrom, criteria, correlationId, options);
+        return 'The earlier search stalled, so I am restarting it now. I will send any experience matches here.';
+      }
+
+      const retryResult = await searchExcursions(userId, criteria, correlationId);
+      await saveExcursionSearchResults(userId, criteria, retryResult, 0);
+      return retryResult.reply;
+    }
+
     return 'I am still checking the best experience matches for you. I will send the options here as soon as they are ready.';
   }
 
@@ -1385,6 +1448,30 @@ async function handleActiveHotelSearchSession(
   }
 
   if (session.stage === 'booking_provider_pending' || session.state === 'booking_provider_pending') {
+    if (session.humanHandoff) {
+      return 'Your request is already with a human concierge. YANA will not book or charge while the concierge is handling it.';
+    }
+    if (session.pendingHumanHandoffConsent) {
+      if (/^(?:no|not now|cancel)$/i.test(inboundText.trim())) {
+        await sessionService.clearHandoffConsentPending(userId);
+        return 'Okay, I will keep the request here. No details were shared, and no booking or payment was attempted.';
+      }
+      if (!isExplicitHandoffConsent(inboundText)) {
+        return 'Would you like me to share the minimum stay-request details with a human travel concierge? Reply "yes, connect me" to consent, or "no" to keep the request here.';
+      }
+      if (!session.selectedHotel) {
+        return 'Your selected stay is no longer available in this session. No handoff, booking, or payment was attempted.';
+      }
+      const handoff = await getHumanHandoffRuntime().requestHotelHandoff({
+        whatsappUserId: userId,
+        correlationId,
+        travelerConsented: true,
+        criteria: session.criteria,
+        selectedHotel: session.selectedHotel,
+        recheckReceipt: session.recheckReceipt,
+      });
+      return handoff.reply;
+    }
     return session.selectedHotel
       ? buildBookingProviderBoundaryReply(session.selectedHotel.selectedHotelSnapshot.name)
       : 'I have your hotel selection saved. The booking provider check is the next integration boundary.';
@@ -1398,7 +1485,25 @@ async function handleActiveHotelSearchSession(
         return 'Please choose from the latest list only: book 1, book 2, or book 3.';
       }
 
-      return buildBookingProviderBoundaryReply(selectedHotel.selectedHotelSnapshot.name);
+      const bookingCheck = await getHotelSearchFlowService().handleBookingCheck(
+        session.criteria,
+        selectedHotel.selectedHotelSnapshot,
+        {
+          correlationId,
+          sessionId: userId,
+          userLanguage: 'en',
+        }
+      );
+      if (bookingCheck.status === 'browse_results') {
+        if (!bookingCheck.authoritativeProvider) {
+          return 'I could not preserve the supplier recheck safely. Please try the booking check again. No booking or payment was attempted.';
+        }
+        const receipt = await getHotelRecheckReceiptService().issue(selectedHotel, session.criteria, bookingCheck.authoritativeProvider);
+        await sessionService.saveRecheckReceipt(userId, receipt);
+        await sessionService.markHandoffConsentPending(userId);
+        return `${bookingCheck.reply}\n\nWould you like me to share the minimum stay-request details with a human travel concierge? Reply "yes, connect me" to consent.`;
+      }
+      return bookingCheck.reply;
     }
 
     const detailsSelection = parseNumberedCue(inboundText, 'details');
@@ -1508,8 +1613,7 @@ async function handleActiveHotelSearchSession(
     await saveHotelSearchResults(userId, criteria, hotelSearchResult, nextOffset);
     return hotelSearchResult.reply;
   } catch (error) {
-    console.error(`[${correlationId}] Hotel search failed during synchronous fallback:`, error);
-    return 'I am sorry, the hotel search failed while I was checking options. Your form details are saved, so please type "search again" and I will retry.';
+    return handleTravelFailure('hotel', correlationId, error).reply;
   }
 }
 
@@ -1585,10 +1689,7 @@ async function routeActiveConversationWithLlm(
       return { action: 'start_new_hotel_search' };
     }
   } catch (error) {
-    console.warn(
-      `[${correlationId}] Conversation route LLM check failed; continuing deterministic flow:`,
-      error
-    );
+    logSafeOperatorFailure(console, 'conversation_route_fallback_used', correlationId, error);
   }
 
   return null;
@@ -1643,11 +1744,11 @@ async function handleActiveLogisticsSearchSession(
   }
 
   if (session.stage === 'provider_pending' || session.state === 'provider_pending') {
-    return "I've prepared your transport booking. The next step is to check live availability and confirm pricing with the transport provider.";
+    return 'Your transport quote request is prepared. No vehicle, availability, or price is confirmed; a transport operator must review it and provide a quote before you proceed.';
   }
 
   if (session.stage === 'booking_form') {
-    return 'I have your transport option selected. Please complete the booking request form so I can prepare the provider availability check.';
+    return 'I have your request option selected. Please complete the quote-request form; this does not book a vehicle or confirm availability or price.';
   }
 
   if (session.stage === 'results') {
@@ -1679,7 +1780,7 @@ async function handleActiveLogisticsSearchSession(
       const nextBatchIndex = latestDisplayedBatchIndex + 1;
       const page = resultBatches[nextBatchIndex] ?? [];
       if (page.length === 0) {
-        return 'I have shown all 9 transport suggestions for this search. Which transport option would you like me to arrange? Reply book 1, book 2, or book 3 from the latest list.';
+        return 'I have shown all 9 illustrative transport request options. Which should I send for an operator quote and availability check? Reply book 1, book 2, or book 3 from the latest list.';
       }
 
       const nextOffset = Math.min((nextBatchIndex + 1) * 3, session.results.length);
@@ -1855,6 +1956,88 @@ async function resetConversation(
   return `${buildWelcomeMessage(userContext)}\n\nI have cleared the active request. Tell me what you would like to do next, or say "resume" if you want me to check for a saved request.`;
 }
 
+async function synchronizeTravelJourneyState(userId: string, userText: string): Promise<void> {
+  try {
+    const [hotel, restaurant, excursion, logistics, itinerary] = await Promise.all([
+      getHotelSearchSessionService().get(userId),
+      getRestaurantSearchSessionService().get(userId),
+      getExcursionSearchSessionService().get(userId),
+      getLogisticsSearchSessionService().get(userId),
+      getItinerarySessionService().get(userId),
+    ]);
+
+    const activeSessions: Array<{
+      service: JourneyService;
+      updatedAt: string;
+      stage: string;
+    }> = [];
+    if (hotel && hotel.state !== 'reset') {
+      activeSessions.push({ service: 'hotel', updatedAt: hotel.updatedAt, stage: hotel.stage });
+    }
+    if (restaurant && restaurant.state !== 'reset') {
+      activeSessions.push({ service: 'restaurant', updatedAt: restaurant.updatedAt, stage: restaurant.stage });
+    }
+    if (excursion && excursion.state !== 'reset') {
+      activeSessions.push({ service: 'excursion', updatedAt: excursion.updatedAt, stage: excursion.stage });
+    }
+    if (logistics && logistics.state !== 'reset') {
+      activeSessions.push({ service: 'transport', updatedAt: logistics.updatedAt, stage: logistics.stage });
+    }
+    if (itinerary && itinerary.state !== 'completed') {
+      activeSessions.push({ service: 'itinerary', updatedAt: itinerary.updatedAt, stage: itinerary.state });
+    }
+
+    const activeSession = activeSessions.sort(
+      (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+    )[0];
+    const inferredService = inferJourneyService(userText);
+    const activeService = isBroadExploreRequest(userText)
+      ? undefined
+      : inferredService ?? activeSession?.service;
+    const isBookingStage = Boolean(activeSession && isBookingStageForJourney(activeSession));
+    const mode: JourneyMode = isPlainChatMessage(userText) && !isBookingStage
+      ? 'chat'
+      : resolveJourneyMode({
+          message: userText,
+          activeService,
+          bookingStageActive: isBookingStage,
+        });
+
+    await getTravelJourneyStateService().set(userId, mode, activeService);
+  } catch {
+    // Journey-state bookkeeping is auxiliary; never block a customer reply on it.
+    console.warn('[TravelJourneyState] Could not update conversation mode');
+  }
+}
+
+function isBookingStageForJourney(session: { service: JourneyService; stage: string }): boolean {
+  if (session.service === 'hotel') return session.stage === 'booking_provider_pending';
+  if (session.service === 'restaurant') return session.stage === 'reservation_pending';
+  if (session.service === 'excursion' || session.service === 'transport') {
+    return session.stage === 'booking_form' || session.stage === 'provider_pending';
+  }
+  return session.stage === 'awaiting_booking';
+}
+
+function isPlainChatMessage(message: string): boolean {
+  return isGreeting(message) ||
+    /^(?:thanks|thank you|okay|ok|cool|great|all good|how are you)[.!? ]*$/i.test(message.trim());
+}
+
+function isBroadExploreRequest(message: string): boolean {
+  return /\b(?:i(?:'m| am) just exploring|i want to explore|let(?:'s| us) explore|help me explore|what can i explore)\b/i.test(message) &&
+    !inferJourneyService(message);
+}
+
+function inferJourneyService(message: string): JourneyService | undefined {
+  if (isHotelRequestMessage(message)) return 'hotel';
+  if (isRestaurantRequestMessage(message)) return 'restaurant';
+  if (isExcursionRequestMessage(message)) return 'excursion';
+  if (isLogisticsRequestMessage(message)) return 'transport';
+  if (isItineraryRequestMessage(message)) return 'itinerary';
+  return undefined;
+}
+
 async function resumeConversation(userId: string): Promise<string | null> {
   const hotelSession = await getHotelSearchSessionService().get(userId);
 
@@ -2005,10 +2188,10 @@ async function searchHotelsAndNotify(
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
-    console.error(`[${correlationId}] Hotel search failed after async acknowledgement:`, error);
+    const safeFailure = handleTravelFailure('hotel', correlationId, error);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
-      'I am sorry, the hotel search failed while I was checking options. Your form details are saved, so please type "search again" and I will retry.',
+      safeFailure.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   }
@@ -2066,10 +2249,10 @@ async function searchRestaurantsAndNotify(
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
-    console.error(`[${correlationId}] Restaurant search failed after async acknowledgement:`, error);
+    const safeFailure = handleTravelFailure('restaurant', correlationId, error);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
-      'I am sorry, the restaurant search failed while I was checking options. Your dining details are saved, so please type "search again" and I will retry.',
+      safeFailure.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   }
@@ -2099,11 +2282,30 @@ async function searchExcursionsAndNotify(
 
     if (excursionSearchResult.browseResponse?.results.length) {
       const firstPage = excursionSearchResult.browseResponse.results.slice(0, 3);
-      const delivered = await getWhatsAppOutboundService().sendWhatsAppMessages(
-        userId,
-        buildExcursionResultCardReply(criteria, firstPage),
-        { voice: options.voicePreferred, from: outboundFrom }
-      );
+      const outbound = getWhatsAppOutboundService();
+      let delivered = false;
+
+      try {
+        delivered = await outbound.sendWhatsAppMessages(
+          userId,
+          buildExcursionResultCardReply(criteria, firstPage),
+          { voice: options.voicePreferred, from: outboundFrom }
+        );
+      } catch (error) {
+        console.warn(`[${correlationId}] Excursion result cards failed; falling back to text`, error);
+      }
+
+      if (!delivered) {
+        try {
+          delivered = await outbound.sendWhatsAppReply(userId, excursionSearchResult.reply, {
+            voice: options.voicePreferred,
+            from: outboundFrom,
+          });
+        } catch (error) {
+          console.warn(`[${correlationId}] Excursion text fallback delivery failed`, error);
+        }
+      }
+
       await saveExcursionSearchResults(
         userId,
         criteria,
@@ -2113,16 +2315,18 @@ async function searchExcursionsAndNotify(
       return;
     }
 
+    await saveExcursionSearchResults(userId, criteria, excursionSearchResult, 0);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       excursionSearchResult.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
-    console.error(`[${correlationId}] Excursion search failed after async acknowledgement:`, error);
+    const safeFailure = handleTravelFailure('excursion', correlationId, error);
+    await getExcursionSearchSessionService().saveResults(userId, criteria, [], 0);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
-      'I am sorry, the experience search failed while I was checking options. Your excursion details are saved, so please type "search again" and I will retry.',
+      safeFailure.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   }
@@ -2172,10 +2376,10 @@ async function searchLogisticsAndNotify(
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
-    console.error(`[${correlationId}] Transport search failed after async acknowledgement:`, error);
+    const safeFailure = handleTravelFailure('transport', correlationId, error);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
-      'I am sorry, the transport search failed while I was checking options. Your transport details are saved, so please type "search again" and I will retry.',
+      safeFailure.reply,
       { voice: options.voicePreferred, from: outboundFrom }
     );
   }
@@ -2231,14 +2435,12 @@ async function saveExcursionSearchResults(
   excursionSearchResult: ExcursionSearchFlowResult,
   nextOffset: number
 ): Promise<void> {
-  if (excursionSearchResult.browseResponse?.results.length) {
-    await getExcursionSearchSessionService().saveResults(
-      userId,
-      criteria,
-      excursionSearchResult.browseResponse.results,
-      nextOffset
-    );
-  }
+  await getExcursionSearchSessionService().saveResults(
+    userId,
+    criteria,
+    excursionSearchResult.browseResponse?.results ?? [],
+    nextOffset
+  );
 }
 
 async function saveLogisticsSearchResults(
@@ -2264,7 +2466,7 @@ async function savePendingProfileGateRequest(
   try {
     await getPendingRequestService().saveProfileGateRequest(inboundMessage);
   } catch (error) {
-    console.error(`[${correlationId}] Failed to save pending profile-gate request:`, error);
+    logSafeOperatorFailure(console, 'profile_gate_request_save_failed', correlationId, error);
   }
 }
 
@@ -2283,7 +2485,7 @@ async function resolveUserMessageAfterProfileGate(
       return pendingRequest.messageText;
     }
   } catch (error) {
-    console.error(`[${correlationId}] Failed to consume pending profile-gate request:`, error);
+    logSafeOperatorFailure(console, 'profile_gate_request_consume_failed', correlationId, error);
   }
 
   return inboundText;
@@ -2481,6 +2683,36 @@ function isNoExtraPreferenceCue(message: string): boolean {
 
 function isHotelRequestMessage(message: string): boolean {
   return /\b(hotel|stay|accommodation|room|resort|bnb|b&b)\b/i.test(message);
+}
+
+function isExplicitHandoffConsent(message: string): boolean {
+  return /^(?:yes[, ]+)?(?:connect me|share (?:it|them|the details)|human help|concierge|yes)$/i.test(message.trim());
+}
+
+function isFlightServiceRequestMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const mentionsFlightService =
+    /\bflights?\b|\bair\s*fares?\b|\b(?:airline|air|plane)\s*tickets?\b/.test(normalized) ||
+    /\b(?:fly|flying)\s+(?:me\s+)?(?:from|to)\b/.test(normalized);
+
+  if (!mentionsFlightService) {
+    return false;
+  }
+
+  const mentionsTransfer =
+    /\b(?:airport\s+)?(?:transfer|pickup|pick up|drop-?off)|taxi|driver|chauffeur\b/.test(
+      normalized
+    );
+
+  return !mentionsTransfer;
+}
+
+function buildUnsupportedFlightServiceReply(): string {
+  return (
+    'Flight search and booking are not available through Yana yet. ' +
+    'Please use an airline or a trusted flight-booking platform for current fares and tickets. ' +
+    'I can still help plan your Sri Lanka itinerary or find hotels, restaurants, excursions, and transport.'
+  );
 }
 
 function isRestaurantRequestMessage(message: string): boolean {
@@ -2803,13 +3035,23 @@ function buildHotelDetailsReply(
     hotel.rating
       ? `Rating: ${hotel.rating.toFixed(1)}/5${hotel.reviewCount ? ` (${hotel.reviewCount} reviews)` : ''}`
       : undefined,
-    hotel.priceRange ? `Price signal: ${hotel.priceRange}` : 'Price signal: confirm live rate',
+    hotel.roomName ? `Room: ${hotel.roomName}` : undefined,
+    hotel.sltdaVerified
+      ? `Sri Lanka Tourism registration: Verified${hotel.sltdaLicenceValidUntil ? `; licence valid to ${hotel.sltdaLicenceValidUntil}` : ''}`
+      : undefined,
+    hotel.mealPlan ? `Meal plan: ${formatInventoryLabel(hotel.mealPlan)}` : undefined,
+    hotel.refundable === undefined
+      ? undefined
+      : `Cancellation: ${hotel.refundable ? 'Refundable' : 'Non-refundable'}`,
+    hotel.priceRange
+      ? `${hotel.rateAmount !== undefined ? 'Returned total' : 'Price signal'}: ${hotel.priceRange}`
+      : 'Price signal: confirm live rate',
     hotel.address ? `Address: ${hotel.address}` : undefined,
-    buildSmartPlaceLink(hotel) ? `Smart view: ${buildSmartPlaceLink(hotel)}` : undefined,
+    buildHotelSmartPlaceLink(hotel) ? `Smart view: ${buildHotelSmartPlaceLink(hotel)}` : undefined,
     hotel.googleMapsUri ? `Map: ${hotel.googleMapsUri}` : undefined,
     hotel.thumbnailUrl ? `Thumbnail: ${hotel.thumbnailUrl}` : undefined,
     '',
-    `Reply "book ${displayNumber}" if you would like me to prepare the booking check for this hotel.`,
+    `Reply "book ${displayNumber}" if you would like me to request a fresh supplier rate check for this stay.`,
   ].filter((line): line is string => typeof line === 'string');
 
   return lines.join('\n');
@@ -2910,15 +3152,16 @@ function buildLogisticsDetailsReply(
 
   const lines = [
     `${displayNumber}. ${option.provider}`,
+    'Status: request option only — not live inventory or a confirmed quote',
     `Vehicle: ${option.vehicle}`,
-    `Estimated price: ${option.estimatedPrice}`,
+    `Quote status: ${option.estimatedPrice}`,
     `Vehicle type: ${option.vehicleType}`,
-    `Capacity: ${option.capacity}`,
+    `Suggested capacity: ${option.capacity} (operator must confirm vehicle fit)`,
     `Luggage: ${option.luggageCapacity}`,
-    `Estimated duration: ${option.estimatedDuration}`,
+    `Duration status: ${option.estimatedDuration}`,
     option.notes,
     '',
-    `Reply "book ${displayNumber}" if you would like me to prepare the transport booking request for this option.`,
+    `Reply "book ${displayNumber}" if you would like me to prepare an operator quote request for this option.`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
 
   return lines.join('\n');
@@ -3131,17 +3374,18 @@ async function enrichLogisticsResultsForWhatsApp(
         : -1;
 
   const latestBatch = getLogisticsSessionResultBatches(session)[latestDisplayedBatchIndex] ?? [];
-  if (latestBatch.length === 0 || !fallbackMessage.startsWith('I found these transport options')) {
+  if (latestBatch.length === 0 || !fallbackMessage.startsWith('I prepared illustrative transport request options')) {
     return fallbackMessage;
   }
 
   return buildLogisticsResultCardReply(session.criteria, latestBatch);
 }
 
-async function buildWebhookReply(
+export async function buildWebhookReply(
   userId: string,
   reply: string,
-  voicePreferred: boolean
+  voicePreferred: boolean,
+  correlationId: string
 ): Promise<TwilioReply> {
   const enrichedReply = await enrichSearchResultsForWhatsApp(userId, reply);
 
@@ -3167,7 +3411,7 @@ async function buildWebhookReply(
       },
     ];
   } catch (error) {
-    console.error('[webhook] TTS failed for voice reply; sending text fallback:', error);
+    logSafeOperatorFailure(console, 'tts_text_fallback_used', correlationId, error);
     return enrichedReply;
   }
 }
@@ -3248,7 +3492,7 @@ async function deliverWebhookReplyThroughTwilio(
 
     return delivered;
   } catch (error) {
-    console.error(`[${correlationId}] WhatsApp REST reply failed; falling back to TwiML:`, error);
+    logSafeOperatorFailure(console, 'whatsapp_rest_delivery_failed', correlationId, error);
     return false;
   }
 }
@@ -3261,7 +3505,7 @@ function buildHotelResultCardReply(
   const intro = [
     `🏨 I found these hotel matches for ${criteria.location ?? 'your search'}.`,
     criteria.additionalPreferences ? `✨ I included your preference: ${criteria.additionalPreferences}.` : undefined,
-    'Reply "next" or "more" for more options, "details 1", or "book 1".',
+    'Reply "next" or "more" for more options, "details 1", or "book 1" to request a stay.',
   ].filter((line): line is string => typeof line === 'string');
 
   return [
@@ -3307,9 +3551,9 @@ function buildLogisticsResultCardReply(
   options: TransportOption[]
 ): TwilioMessage[] {
   const intro = [
-    `🚗 I found these transport options from ${criteria.pickupLocation ?? 'your pickup'} to ${criteria.destination ?? 'your destination'}.`,
+    `🚗 I prepared illustrative transport request options from ${criteria.pickupLocation ?? 'your pickup'} to ${criteria.destination ?? 'your destination'}. These are not live provider inventory or confirmed quotes.`,
     criteria.additionalPreferences ? `✨ I included your preference: ${criteria.additionalPreferences}.` : undefined,
-    'Reply "next" or "more" for more options, "details 1", or "book 1".',
+    'Reply "next" or "more" for more options, "details 1", or "book 1" to request an operator quote.',
   ].filter((line): line is string => typeof line === 'string');
 
   return [
@@ -3324,16 +3568,26 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
       ? `${hotel.rating.toFixed(1)}/5${hotel.reviewCount ? ` (${hotel.reviewCount} reviews)` : ''}`
       : 'Rating not listed';
   const mapsLink = buildGoogleMapsShortLink(hotel);
-  const smartLink = buildSmartPlaceLink(hotel);
+  const smartLink = buildHotelSmartPlaceLink(hotel);
   const lines = [
     smartLink ? `Smart view: ${smartLink}` : undefined,
     `🏨 *${displayNumber}. ${hotel.name}*`,
+    hotel.sltdaVerified
+      ? `✅ Sri Lanka Tourism registration: Verified${hotel.sltdaLicenceValidUntil ? `; licence valid to ${hotel.sltdaLicenceValidUntil}` : ''}`
+      : undefined,
     `⭐ Rating: ${rating}`,
-    hotel.priceRange ? `💰 Price signal: ${hotel.priceRange}` : '💰 Price signal: confirm live rate',
+    hotel.roomName ? `🛏️ Room: ${hotel.roomName}` : undefined,
+    hotel.mealPlan ? `🍽️ Meal plan: ${formatInventoryLabel(hotel.mealPlan)}` : undefined,
+    hotel.refundable === undefined
+      ? undefined
+      : `↩️ Cancellation: ${hotel.refundable ? 'Refundable' : 'Non-refundable'}`,
+    hotel.priceRange
+      ? `💰 ${hotel.rateAmount !== undefined ? 'Returned total' : 'Price signal'}: ${hotel.priceRange}`
+      : '💰 Price signal: confirm live rate',
     hotel.address ? `📍 Location: ${hotel.address}` : undefined,
     `✨ Why Yana picked it: ${buildHotelRecommendationReason(hotel)}`,
     mapsLink ? `🗺️ View on Google Maps: ${mapsLink}` : undefined,
-    `✅ Book now: reply *book ${displayNumber}*`,
+    `✅ Request this stay: reply *book ${displayNumber}*`,
     `ℹ️ More info: reply *details ${displayNumber}*`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
 
@@ -3341,6 +3595,10 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
     body: lines.join('\n'),
     mediaUrl: isPublicHttpsUrl(hotel.thumbnailUrl) ? hotel.thumbnailUrl : undefined,
   };
+}
+
+function formatInventoryLabel(value: string): string {
+  return value.toLowerCase().replace(/_/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
 function buildRestaurantResultCard(
@@ -3408,13 +3666,14 @@ function buildLogisticsResultCard(
 ): TwilioMessage {
   const lines = [
     `🚗 *${displayNumber}. ${option.provider}*`,
+    'ℹ️ Status: request option only — not live inventory or a confirmed quote',
     `🚘 Vehicle: ${option.vehicle}`,
-    `💰 Estimated price: ${option.estimatedPrice}`,
+    `💰 Quote status: ${option.estimatedPrice}`,
     `🚙 Vehicle type: ${option.vehicleType}`,
-    `👥 Capacity: ${option.capacity}`,
-    `⏱️ Estimated duration: ${option.estimatedDuration}`,
+    `👥 Suggested capacity: ${option.capacity} (operator must confirm fit)`,
+    `⏱️ Duration status: ${option.estimatedDuration}`,
     `✨ Why Yana picked it: ${buildLogisticsRecommendationReason(option)}`,
-    `✅ Book now: reply *book ${displayNumber}*`,
+    `✅ Request operator quote: reply *book ${displayNumber}*`,
     `ℹ️ More info: reply *details ${displayNumber}*`,
   ];
 
@@ -3469,23 +3728,31 @@ function buildExcursionRecommendationReason(experience: ExcursionBrowseResult): 
 }
 
 function buildLogisticsRecommendationReason(option: TransportOption): string {
-  if (typeof option.rating === 'number' && option.capacity > 4) {
-    return `it has a strong provider rating and enough capacity for passengers or luggage.`;
-  }
-
-  if (typeof option.rating === 'number') {
-    return `it has a strong ${option.rating.toFixed(1)}/5 provider signal and fits the journey.`;
-  }
-
-  return 'it fits the journey details and transport preferences you shared.';
+  return option.capacity > 4
+    ? 'the vehicle category may fit the passenger or luggage request; an operator must confirm the actual vehicle.'
+    : 'the vehicle category fits the preferences you shared; an operator must confirm the actual vehicle.';
 }
 
 function buildGoogleMapsShortLink(hotel: HotelBrowseResult): string | undefined {
-  if (!hotel.id) {
+  const placeId = resolveHotelGooglePlaceId(hotel);
+  if (!placeId) {
     return hotel.googleMapsUri;
   }
 
-  return `${getPublicBaseUrl()}/places/google/${encodeURIComponent(hotel.id)}`;
+  return `${getPublicBaseUrl()}/places/google/${encodeURIComponent(placeId)}`;
+}
+
+function buildHotelSmartPlaceLink(hotel: HotelBrowseResult): string | undefined {
+  const placeId = resolveHotelGooglePlaceId(hotel);
+  return placeId
+    ? `${getPublicBaseUrl()}/places/smart/${encodeURIComponent(placeId)}`
+    : undefined;
+}
+
+function resolveHotelGooglePlaceId(hotel: HotelBrowseResult): string | undefined {
+  if (hotel.googlePlaceId) return hotel.googlePlaceId;
+  if (!hotel.id || /^yana_hotel_[^:]+:yana_room_/i.test(hotel.id)) return undefined;
+  return hotel.id;
 }
 
 function buildSmartPlaceLink(place: { id?: string }): string | undefined {
@@ -3644,11 +3911,11 @@ async function replayLogisticsResults(
 
 function buildBookingProviderBoundaryReply(hotelName: string): string {
   return [
-    `Perfect — I've selected ${hotelName} for you.`,
+    `I have saved your request for ${hotelName}.`,
     '',
-    "I'll now check live room availability, final rates, cancellation terms, and booking options for your dates.",
+    'No room, rate, or reservation is confirmed yet.',
     '',
-    "This booking check will be connected to our hotel booking providers next, such as Hotelbeds or LiteAPI. For now, I've saved your selected hotel and booking request so we can continue from here.",
+    'A fresh supplier rate recheck must pass before any booking or payment step. Booking and payment remain disabled until provider and commercial approval is complete.',
   ].join('\n');
 }
 

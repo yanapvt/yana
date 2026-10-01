@@ -1,5 +1,11 @@
 # YANA / OGO Current Implementation Status
 
+> Superseded for current planning. This snapshot was last verified in May 2026
+> and predates the OpenWA/Meta, multi-vertical form, itinerary, carousel, and
+> voice-routing work now present on `main`. Use `docs/PROJECT_HANDOFF.md`,
+> `docs/ARCHITECTURE.md`, and passing tests as the current baseline. The content
+> below is retained as a historical verification record.
+
 Last verified: 2026-05-21
 
 This file is the source-of-truth status snapshot for the current repository. Historical `TASK_*_COMPLETION.md` files record past task work, but they do not mean the full product is production-complete.

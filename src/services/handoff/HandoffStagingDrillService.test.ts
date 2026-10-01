@@ -1,0 +1,5 @@
+import{describe,expect,it,vi}from'vitest';import{HandoffStagingDrillService}from'./HandoffStagingDrillService.js';
+describe('HandoffStagingDrillService',()=>{const harness={verifyMigrations:vi.fn(),exercise:vi.fn().mockResolvedValue({recovered:true,duplicateDeliveries:0})};
+it('is plan-only by default and declares zero external traveler effects',()=>expect(new HandoffStagingDrillService(harness).plan()).toMatchObject({status:'planned',bookingAttempted:false,paymentAttempted:false,travelerContactAttempted:false}));
+it('rejects execution outside an explicitly confirmed staging environment',async()=>expect(new HandoffStagingDrillService(harness).run({enabled:true,environment:'production',confirm:'MR11_HANDOFF_DRILL'})).rejects.toThrow('safety guard'));
+it('runs every recovery scenario deterministically without duplicates',async()=>{const report=await new HandoffStagingDrillService(harness).run({enabled:true,environment:'staging',confirm:'MR11_HANDOFF_DRILL'});expect(report.status).toBe('passed');expect(report.results).toHaveLength(9);expect(report).toMatchObject({bookingAttempted:false,paymentAttempted:false,travelerContactAttempted:false});});});

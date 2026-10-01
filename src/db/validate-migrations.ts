@@ -35,6 +35,15 @@ const REQUIRED_TABLES = [
   'audit_logs',
   'decision_logs',
   'tts_assets',
+  'registered_accommodations',
+  'srilanka_accommodations',
+  'rejected_hotel_inventory_audit',
+  'hotel_search_settings',
+  'handoff_operational_alerts',
+  'operator_dashboard_sessions',
+  'operator_auth_events',
+  'inbound_message_claims',
+  'hotel_recheck_receipts',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -53,6 +62,35 @@ const REQUIRED_INDEX_TYPES = {
     'idx_audit_logs_correlation_id',
     'idx_decision_logs_correlation_id',
     'idx_human_handoffs_correlation_id',
+    'human_handoffs_one_open_case_per_session_idx',
+    'human_handoffs_sla_due_idx',
+    'notifications_handoff_event_unique_idx',
+    'notifications_handoff_queue_ready_idx',
+    'notifications_handoff_queue_lease_idx',
+    'notifications_handoff_dead_letter_idx',
+    'handoff_operational_alerts_delivery_idx',
+    'operator_dashboard_sessions_expiry_idx',
+    'operator_auth_events_retention_idx',
+    'operator_auth_events_correlation_idx',
+    'inbound_message_claims_expiry_idx',
+    'hotel_recheck_receipts_expiry_idx',
+  ],
+  registered_accommodation_lookup: [
+    'registered_accommodations_normalized_name_idx',
+    'registered_accommodations_district_idx',
+    'registered_accommodations_licence_validity_idx',
+  ],
+  srilanka_accommodation_lookup: [
+    'srilanka_accommodations_record_key_idx',
+    'srilanka_accommodations_registration_no_idx',
+    'srilanka_accommodations_name_idx',
+    'srilanka_accommodations_local_authority_idx',
+  ],
+  rejected_hotel_inventory_audit_lookup: [
+    'rejected_hotel_inventory_audit_correlation_idx',
+    'rejected_hotel_inventory_audit_occurred_at_idx',
+    'rejected_hotel_inventory_audit_supplier_idx',
+    'rejected_hotel_inventory_audit_reason_idx',
   ],
 };
 
@@ -75,6 +113,16 @@ async function validateMigrations(): Promise<void> {
     '011_create_notifications.sql',
     '012_create_audit_logs.sql',
     '013_create_tts_assets.sql',
+    '014_create_registered_accommodations.sql',
+    '015_support_srilanka_accommodations.sql',
+    '016_create_rejected_hotel_inventory_audit.sql',
+    '017_create_hotel_search_settings.sql',
+    '018_harden_human_handoffs.sql',
+    '019_idempotent_handoff_notifications.sql',
+    '020_handoff_queue_leases.sql',
+    '021_handoff_operations_hardening.sql',
+    '022_operator_dashboard_security.sql',
+    '023_reliability_receipts.sql',
   ];
 
   let allContent = '';
@@ -88,7 +136,7 @@ async function validateMigrations(): Promise<void> {
   console.log('Checking required tables:');
   const missingTables: string[] = [];
   for (const table of REQUIRED_TABLES) {
-    const regex = new RegExp(`CREATE TABLE ${table}\\s*\\(`, 'i');
+    const regex = new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${table}\\s*\\(`, 'i');
     if (regex.test(allContent)) {
       console.log(`  ✅ ${table}`);
     } else {
@@ -103,7 +151,7 @@ async function validateMigrations(): Promise<void> {
   for (const [category, indexes] of Object.entries(REQUIRED_INDEX_TYPES)) {
     console.log(`\n  ${category}:`);
     for (const index of indexes) {
-      const regex = new RegExp(`CREATE INDEX ${index}`, 'i');
+      const regex = new RegExp(`CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?${index}`, 'i');
       if (regex.test(allContent)) {
         console.log(`    ✅ ${index}`);
       } else {

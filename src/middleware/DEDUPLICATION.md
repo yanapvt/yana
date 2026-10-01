@@ -82,7 +82,9 @@ Twilio's webhook retry window is typically much shorter (minutes to hours), but 
 ### Why Fail-Open?
 
 When Redis is unavailable or MessageSid is missing, we proceed with processing rather than blocking. This is because:
-- Availability is more important than perfect deduplication
+- `repeatable_external_effect` ingress (all current Twilio/OpenWA message processing) fails closed with 503 when neither Redis nor the shared Postgres claim store is available. This prevents duplicate replies and future non-idempotent effects; providers can retry later.
+- `read_only` work may explicitly fail open, but no current webhook route is classified read-only.
+- Redis is the fast atomic `SET NX` path. Postgres `INSERT ... ON CONFLICT DO NOTHING` is the deployment-shared outage/restart fallback.
 - Duplicate processing is recoverable (idempotency at other layers)
 - Blocking legitimate messages is worse than processing a duplicate
 

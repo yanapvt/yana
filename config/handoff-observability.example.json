@@ -1,0 +1,11 @@
+{
+  "dashboard": ["queue_ready", "queue_processing", "queue_retrying", "queue_dead_letters", "oldest_ready_age_seconds", "open_cases", "sla_breaches"],
+  "alerts": {
+    "queueDepth": { "thresholdEnvironment": "HUMAN_HANDOFF_ALERT_QUEUE_DEPTH", "severity": "warning" },
+    "queueAge": { "thresholdEnvironment": "HUMAN_HANDOFF_ALERT_OLDEST_MINUTES", "severity": "warning" },
+    "databaseUnavailable": { "healthyPollsToResolve": 2, "severity": "page" },
+    "deadLettersPresent": { "threshold": 1, "severity": "page" },
+    "slaBreaches": { "sustainedPolls": 2, "severity": "page" }
+  },
+  "safeLabels": ["provider", "event_type", "status", "error_code"]
+}

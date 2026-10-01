@@ -6,6 +6,7 @@ import { env } from '../config/environment.js';
 import { processNormalizedInboundMessage } from './webhook.js';
 import { getMetaWhatsAppMediaService } from '../services/MetaWhatsAppMediaService.js';
 import { getMetaWhatsAppOutboundService } from '../services/MetaWhatsAppOutboundService.js';
+import { getInboundIdempotencyService } from '../services/InboundIdempotencyService.js';
 import {
   isMetaStatusWebhook,
   normalizeMetaWhatsAppInboundMessage,
@@ -49,6 +50,17 @@ router.post(
       const inboundMessage = normalizeMetaWhatsAppInboundMessage(payload, {
         mediaUrlForId: (mediaId) => getMetaWhatsAppMediaService().buildProxyUrl(mediaId),
       });
+      const deduplication = inboundMessage.messageId
+        ? await getInboundIdempotencyService().claim('meta', inboundMessage.messageId, correlationId, 'repeatable_external_effect')
+        : 'unavailable';
+      if (deduplication === 'unavailable') {
+        res.status(503).json({ ok: false, error: 'Webhook idempotency unavailable' });
+        return;
+      }
+      if (deduplication === 'duplicate') {
+        res.status(200).json({ ok: true, duplicate: true });
+        return;
+      }
 
       console.log(
         `[${correlationId}] Meta WhatsApp message from ${inboundMessage.from}: type=${inboundMessage.type}`
