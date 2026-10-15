@@ -629,11 +629,14 @@ describe('webhook hotel search flow', () => {
     );
   });
 
-  it('continues restaurant discovery when the next message is a misspelled standalone location', async () => {
+  it.each([
+    ['resturants', 'collombo', 'Colombo'],
+    ['I am hungry', 'Moratuwa', 'Moratuwa'],
+  ])('continues a pending restaurant discovery for %s followed by %s', async (originalMessage, locationReply, expectedLocation) => {
     getRestaurantSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       whatsappUserId: 'whatsapp:+15550009999',
-      originalMessage: 'resturants',
+      originalMessage,
       criteria: {},
       normalizedCriteria: {},
       stage: 'awaiting_preferences',
@@ -645,12 +648,37 @@ describe('webhook hotel search flow', () => {
       updatedAt: '2026-10-14T17:50:00.000Z',
     });
 
-    const reply = await processInboundMessage(buildTextMessage('collombo'), 'corr-restaurant-location');
+    const reply = await processInboundMessage(buildTextMessage(locationReply), 'corr-restaurant-location');
 
-    expect(reply).toContain('places to eat around Colombo');
+    expect(reply).toContain(`places to eat around ${expectedLocation}`);
     expect(saveRestaurantSearchingMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
-      expect.objectContaining({ location: 'Colombo', originalRequest: 'resturants' })
+      expect.objectContaining({ location: expectedLocation, originalRequest: originalMessage })
+    );
+    expect(llmDecideMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the active restaurant schema even when a restored legacy session has no original message', async () => {
+    getRestaurantSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      whatsappUserId: 'whatsapp:+15550009999',
+      criteria: {},
+      normalizedCriteria: {},
+      stage: 'awaiting_preferences',
+      state: 'awaiting_preferences',
+      results: [],
+      resultBatches: [],
+      latestDisplayedBatchIndex: -1,
+      nextOffset: 0,
+      updatedAt: '2026-10-14T17:50:00.000Z',
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('Moratuwa'), 'corr-restaurant-legacy-location');
+
+    expect(reply).toContain('places to eat around Moratuwa');
+    expect(saveRestaurantSearchingMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999',
+      expect.objectContaining({ location: 'Moratuwa' })
     );
     expect(llmDecideMock).not.toHaveBeenCalled();
   });

@@ -1252,9 +1252,7 @@ async function handleActiveRestaurantSearchSession(
 
   if (
     session.stage === 'awaiting_preferences' &&
-    !session.criteria.location &&
-    session.originalMessage &&
-    isRestaurantRequestMessage(session.originalMessage)
+    !session.criteria.location
   ) {
     const location = getPendingDiscoveryLocation(inboundText);
     if (!location) {
@@ -1263,7 +1261,7 @@ async function handleActiveRestaurantSearchSession(
     return startRestaurantDiscovery(
       userId,
       outboundFrom,
-      session.originalMessage,
+      session.originalMessage ?? userMessage,
       location,
       {},
       correlationId,
@@ -1430,9 +1428,7 @@ async function handleActiveExcursionSearchSession(
 
   if (
     session.stage === 'awaiting_preferences' &&
-    !session.criteria.destination &&
-    session.originalMessage &&
-    isExcursionRequestMessage(session.originalMessage)
+    !session.criteria.destination
   ) {
     const destination = getPendingDiscoveryLocation(inboundText);
     if (!destination) {
@@ -1441,7 +1437,7 @@ async function handleActiveExcursionSearchSession(
     return startExcursionDiscovery(
       userId,
       outboundFrom,
-      session.originalMessage,
+      session.originalMessage ?? userMessage,
       destination,
       {},
       correlationId,
