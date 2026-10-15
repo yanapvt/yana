@@ -58,9 +58,10 @@ describe('ConversationManager', () => {
       decision: { suggestedAction: 'clarify', confidence: 0.8 },
     });
 
-    expect(result.text).toBe(
-      'I can help with hotels, transport, restaurants, excursions, itinerary planning, local recommendations, shopping, wellness, nightlife, and practical travel support. What would you like to organize first?'
-    );
+    expect(result.text).toContain('things to do or excursions');
+    expect(result.text).toContain('a hotel, restaurants, transport');
+    expect(result.text).toContain('full trip plan, or local recommendations');
+    expect(result.text).toContain('Tell me what sounds useful');
   });
 
   it('uses a concise hotel-start template', async () => {
@@ -102,11 +103,25 @@ describe('ConversationManager', () => {
       decision: { suggestedAction: 'clarify', confidence: 0.32 },
     });
 
-    expect(result.text).toBe(
-      'Sure — just so I guide you properly, are you looking for help with accommodation, transport, food, activities, or a full itinerary?'
-    );
+    expect(result.text).toContain('things to do or excursions');
+    expect(result.text).toContain('a hotel, restaurants, transport');
+    expect(result.text).toContain('local recommendations');
     expect(result.text).not.toContain('unclear');
     expect(result.text).not.toContain('confidence');
+  });
+
+  it('offers service options for an open-ended city activity question with a general intent', async () => {
+    const result = manager.createFallbackMessage({
+      userInput: 'I’m coming to Colombo tomorrow, what can I do?',
+      intent: 'general_inquiry',
+      confidence: 0.76,
+      decision: { suggestedAction: 'clarify', confidence: 0.76 },
+    });
+
+    expect(result.text).toContain('things to do or excursions');
+    expect(result.text).toContain('a hotel, restaurants, transport');
+    expect(result.text).toContain('full trip plan, or local recommendations');
+    expect(result.text).toContain('Tell me what sounds useful');
   });
 
   it('answers smalltalk warmly without exposing flow metadata', async () => {

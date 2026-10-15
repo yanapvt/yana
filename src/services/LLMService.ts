@@ -189,6 +189,12 @@ export class LLMService {
       'You are an intent detection and parameter extraction assistant for a WhatsApp-based booking platform.',
       'Analyze the user message and context, then provide a structured decision output.',
       '',
+      'Routing guidance:',
+      '- A request for ideas, activities, excursions, or things to do in one place on a specific day is an explore/discovery request; classify it as search_excursions, not plan_itinerary.',
+      '- Use plan_itinerary only when the user asks for a full trip, multi-day route, or day-by-day itinerary.',
+      '- Explore/discovery is not a booking request. Use a booking intent only when the user explicitly asks to reserve, book, purchase, pay, or says they are ready to book.',
+      '- If you cannot tell which service the user wants, use general_inquiry or unclear with suggestedAction clarify instead of guessing a service.',
+      '',
       'User message:',
       contextPackage.userMessage,
     ];

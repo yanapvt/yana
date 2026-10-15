@@ -479,6 +479,7 @@ const formDefinitions: Record<FormType, FormRouteDefinition> = {
       { name: 'preferredDate', label: 'Preferred Date', type: 'date', required: true },
       { name: 'preferredTime', label: 'Preferred Time', type: 'time', required: true },
       { name: 'pickupLocation', label: 'Pickup Location', type: 'text', required: true },
+      { name: 'guests', label: 'Number of Guests', type: 'number', required: true, min: '1', max: '50' },
       { name: 'guestNames', label: 'Guest Names', type: 'textarea', required: true },
       { name: 'contactNumber', label: 'Contact Number', type: 'tel', required: true },
       { name: 'specialRequests', label: 'Special Requests', type: 'textarea' },
@@ -1058,9 +1059,9 @@ function buildExcursionCompletionMessage(
 
 function buildExcursionBookingCompletionMessage(): string {
   return [
-    "I've prepared your booking request.",
+    "I've prepared your experience request.",
     '',
-    "I'll now contact the experience provider and confirm availability before completing your booking.",
+    'YANA has not contacted the provider yet. Availability, price, and a booking are not confirmed; this request still needs a provider integration or concierge follow-up.',
   ].join('\n');
 }
 

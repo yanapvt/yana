@@ -73,7 +73,7 @@ export function mapExcursionBookingFormToRequest(
       contactNumber: form.contactNumber,
     },
     guests: {
-      count: guests,
+      count: form.guests ?? guests,
       names: form.guestNames,
     },
     date: form.preferredDate,

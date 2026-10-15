@@ -88,7 +88,7 @@ const HOTEL_FIELDS: HotelField[] = [
 const FIELD_PROMPTS: Record<HotelField, string> = {
   location: 'Where would you like to stay?',
   checkinDate: 'What is your check-in date? You can type it like 2026-06-12, tomorrow, or next Friday.',
-  checkoutDate: 'What is your check-out date?',
+  checkoutDate: 'What check-out date would you like? You can give a date or say how many days/nights you will stay.',
   guests: 'How many people are travelling?',
   boardBasis: 'What meal plan do you prefer: room only, B&B, half board, full board, or all inclusive?',
   budgetPerNight: 'What is your maximum budget per night, and in which currency? For example: USD 50 per night.',
@@ -141,6 +141,10 @@ export class HotelIntakeService {
       completed: true,
       criteria: state.criteria,
     };
+  }
+
+  async clear(whatsappNumber: string): Promise<void> {
+    await this.clearState(whatsappNumber);
   }
 
   private async loadOrCreateState(
@@ -240,9 +244,22 @@ export class HotelIntakeService {
       this.assignPendingField(criteria, pendingField, message);
     }
 
+    if (pendingField === 'checkoutDate' && !criteria.checkoutDate && criteria.checkinDate) {
+      const duration = this.extractStayDurationDays(message);
+      if (duration) criteria.checkoutDate = this.addDaysToDateString(criteria.checkinDate, duration);
+    }
+
+    const llmCanHelp =
+      pendingField === undefined ||
+      this.hasField(criteria, pendingField) ||
+      Object.keys(criteria).length > 0;
+    const llmCriteria = llmCanHelp
+      ? await this.extractCriteriaWithLLM(message, criteria)
+      : {};
+
     return {
+      ...llmCriteria,
       ...criteria,
-      ...(await this.extractCriteriaWithLLM(message, criteria)),
     };
   }
 
@@ -262,10 +279,10 @@ export class HotelIntakeService {
         criteria.location = trimmed;
         return;
       case 'checkinDate':
-        criteria.checkinDate = trimmed;
+        criteria.checkinDate = this.extractDates(trimmed)[0];
         return;
       case 'checkoutDate':
-        criteria.checkoutDate = trimmed;
+        criteria.checkoutDate = this.extractDates(trimmed)[0];
         return;
       case 'guests': {
         const guests = parseInt(trimmed, 10);
@@ -278,7 +295,7 @@ export class HotelIntakeService {
         criteria.boardBasis = this.extractBoardBasis(trimmed) ?? 'bnb';
         return;
       case 'budgetPerNight': {
-        const budget = this.extractBudget(trimmed);
+        const budget = this.extractBudget(trimmed) ?? this.extractStandaloneBudget(trimmed);
         if (budget) {
           criteria.budgetPerNight = budget;
         }
@@ -298,6 +315,7 @@ export class HotelIntakeService {
 
     return this.titleCase(
       match[1]
+        .replace(/\b(?:today|tomorrow|tonight|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|day after tomorrow)\b.*$/i, '')
         .replace(/\bunder\b.*$/i, '')
         .replace(/\bbelow\b.*$/i, '')
         .replace(/\bchecking\b.*$/i, '')
@@ -334,6 +352,12 @@ export class HotelIntakeService {
       amount,
       currency: currencyMatch?.[1]?.toUpperCase() ?? (hasDollar ? 'USD' : 'USD'),
     };
+  }
+
+  private extractStandaloneBudget(message: string): HotelSearchCriteria['budgetPerNight'] | null {
+    const match = message.trim().match(/^\$?\s*(\d+(?:\.\d{1,2})?)\s*\$?$/);
+    if (!match) return null;
+    return { amount: Number(match[1]), currency: 'USD' };
   }
 
   private extractGuests(message: string): number | null {
@@ -384,23 +408,19 @@ export class HotelIntakeService {
 
   private applyDerivedCriteria(criteria: HotelSearchCriteria, message: string): void {
     if (!criteria.checkoutDate && criteria.checkinDate) {
-      const nights = this.extractNightCount(message);
-      if (nights) {
-        criteria.checkoutDate = this.addDaysToDateString(criteria.checkinDate, nights);
+      const duration = this.extractStayDurationDays(message);
+      if (duration) {
+        criteria.checkoutDate = this.addDaysToDateString(criteria.checkinDate, duration);
       }
     }
   }
 
-  private extractNightCount(message: string): number | null {
-    const numericMatch = message.match(/\b(\d{1,2})\s*nights?\b/i);
-    if (numericMatch) {
-      return Number(numericMatch[1]);
-    }
-
-    if (/\btwo\s+nights?\b/i.test(message)) return 2;
-    if (/\bone\s+night\b/i.test(message)) return 1;
-    if (/\bthree\s+nights?\b/i.test(message)) return 3;
-
+  private extractStayDurationDays(message: string): number | null {
+    const numericMatch = message.match(/\b(\d{1,2})\s*(?:nights?|days?)\b/i);
+    if (numericMatch) return Number(numericMatch[1]);
+    if (/\btwo\s+(?:nights?|days?)\b/i.test(message)) return 2;
+    if (/\bone\s+(?:night|day)\b/i.test(message)) return 1;
+    if (/\bthree\s+(?:nights?|days?)\b/i.test(message)) return 3;
     return null;
   }
 

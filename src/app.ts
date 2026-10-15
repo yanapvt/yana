@@ -16,6 +16,7 @@ import legalRouter from './routes/legal.js';
 import hotelSearchAdminRouter from './routes/hotelSearchAdmin.js';
 import humanHandoffAdminRouter from './routes/humanHandoffAdmin.js';
 import operatorDashboardRouter from './routes/operatorDashboard.js';
+import sportsDemoRouter from './routes/sportsDemo.js';
 
 /**
  * Creates and configures the Express application
@@ -75,6 +76,7 @@ export function createApp(): Express {
 
   // Mount demo/playground routes
   app.use('/demo', demoRouter);
+  app.use('/sports', sportsDemoRouter);
 
   // Root redirect to demo
   app.get('/', (req, res) => {

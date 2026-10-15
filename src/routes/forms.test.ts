@@ -313,6 +313,23 @@ describe('external form routes', () => {
     });
   });
 
+  it('rejects logistics requests missing the date or destination needed to request a quote', async () => {
+    const userId = 'whatsapp:+94770000031';
+    const token = tokenService.createToken(userId, 'logistics');
+    const csrf = extractCsrf(await (await fetch(`${origin}/forms/logistics/${token}`)).text());
+    const response = await fetch(`${origin}/forms/logistics/${token}`, {
+      method: 'POST',
+      body: new URLSearchParams({
+        _csrf: csrf,
+        pickupLocation: 'Airport',
+        passengers: '2',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await profileService.getServiceRequests(userId, 'logistics')).toHaveLength(0);
+  });
+
   it('sends form completion messages through Meta when Meta is the selected provider', async () => {
     env.whatsapp.provider = 'meta';
     const token = tokenService.createToken('whatsapp:+94770000012', 'hotel');

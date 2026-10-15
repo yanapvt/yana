@@ -2,7 +2,7 @@
  * Unit tests for LLMService
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { LLMService, LLMServiceError, type ContextPackage } from './LLMService.js';
 
 describe('LLMService', () => {
@@ -16,6 +16,10 @@ describe('LLMService', () => {
       model: 'test-model',
       confidenceThreshold: 0.85,
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   describe('constructor', () => {
@@ -112,6 +116,43 @@ describe('LLMService', () => {
       const result = await service.decide(contextPackage);
 
       expect(result).toHaveProperty('intent');
+    });
+
+    it('guides the live classifier to separate one-day discovery from full-trip planning and booking', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify({
+            intent: 'search_excursions',
+            parameters: { destination: 'Colombo', preferredDate: 'tomorrow' },
+            missingFields: [],
+            suggestedAction: 'execute_tool',
+            confidence: 0.9,
+          }) } }],
+        }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const liveProviderService = new LLMService({
+        provider: 'groq',
+        apiKey: 'test-key',
+        model: 'openai/gpt-oss-20b',
+        baseUrl: 'https://api.groq.com/openai/v1',
+      });
+
+      await liveProviderService.decide({
+        userMessage: 'I am coming to Colombo tomorrow, what can I do?',
+        availableSchemas: ['search_excursions', 'plan_itinerary'],
+      });
+
+      const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const requestBody = JSON.parse(String(request.body)) as {
+        messages: Array<{ content: string }>;
+      };
+      const prompt = requestBody.messages[1]?.content ?? '';
+      expect(prompt).toContain('one place on a specific day');
+      expect(prompt).toContain('not plan_itinerary');
+      expect(prompt).toContain('Explore/discovery is not a booking request');
+      expect(prompt).toContain('full trip, multi-day route, or day-by-day itinerary');
     });
 
     it('should validate confidence is between 0 and 1', async () => {

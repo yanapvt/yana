@@ -193,6 +193,7 @@ export const excursionBookingFormSchema = z.object({
   preferredDate: requiredDate('Preferred date'),
   preferredTime: requiredTime('Preferred time'),
   pickupLocation: text('Pickup location', 160),
+  guests: integerField('Guests', 1, 50),
   guestNames: text('Guest names', 500),
   contactNumber: text('Contact number', 40),
   specialRequests: optionalText(300),
@@ -256,6 +257,19 @@ export const logisticsRequestFormSchema = z
         path: ['pickupTime'],
         message: 'Pickup time is required.',
       });
+    }
+  })
+  .superRefine((values, ctx) => {
+    if (!(values.destination?.trim() || values.dropOffLocation?.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['destination'], message: 'Destination is required.' });
+    }
+    const date = values.pickupDate || values.date;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00.000Z`))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pickupDate'], message: 'A valid pickup date is required.' });
+    }
+    const time = values.pickupTime || values.time;
+    if (!time || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pickupTime'], message: 'A valid pickup time is required.' });
     }
   });
 

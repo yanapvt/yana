@@ -88,8 +88,8 @@ export class ExcursionSearchFlowService {
       ...results.map((experience, index) => buildExperienceResultText(index + 1, experience)),
       '',
       hasMore
-        ? 'Reply "next" to see the next 3 suggestions, "details 1", or "book 1".'
-        : 'Which experience would you like me to help you book? Reply book 1, book 2, or book 3 from the latest list.',
+        ? 'Reply "next" to see the next 3 suggestions or "details 1" for more information. These are discovery suggestions, not confirmed availability or bookings.'
+        : 'Which experience would you like more information about? Reply details 1, details 2, or details 3. Live availability and provider booking are not connected yet.',
     ].filter((line): line is string => typeof line === 'string');
 
     return lines.join('\n');
@@ -148,9 +148,8 @@ export function rankExcursionResults(
 function validateRequiredCriteria(criteria: ExcursionSearchCriteria): string[] {
   const errors: string[] = [];
   if (!criteria.destination?.trim()) errors.push('destination');
-  if (!criteria.preferredDate?.trim()) errors.push('preferred date');
-  if (!criteria.preferredTime?.trim()) errors.push('preferred time');
-  if (!criteria.guests) errors.push('number of guests');
+  // This flow returns Google Places discovery suggestions, not live/bookable
+  // inventory. Booking date/time/party size are collected after selection.
   return errors;
 }
 
@@ -172,7 +171,7 @@ function buildExperienceResultText(displayNumber: number, experience: ExcursionB
     experience.shortDescription,
     experience.address,
     experience.googleMapsUri ? `Map: ${experience.googleMapsUri}` : undefined,
-    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+    `Reply "details ${displayNumber}" for more information. Live availability and provider booking are not connected yet.`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0).join('\n');
 }
 

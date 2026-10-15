@@ -111,6 +111,7 @@ export class ConversationManager {
       missingFields,
       currentFlow,
       confidence,
+      suggestedAction: action,
       entities,
     });
 
@@ -398,6 +399,7 @@ interface TemplateResponseInput {
   missingFields: string[];
   currentFlow?: string;
   confidence?: number;
+  suggestedAction?: string;
   entities?: Record<string, unknown>;
 }
 
@@ -405,11 +407,11 @@ function buildTemplateResponse(input: TemplateResponseInput): string | undefined
   const normalized = normalizeText(input.userInput);
 
   if (isCapabilityQuestion(normalized)) {
-    return 'I can help with hotels, transport, restaurants, excursions, itinerary planning, local recommendations, shopping, wellness, nightlife, and practical travel support. What would you like to organize first?';
+    return buildTravelOptionsClarification();
   }
 
-  if (isLowConfidence(input)) {
-    return 'Sure — just so I guide you properly, are you looking for help with accommodation, transport, food, activities, or a full itinerary?';
+  if (shouldClarifyTravelOptions(input, normalized)) {
+    return buildTravelOptionsClarification();
   }
 
   if (isSriLankaTripPlanningRequest(normalized, input.intent)) {
@@ -450,6 +452,18 @@ function isLowConfidence(input: TemplateResponseInput): boolean {
   }
 
   return /\b(unclear|unknown)\b/i.test(`${input.intent ?? ''} ${input.currentFlow ?? ''}`);
+}
+
+function shouldClarifyTravelOptions(input: TemplateResponseInput, normalized: string): boolean {
+  if (isLowConfidence(input)) return true;
+
+  const generalIntent = /\b(general|inquiry|unknown|unclear)\b/i.test(input.intent ?? '');
+  const asksForOpenEndedIdeas = /\bwhat can i (?:do|see|visit)|what should i (?:do|see|visit)|any (?:ideas|recommendations|suggestions)\b/.test(normalized);
+  return asksForOpenEndedIdeas || (generalIntent && input.suggestedAction === 'clarify');
+}
+
+function buildTravelOptionsClarification(): string {
+  return 'I’d be happy to help. Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations? Tell me what sounds useful and I’ll guide you from there.';
 }
 
 function isSriLankaTripPlanningRequest(normalized: string, intent?: string): boolean {

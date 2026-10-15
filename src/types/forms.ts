@@ -93,6 +93,7 @@ export interface ExcursionBookingForm {
   preferredDate: string;
   preferredTime: string;
   pickupLocation: string;
+  guests: number;
   guestNames: string;
   contactNumber: string;
   specialRequests?: string;

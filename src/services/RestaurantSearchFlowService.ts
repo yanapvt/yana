@@ -90,9 +90,8 @@ export class RestaurantSearchFlowService {
     const errors: string[] = [];
 
     if (!criteria.location?.trim()) errors.push('location');
-    if (!criteria.diningDate?.trim()) errors.push('dining date');
-    if (!criteria.diningTime?.trim()) errors.push('preferred dining time');
-    if (!criteria.guests) errors.push('number of guests');
+    // Google Places is used only for exploration. Reservation details are
+    // intentionally collected later and are not required to show suggestions.
 
     return errors;
   }
@@ -114,8 +113,8 @@ export class RestaurantSearchFlowService {
       ...results.map((restaurant, index) => buildRestaurantResultText(index + 1, restaurant)),
       '',
       hasMore
-        ? 'Reply "next" to see the next 3 suggestions, "details 1", or "book 1".'
-        : 'Which restaurant would you like me to reserve for you? Reply book 1, book 2, or book 3 from the latest list.',
+        ? 'Reply "next" to see the next 3 suggestions or "details 1" for more information. These are discovery matches, not confirmed reservations.'
+        : 'Which restaurant would you like more information about? Reply details 1, details 2, or details 3. Please contact the restaurant directly to confirm availability or reserve.',
     ].filter((line): line is string => typeof line === 'string');
 
     return lines.join('\n');
@@ -196,7 +195,7 @@ function buildRestaurantResultText(displayNumber: number, restaurant: Restaurant
     restaurant.cuisine ? `Cuisine: ${restaurant.cuisine}` : undefined,
     restaurant.address,
     restaurant.googleMapsUri ? `Map: ${restaurant.googleMapsUri}` : undefined,
-    `Reply "book ${displayNumber}" or "details ${displayNumber}".`,
+    `Reply "details ${displayNumber}" for more information. Contact the restaurant directly to confirm availability or reserve.`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0).join('\n');
 }
 

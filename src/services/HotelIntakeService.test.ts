@@ -16,6 +16,7 @@ describe('HotelIntakeService', () => {
     await clearTraveler('+15550000002');
     await clearTraveler('+15550000003');
     await clearTraveler('+15550000004');
+    await clearTraveler('+15550000005');
   });
 
   afterAll(async () => {
@@ -23,6 +24,7 @@ describe('HotelIntakeService', () => {
     await clearTraveler('+15550000002');
     await clearTraveler('+15550000003');
     await clearTraveler('+15550000004');
+    await clearTraveler('+15550000005');
     await closeStateStore();
   });
 
@@ -155,6 +157,61 @@ describe('HotelIntakeService', () => {
         amount: 50,
         currency: 'USD',
       },
+    });
+  });
+
+  it('keeps short follow-up answers in hotel context and rejects non-date text as a check-out date', async () => {
+    service = new HotelIntakeService(new Date('2026-10-14T12:00:00+05:30'));
+    const context = {
+      whatsappNumber: 'whatsapp:+15550000005',
+      profileName: 'Test Traveler',
+      country: 'Sri Lanka',
+      countryCode: '+94',
+    };
+
+    const first = await service.handleMessage('I need a hotel in Colombo', context);
+    const checkIn = await service.handleMessage('tomorrow', context);
+    const invalidCheckOut = await service.handleMessage('a place to stay', context);
+    const duration = await service.handleMessage('3 days around Colombo for shopping', context);
+    const guests = await service.handleMessage('2', context);
+    const completed = await service.handleMessage('50$', context);
+
+    expect(first.reply).toContain('check-in date');
+    expect(checkIn.handled).toBe(true);
+    expect(checkIn.reply).toContain('check-out date');
+    expect(invalidCheckOut.handled).toBe(true);
+    expect(invalidCheckOut.reply).toContain('check-out date');
+    expect(duration.reply).toContain('How many people');
+    expect(guests.reply).toContain('maximum budget per night');
+    expect(completed.completed).toBe(true);
+    expect(completed.criteria).toMatchObject({
+      location: 'Colombo',
+      checkinDate: '2026-10-15',
+      checkoutDate: '2026-10-18',
+      guests: 2,
+      budgetPerNight: { amount: 50, currency: 'USD' },
+    });
+  });
+
+  it('does not append a relative date to the extracted hotel location', async () => {
+    service = new HotelIntakeService(new Date('2026-10-14T12:00:00+05:30'));
+    const result = await service.handleMessage(
+      'I want to find a hotel in Colombo tomorrow check out the day after tomorrow for 2 guests under $50 per night',
+      {
+        whatsappNumber: 'whatsapp:+15550000005',
+        profileName: 'Test Traveler',
+        country: 'Sri Lanka',
+        countryCode: '+94',
+      }
+    );
+
+    expect(result.completed).toBe(true);
+    expect(result.criteria).toMatchObject({
+      location: 'Colombo',
+      checkinDate: '2026-10-15',
+      checkoutDate: '2026-10-16',
+      guests: 2,
+      budgetPerNight: { amount: 50, currency: 'USD' },
     });
   });
 

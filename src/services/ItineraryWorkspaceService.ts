@@ -105,6 +105,10 @@ export class ItineraryWorkspaceService {
     return this.store.getJson<ItineraryWorkspace>(this.workspaceKey(shareToken));
   }
 
+  async clearUserWorkspace(userId: string): Promise<void> {
+    await this.store.deleteKey(this.userKey(userId));
+  }
+
   async updateWorkspaceState(
     shareToken: string,
     updates: Partial<Pick<ItineraryWorkspace, 'selectedDay' | 'expandedDays' | 'pendingChanges'>>
