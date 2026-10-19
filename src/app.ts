@@ -5,7 +5,7 @@
 
 import express, { Express } from 'express';
 import { fileURLToPath } from 'node:url';
-import webhookRoutes from './routes/webhook.js';
+import webhookRoutes from './routes/twilioWhatsAppWebhook.js';
 import openWaWebhookRoutes from './routes/openWaWebhook.js';
 import metaWhatsAppWebhookRoutes from './routes/metaWhatsAppWebhook.js';
 import demoRouter from './routes/demo.js';

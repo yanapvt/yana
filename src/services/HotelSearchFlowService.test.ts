@@ -385,7 +385,7 @@ describe('HotelSearchFlowService', () => {
 
     const result = await service.handleBookingCheck(
       completeCriteria,
-      { name: 'Live Beach Hotel', address: 'Galle Road' },
+      { name: 'Live Beach Hotel, Sri Lanka', address: 'Galle Road, Sri Lanka' },
       { correlationId: 'corr-live-inventory' }
     );
 
@@ -397,10 +397,13 @@ describe('HotelSearchFlowService', () => {
     expect(result.reply).not.toContain('liteapi');
     expect(JSON.stringify(result.browseResponse)).not.toContain('private-offer-token');
     expect(browsingService.searchHotels).not.toHaveBeenCalled();
+    expect(supplierOrchestrator.searchHotels).toHaveBeenCalledWith(
+      expect.objectContaining({ hotelName: 'Live Beach Hotel', countryCode: 'LK' })
+    );
 
     const completedResult = await service.handleBookingCheck(
       completeCriteria,
-      { name: 'Live Beach Hotel', address: 'Galle Road' },
+      { name: 'Live Beach Hotel, Sri Lanka', address: 'Galle Road, Sri Lanka' },
       { correlationId: 'corr-live-inventory-completed' }
     );
     expect(completedResult.browseResponse?.provider).toBe('hotel_inventory');

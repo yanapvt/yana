@@ -130,6 +130,7 @@ export function rankRestaurantResults(
     criteria.cuisine,
     criteria.diningStyle,
     criteria.dietaryRequirements,
+    criteria.allergies,
     criteria.indoorOutdoor,
     criteria.specialOccasion,
     criteria.additionalPreferences,

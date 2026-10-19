@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+const { synthesize } = vi.hoisted(() => ({ synthesize: vi.fn() }));
+vi.mock('./TextToSpeechService.js', () => ({
+  getTextToSpeechService: () => ({ synthesize }),
+}));
 import { OpenWaOutboundService } from './OpenWaOutboundService.js';
 
 describe('OpenWaOutboundService', () => {
@@ -67,5 +71,71 @@ describe('OpenWaOutboundService', () => {
     expect(fetcher.mock.calls[1]?.[0]).toBe(
       'http://openwa.local/api/sessions/test-session/messages/send-text'
     );
+  });
+
+  it('sends synthesized speech as audio after a voice-note reply', async () => {
+    synthesize.mockResolvedValueOnce({
+      mediaUrl: 'https://yana.example/media/tts/reply.ogg',
+      contentType: 'audio/ogg; codecs=opus',
+      audioData: Buffer.from('ogg voice bytes'),
+    });
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 201 }));
+    const service = new OpenWaOutboundService(config, fetcher, console, async () => undefined);
+
+    expect(await service.sendWhatsAppReply('whatsapp:+15550000000', 'Your trip is ready', { voice: true })).toBe(true);
+    expect(synthesize).toHaveBeenCalledWith('Your trip is ready', { voiceNote: true });
+    expect(fetcher).toHaveBeenCalledWith(
+      'http://openwa.local/api/sessions/test-session/messages/send-audio',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          chatId: '15550000000@c.us',
+          base64: Buffer.from('ogg voice bytes').toString('base64'),
+          mimetype: 'audio/ogg; codecs=opus',
+          ptt: true,
+        }),
+      })
+    );
+  });
+
+  it('keeps the text reply when audio delivery is rejected without retrying it', async () => {
+    synthesize.mockResolvedValueOnce({
+      mediaUrl: 'https://yana.example/media/tts/reply.ogg',
+      contentType: 'audio/ogg; codecs=opus',
+      audioData: Buffer.from('ogg voice bytes'),
+    });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 201 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 422 }));
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const service = new OpenWaOutboundService(config, fetcher, logger, async () => undefined);
+
+    expect(await service.sendWhatsAppReply('whatsapp:+15550000000', 'Your trip is ready', { voice: true })).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledWith('openwa_audio_send_failed', {
+      category: 'http', status: 422, retryAttempted: false,
+    });
+  });
+
+  it('reports Google authentication failure without exposing credentials', async () => {
+    synthesize.mockRejectedValueOnce(Object.assign(new Error('secret details'), { code: 16 }));
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 201 }));
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const service = new OpenWaOutboundService(config, fetcher, logger);
+
+    expect(await service.sendWhatsAppReply('whatsapp:+15550000000', 'Hello', { voice: true })).toBe(true);
+    expect(logger.error).toHaveBeenCalledWith('openwa_audio_send_failed', {
+      category: 'authentication', retryAttempted: false,
+    });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('secret details');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not synthesize a text-only reply', async () => {
+    synthesize.mockClear();
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 201 }));
+    const service = new OpenWaOutboundService(config, fetcher, console, async () => undefined);
+    expect(await service.sendWhatsAppReply('whatsapp:+15550000000', 'Hello')).toBe(true);
+    expect(synthesize).not.toHaveBeenCalled();
   });
 });

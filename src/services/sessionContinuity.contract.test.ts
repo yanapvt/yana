@@ -28,6 +28,23 @@ describe('shared session continuity contract', () => {
     await new HotelSearchSessionService(new InstanceStateStore() as any, durable).clear(user);
     expect(await new HotelSearchSessionService(new InstanceStateStore() as any, durable).get(user)).toBeNull();
   });
+  it('preserves a consented hotel sourcing lead across app instances', async () => {
+    const durable = new InMemoryHotelSearchSessionRepository();
+    const user = 'whatsapp:test-sourcing-user';
+    const first = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    const criteria = { location: 'Galle', checkinDate: '2026-11-10', checkoutDate: '2026-11-12', guests: 2 };
+    await first.saveResults(user, criteria, [{ id: 'google-place-1', name: 'Selected Stay' }], 1);
+    await first.selectHotel(user, 1);
+    await first.markSourcingConsentPending(user);
+    const second = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    expect((await second.get(user))?.pendingSourcingConsent).toBe(true);
+    await second.markSourcingRequestSaved(user, 'request-1');
+    const restarted = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    expect(await restarted.get(user)).toMatchObject({
+      sourcingRequestId: 'request-1', pendingSourcingConsent: false,
+      selectedHotel: { selectedHotelSnapshot: { name: 'Selected Stay' } },
+    });
+  });
   it('fails safely after restart when durable state is unavailable', async () => {
     const durable = { upsert: vi.fn(), clearActiveByUserId: vi.fn(), findLatestActiveByUserId: vi.fn().mockRejectedValue(new Error('secret database detail')) };
     expect(await new HotelSearchSessionService(new InstanceStateStore() as any, durable).get('whatsapp:test-user-1')).toBeNull();

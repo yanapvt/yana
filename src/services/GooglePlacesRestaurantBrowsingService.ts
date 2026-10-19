@@ -117,6 +117,7 @@ export class GooglePlacesRestaurantBrowsingService {
     if (criteria.cuisine) parts.push(criteria.cuisine);
     if (criteria.diningStyle) parts.push(criteria.diningStyle);
     if (criteria.dietaryRequirements) parts.push(criteria.dietaryRequirements);
+    if (criteria.allergies) parts.push(criteria.allergies);
     if (criteria.indoorOutdoor) parts.push(criteria.indoorOutdoor);
     if (criteria.specialOccasion) parts.push(criteria.specialOccasion);
     if (criteria.additionalPreferences) parts.push(criteria.additionalPreferences);

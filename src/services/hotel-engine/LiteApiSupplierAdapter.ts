@@ -156,7 +156,11 @@ export class LiteApiSupplierAdapter implements HotelSupplierAdapter {
         ],
         ...(request.hotelIds?.length
           ? { hotelIds: request.hotelIds }
-          : { aiSearch: `hotels in ${request.destination}` }),
+          : request.countryCode
+            ? { countryCode: request.countryCode, ...(request.hotelName?.trim() ? { hotelName: request.hotelName.trim() } : {}) }
+            : request.placeId
+              ? { placeId: request.placeId, ...(request.hotelName?.trim() ? { hotelName: request.hotelName.trim() } : {}) }
+              : { aiSearch: `hotels in ${request.destination}` }),
         roomMapping: true,
         maxRatesPerHotel: 5,
         includeHotelData: true,

@@ -43,6 +43,7 @@ export class ContextBuilder {
 function cloneSession(session: OrchestrationSessionSnapshot): OrchestrationSessionSnapshot {
   return {
     ...session,
+    awaitedField: session.awaitedField,
     collectedFields: { ...session.collectedFields },
     requiredFields: [...session.requiredFields],
     missingFields: [...session.missingFields],

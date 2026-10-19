@@ -15,6 +15,7 @@ export class PromptService {
       `Profile complete: ${context.profileComplete}`,
       `Active flow: ${context.activeSession?.flow ?? 'none'}`,
       `Active state: ${context.activeSession?.state ?? 'none'}`,
+      `Awaited field: ${context.activeSession?.awaitedField ?? 'none'}`,
       `Collected fields: ${JSON.stringify(context.activeSession?.collectedFields ?? {})}`,
       '',
       `Deterministic analysis: ${JSON.stringify({
@@ -27,7 +28,7 @@ export class PromptService {
       '',
       'Return JSON only with:',
       '- role: answer_to_current_question | new_intent | change_existing_criteria | extra_preference | question_or_faq | command | smalltalk | unclear',
-      '- intent: hotel_search | restaurant_search | logistics_request | profile_update | smalltalk | command | unclear',
+      '- intent: hotel_search | restaurant_search | excursion_search | logistics_request | itinerary_plan | profile_update | smalltalk | command | unclear',
       '- entities: object',
       '- missingFields: string[]',
       '- confidence: number between 0 and 1',

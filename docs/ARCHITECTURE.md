@@ -6,8 +6,10 @@
 WhatsApp user
   -> Twilio / OpenWA / Meta webhook
   -> normalized inbound message
-  -> profile gate and active-flow routing
-  -> deterministic analysis plus optional LLM interpretation
+  -> ConversationControlPlane
+  -> authoritative active-flow snapshot
+  -> bounded ContextBuilder
+  -> deterministic analysis plus optional validated LLM interpretation
   -> service-specific form/intake/session flow
   -> external provider boundary
   -> normalized and ranked results
@@ -20,7 +22,11 @@ WhatsApp user
 | Responsibility | Current area |
 |---|---|
 | Express composition | `src/app.ts` |
-| Main conversational webhook | `src/routes/webhook.ts` |
+| Provider transport gateways | `src/routes/twilioWhatsAppWebhook.ts`, `src/routes/openWaWebhook.ts`, `src/routes/metaWhatsAppWebhook.ts` |
+| Conversation control plane | `src/orchestration/ConversationControlPlane.ts` and `src/orchestration/Orchestrator.ts` |
+| Active workflow selection | `src/orchestration/ActiveConversationStateLoader.ts` |
+| Allow-listed workflow dispatch | `src/orchestration/WorkflowExecutorRegistry.ts` |
+| Legacy vertical execution migration boundary | `src/routes/webhook.ts` |
 | OpenWA and Meta adapters | `src/routes/openWaWebhook.ts`, `src/routes/metaWhatsAppWebhook.ts` |
 | Collection forms | `src/routes/forms.ts` |
 | Orchestration | `src/orchestration/` and legacy services under `src/services/` |
@@ -42,6 +48,19 @@ calls, ranks/paginates results, stores state, and controls booking/payment gates
 An LLM response is never proof of inventory, price, successful booking, or
 payment. Those claims require authoritative provider responses and persisted
 transaction state.
+
+Live general intent interpretation is adapted through
+`src/orchestration/LLMDecisionInterpreter.ts`. It receives the bounded context
+package, allow-lists schema fields, and rejects unknown intents or attempted
+transaction-state fields before `DecisionEngine` determines an action.
+
+The migration is incomplete. Active restaurant and excursion continuations are
+now selected through the allow-listed `WorkflowExecutorRegistry`, using the
+Orchestrator's target flow and active-session decision. Their existing vertical
+handlers, the other workflow handlers, form gates, and result-card composition
+still live in `src/routes/webhook.ts`. Those implementations must move behind
+workflow executors and renderer components without replacing the existing tested
+session, provider, and outbound services.
 
 ## Current hotel flow
 

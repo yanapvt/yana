@@ -9,6 +9,7 @@ export interface RestaurantSearchCriteria {
   diningStyle?: string;
   priceRange?: string;
   dietaryRequirements?: string;
+  allergies?: string;
   indoorOutdoor?: string;
   specialOccasion?: string;
   additionalPreferences?: string;
@@ -27,6 +28,7 @@ export function mapRestaurantRequestFormToCriteria(
     diningStyle: normalizeNoPreference(form.diningStyle),
     priceRange: form.priceRange,
     dietaryRequirements: normalizeNoPreference(form.dietaryRequirements),
+    allergies: normalizeNoPreference(form.allergies),
     indoorOutdoor: normalizeNoPreference(form.indoorOutdoor),
     specialOccasion: normalizeNoPreference(form.specialOccasion),
   };

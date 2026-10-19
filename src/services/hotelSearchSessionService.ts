@@ -58,6 +58,8 @@ export interface HotelSearchSession {
   selectedHotel?: SelectedHotel;
   recheckReceipt?: HotelRecheckReceipt;
   pendingHumanHandoffConsent?: boolean;
+  pendingSourcingConsent?: boolean;
+  sourcingRequestId?: string;
   humanHandoff?: { handoffId: string; status: 'handed_off' };
   state: HotelSearchState;
   stage: LegacyHotelSearchStage;
@@ -250,6 +252,8 @@ export class HotelSearchSessionService {
       selectedHotel,
       recheckReceipt: undefined,
       pendingHumanHandoffConsent: false,
+      pendingSourcingConsent: false,
+      sourcingRequestId: undefined,
       state: 'booking_provider_pending',
       stage: 'booking_provider_pending',
       updatedAt: now,
@@ -264,6 +268,24 @@ export class HotelSearchSessionService {
     const session = await this.get(userId);
     if (!session?.selectedHotel) throw new Error('Selected hotel session is unavailable');
     await this.save({ ...session, pendingHumanHandoffConsent: true, updatedAt: new Date().toISOString() });
+  }
+
+  async markSourcingConsentPending(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session?.selectedHotel) throw new Error('Selected hotel session is unavailable');
+    await this.save({ ...session, pendingSourcingConsent: true, updatedAt: new Date().toISOString() });
+  }
+
+  async markSourcingRequestSaved(userId: string, requestId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session?.selectedHotel) throw new Error('Selected hotel session is unavailable');
+    await this.save({ ...session, pendingSourcingConsent: false, sourcingRequestId: requestId, updatedAt: new Date().toISOString() });
+  }
+
+  async clearSourcingConsentPending(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session) return;
+    await this.save({ ...session, pendingSourcingConsent: false, updatedAt: new Date().toISOString() });
   }
 
   async saveRecheckReceipt(userId: string, receipt: HotelRecheckReceipt): Promise<void> {
@@ -369,6 +391,8 @@ export class HotelSearchSessionService {
       selectedHotel: existing?.selectedHotel,
       recheckReceipt: existing?.recheckReceipt,
       pendingHumanHandoffConsent: existing?.pendingHumanHandoffConsent,
+      pendingSourcingConsent: existing?.pendingSourcingConsent,
+      sourcingRequestId: existing?.sourcingRequestId,
       humanHandoff: existing?.humanHandoff,
       state: existing?.state ?? 'hotel_form_sent',
       stage: existing?.stage ?? 'awaiting_preferences',

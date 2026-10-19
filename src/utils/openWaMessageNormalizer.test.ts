@@ -16,6 +16,7 @@ describe('OpenWA message normalizer', () => {
         from: '94777269221@c.us',
         to: '94770000000@c.us',
         body: 'hi',
+        sender: { id: '94777269221@c.us', pushname: 'Jeremy McShane' },
         type: 'chat',
         timestamp: 1783947192,
       },
@@ -30,6 +31,7 @@ describe('OpenWA message normalizer', () => {
     expect(result.inputType).toBe('text');
     expect(result.metadata?.provider).toBe('openwa');
     expect(result.metadata?.sessionId).toBe('yana-main');
+    expect(result.metadata?.profileName).toBe('Jeremy McShane');
     expect(result.content).toEqual({
       type: 'text',
       body: 'hi',

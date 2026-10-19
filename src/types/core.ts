@@ -81,9 +81,10 @@ export interface AudioContent {
 
 export interface InteractiveContent {
   type: 'interactive';
-  interactionType: 'button_reply' | 'list_reply';
+  interactionType: 'button_reply' | 'list_reply' | 'flow_reply';
   selectedId: string;
   selectedTitle?: string;
+  responseData?: Record<string, unknown>;
 }
 
 // ============================================================================

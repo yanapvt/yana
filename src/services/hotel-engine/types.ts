@@ -139,6 +139,9 @@ export interface HotelSearchRequest {
   occupancy: HotelOccupancy;
   currency: string;
   hotelIds?: string[];
+  hotelName?: string;
+  countryCode?: string;
+  placeId?: string;
   correlationId: string;
   signal?: AbortSignal;
 }

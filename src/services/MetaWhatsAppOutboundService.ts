@@ -7,6 +7,12 @@ interface SendMetaOptions {
   from?: string;
 }
 
+export interface MetaRestaurantFlowInput {
+  flowToken: string;
+  location: string;
+  dietaryRestrictions?: string;
+}
+
 const META_TEXT_LIMIT = 3500;
 const META_CAPTION_LIMIT = 1024;
 const META_CAROUSEL_MIN_CARDS = 2;
@@ -15,6 +21,46 @@ const META_CAROUSEL_CARD_BODY_LIMIT = 159;
 const META_CAROUSEL_BODY_LIMIT = 1024;
 
 export class MetaWhatsAppOutboundService {
+  async sendRestaurantPreferenceFlow(
+    to: string,
+    input: MetaRestaurantFlowInput
+  ): Promise<boolean> {
+    if (!env.meta.restaurantFlowId) return false;
+
+    return this.sendMessage({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: toMetaRecipient(to),
+      type: 'interactive',
+      interactive: {
+        type: 'flow',
+        body: {
+          text: 'A few quick dining preferences will help me find safer, more relevant options.',
+        },
+        footer: {
+          text: 'Allergies must be confirmed before a reservation request.',
+        },
+        action: {
+          name: 'flow',
+          parameters: {
+            flow_message_version: '3',
+            flow_token: input.flowToken,
+            flow_id: env.meta.restaurantFlowId,
+            flow_cta: 'Set dining preferences',
+            flow_action: 'navigate',
+            flow_action_payload: {
+              screen: 'RESTAURANT_PREFERENCES',
+              data: {
+                location: input.location,
+                dietary_restrictions: input.dietaryRestrictions ?? '',
+              },
+            },
+          },
+        },
+      },
+    }, 'restaurant_flow');
+  }
+
   async sendWhatsAppText(to: string, body: string): Promise<boolean> {
     let sentAny = false;
     for (const part of splitWhatsAppText(body, META_TEXT_LIMIT)) {

@@ -137,4 +137,35 @@ describe('MetaWhatsAppOutboundService', () => {
     expect(firstCard.body.text).toContain('💬 Not quoted');
     expect(firstCard.body.text).not.toMatch(/rating|book now/i);
   });
+
+  it('sends the published restaurant preference flow with bounded prefill data', async () => {
+    process.env.META_WHATSAPP_RESTAURANT_FLOW_ID = 'published-flow-123';
+    vi.resetModules();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    vi.stubGlobal('fetch', fetchMock);
+    const { MetaWhatsAppOutboundService } = await import('./MetaWhatsAppOutboundService.js');
+
+    const sent = await new MetaWhatsAppOutboundService().sendRestaurantPreferenceFlow(
+      'whatsapp:+94777269221',
+      {
+        flowToken: 'opaque-form-token',
+        location: 'Moratuwa',
+        dietaryRestrictions: 'Vegetarian',
+      }
+    );
+
+    expect(sent).toBe(true);
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const payload = JSON.parse(String(request.body));
+    expect(payload.interactive.type).toBe('flow');
+    expect(payload.interactive.action.parameters).toMatchObject({
+      flow_id: 'published-flow-123',
+      flow_token: 'opaque-form-token',
+      flow_action: 'navigate',
+      flow_action_payload: {
+        screen: 'RESTAURANT_PREFERENCES',
+        data: { location: 'Moratuwa', dietary_restrictions: 'Vegetarian' },
+      },
+    });
+  });
 });

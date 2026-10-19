@@ -158,17 +158,45 @@ export class OpenWaOutboundService {
 
   private async sendVoiceReply(to: string, text: string): Promise<boolean> {
     try {
-      const audio = await getTextToSpeechService().synthesize(text);
-      if (!audio?.mediaUrl) {
+      const audio = await getTextToSpeechService().synthesize(text, { voiceNote: true });
+      if (!audio?.audioData?.length) {
         return false;
       }
 
-      console.warn(
-        `[OpenWaOutboundService] Voice media generated but OpenWA media send is not wired yet: ${audio.mediaUrl}`
-      );
-      return false;
+      if (!this.isConfigured()) {
+        this.logger.warn('openwa_audio_send_skipped', { category: 'not_configured' });
+        return false;
+      }
+
+      const response = await this.fetcher(this.buildUrl('/messages/send-audio'), {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({
+          chatId: toOpenWaChatId(to),
+          base64: audio.audioData.toString('base64'),
+          mimetype: audio.contentType,
+          ptt: true,
+        }),
+      });
+      if (!response.ok) {
+        this.logger.error('openwa_audio_send_failed', {
+          category: 'http', status: response.status, retryAttempted: false,
+        });
+        return false;
+      }
+      return true;
     } catch (error) {
-      console.error('[OpenWaOutboundService] TTS failed after text message was sent:', error);
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+      this.logger.error('openwa_audio_send_failed', {
+        category: code === 16 || code === 'UNAUTHENTICATED'
+          ? 'authentication'
+          : code === 7 || code === 'PERMISSION_DENIED'
+            ? 'permission'
+            : 'synthesis_or_connection',
+        retryAttempted: false,
+      });
       return false;
     }
   }

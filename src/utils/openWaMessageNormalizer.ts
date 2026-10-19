@@ -16,7 +16,9 @@ interface OpenWaMessagePayload {
   messageId?: string;
   from?: string;
   to?: string;
-  sender?: string | { id?: string; pushname?: string };
+  sender?: string | { id?: string; pushname?: string; pushName?: string; name?: string };
+  pushname?: string;
+  pushName?: string;
   recipient?: string;
   chatId?: string;
   fromMe?: boolean;
@@ -82,8 +84,15 @@ export function normalizeOpenWaInboundMessage(
       provider: 'openwa',
       rawPayload: payload,
       sessionId: getOpenWaSessionId(payload),
+      profileName: getOpenWaProfileName(message),
     },
   };
+}
+
+function getOpenWaProfileName(message: OpenWaMessagePayload): string | undefined {
+  const sender = message.sender && typeof message.sender === 'object' ? message.sender : undefined;
+  return getString(sender?.pushname) || getString(sender?.pushName) || getString(sender?.name) ||
+    getString(message.pushname) || getString(message.pushName);
 }
 
 export function isOpenWaOutboundEcho(payload: OpenWaWebhookPayload): boolean {

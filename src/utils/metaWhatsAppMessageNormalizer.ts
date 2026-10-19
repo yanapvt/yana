@@ -50,6 +50,11 @@ interface MetaWhatsAppMessage {
       id?: string;
       title?: string;
     };
+    nfm_reply?: {
+      name?: string;
+      body?: string;
+      response_json?: string;
+    };
   };
   button?: {
     text?: string;
@@ -115,6 +120,17 @@ function extractMetaMessageContent(
   message: MetaWhatsAppMessage,
   options: MetaNormalizeOptions
 ): MessageContent {
+  if (message.interactive?.nfm_reply?.response_json) {
+    const responseData = parseFlowResponse(message.interactive.nfm_reply.response_json);
+    return {
+      type: 'interactive',
+      interactionType: 'flow_reply',
+      selectedId: 'restaurant_flow_submit',
+      selectedTitle: message.interactive.nfm_reply.body,
+      responseData,
+    };
+  }
+
   if (message.interactive?.button_reply?.id) {
     return {
       type: 'interactive',
@@ -192,6 +208,17 @@ function extractMetaMessageContent(
     type: 'text',
     body: '',
   };
+}
+
+function parseFlowResponse(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function getMetaTimestamp(value?: string): Date {

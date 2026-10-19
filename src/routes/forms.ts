@@ -259,6 +259,13 @@ const formDefinitions: Record<FormType, FormRouteDefinition> = {
         ]),
       },
       {
+        name: 'allergies',
+        label: 'Allergies (please confirm explicitly)',
+        type: 'textarea',
+        placeholder: 'e.g. peanuts, shellfish, or None',
+        helperText: 'Restaurants must confirm they can safely accommodate an allergy.',
+      },
+      {
         name: 'indoorOutdoor',
         label: 'Indoor/Outdoor',
         type: 'select',

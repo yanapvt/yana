@@ -7,43 +7,53 @@ import { pool } from '../db/connection.js';
 export interface TextToSpeechAsset {
   mediaUrl: string;
   contentType: string;
+  audioData: Buffer;
+}
+
+interface SynthesisOptions {
+  voiceNote?: boolean;
 }
 
 export class TextToSpeechService {
   private client: TextToSpeechClient | null = null;
 
-  async synthesize(text: string): Promise<TextToSpeechAsset | null> {
+  async synthesize(text: string, options: SynthesisOptions = {}): Promise<TextToSpeechAsset | null> {
     if (!isTextToSpeechEnabled() || !text.trim()) {
       return null;
     }
 
     const languageCode = process.env.TTS_LANGUAGE || 'en-US';
-    const voiceName = process.env.TTS_VOICE || 'en-US-Chirp3-HD-Aoede';
-    const audioEncoding = process.env.TTS_AUDIO_ENCODING || 'MP3';
+    const modelName = process.env.TTS_MODEL?.trim() || undefined;
+    const isGemini = Boolean(modelName?.startsWith('gemini-'));
+    const voiceName = process.env.TTS_VOICE || (isGemini ? 'Aoede' : 'en-US-Chirp3-HD-Aoede');
+    const audioEncoding = options.voiceNote ? 'OGG_OPUS' : process.env.TTS_AUDIO_ENCODING || 'MP3';
+    if (audioEncoding !== 'MP3' && audioEncoding !== 'OGG_OPUS') {
+      throw new Error('TTS_AUDIO_ENCODING must be MP3 or OGG_OPUS');
+    }
+    const spokenText = normalizeTextForSpeech(text);
+    const prompt = isGemini ? buildGeminiVoicePrompt(spokenText) : '';
+    const extension = audioEncoding === 'OGG_OPUS' ? 'ogg' : 'mp3';
+    const contentType = audioEncoding === 'OGG_OPUS' ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
     const hash = createHash('sha256')
-      .update([text, languageCode, voiceName, audioEncoding].join('\0'))
+      .update([spokenText, languageCode, voiceName, modelName ?? '', audioEncoding, prompt].join('\0'))
       .digest('hex');
-    const mediaUrl = `${getPublicBaseUrl()}/media/tts/${hash}.mp3`;
-    const filePath = getTtsFilePath(hash);
+    const mediaUrl = `${getPublicBaseUrl()}/media/tts/${hash}.${extension}`;
+    const filePath = getTtsFilePath(hash, extension);
 
     if (await fileExists(filePath)) {
-      await markAssetAccessed(hash);
-      return { mediaUrl, contentType: 'audio/mpeg' };
-    }
-
-    const cached = await getCachedAsset(hash);
-    if (cached && await fileExists(filePath)) {
-      return { mediaUrl: cached.audioUrl, contentType: 'audio/mpeg' };
+      await markAssetAccessed(hash).catch(() => undefined);
+      return { mediaUrl, contentType, audioData: await readFile(filePath) };
     }
 
     const [response] = await this.getClient().synthesizeSpeech({
-      input: { text: normalizeTextForSpeech(text) },
+      input: isGemini ? { text: spokenText, prompt } : { text: spokenText },
       voice: {
         languageCode,
         name: voiceName,
+        ...(isGemini ? { modelName } : {}),
       },
       audioConfig: {
-        audioEncoding: audioEncoding as 'MP3',
+        audioEncoding: audioEncoding as 'MP3' | 'OGG_OPUS',
       },
     });
 
@@ -58,22 +68,22 @@ export class TextToSpeechService {
 
     await mkdir(join(process.cwd(), 'tmp', 'tts'), { recursive: true });
     await writeFile(filePath, audio);
-    await saveAsset(hash, text, languageCode, mediaUrl, audioEncoding.toLowerCase());
+    await saveAsset(hash, text, languageCode, mediaUrl, audioEncoding.toLowerCase()).catch(() => undefined);
 
-    return { mediaUrl, contentType: 'audio/mpeg' };
+    return { mediaUrl, contentType, audioData: audio };
   }
 
-  async readAudio(hash: string): Promise<Buffer | null> {
+  async readAudio(hash: string, extension: 'mp3' | 'ogg' = 'mp3'): Promise<Buffer | null> {
     if (!/^[a-f0-9]{64}$/i.test(hash)) {
       return null;
     }
 
-    const filePath = getTtsFilePath(hash);
+    const filePath = getTtsFilePath(hash, extension);
     if (!await fileExists(filePath)) {
       return null;
     }
 
-    await markAssetAccessed(hash);
+    await markAssetAccessed(hash).catch(() => undefined);
     return readFile(filePath);
   }
 
@@ -113,14 +123,26 @@ export function isTextToSpeechEnabled(): boolean {
 
 function normalizeTextForSpeech(text: string): string {
   return text
+    .replace(/^I heard: ["“][^"”]+["”]\s*/i, '')
     .replace(/https?:\/\/\S+/g, 'link')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 1200);
 }
 
-function getTtsFilePath(hash: string): string {
-  return join(process.cwd(), 'tmp', 'tts', `${hash}.mp3`);
+function buildGeminiVoicePrompt(text: string): string {
+  const isCasual = /\b(hungry|dinner|lunch|breakfast|restaurant|food|meal)\b/i.test(text);
+  return [
+    'Speak as Yana, a warm, relaxed female travel concierge. Sound like a real person chatting with a friend: natural rhythm, an easygoing smile in your voice, and a slightly brisk pace. Keep pauses brief and begin speaking promptly.',
+    isCasual
+      ? 'A tiny, genuine amused chuckle is welcome if it fits naturally. Do not force laughter or repeat it.'
+      : 'Keep the delivery sincere; do not add laughter to serious or practical information.',
+    'Say only the supplied answer. Do not invent booking confirmations, prices, or availability.',
+  ].join(' ');
+}
+
+function getTtsFilePath(hash: string, extension: 'mp3' | 'ogg'): string {
+  return join(process.cwd(), 'tmp', 'tts', `${hash}.${extension}`);
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -139,22 +161,6 @@ function getPublicBaseUrl(): string {
     `http://localhost:${process.env.PORT || '3000'}`;
 
   return publicBaseUrl.replace(/\/$/, '');
-}
-
-async function getCachedAsset(
-  hash: string
-): Promise<{ audioUrl: string } | null> {
-  const result = await pool.query<{ audio_url: string }>(
-    'SELECT audio_url FROM tts_assets WHERE text_hash = $1',
-    [hash]
-  );
-
-  if (result.rowCount === 0) {
-    return null;
-  }
-
-  await markAssetAccessed(hash);
-  return { audioUrl: result.rows[0].audio_url };
 }
 
 async function saveAsset(

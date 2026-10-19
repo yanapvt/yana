@@ -5,6 +5,58 @@ import { LiteApiSupplierAdapter } from './LiteApiSupplierAdapter.js';
 describe('LiteApiSupplierAdapter', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it('looks up a selected hotel by name instead of a destination shortlist', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [], hotels: [] }),
+    } as Response);
+    const adapter = new LiteApiSupplierAdapter({
+      baseUrl: 'https://api.liteapi.travel/v3.0',
+      apiKey: 'test-key',
+    });
+
+    await adapter.searchHotels({
+      destination: 'Bentota, Sri Lanka',
+      hotelName: 'Selected Beach Hotel',
+      countryCode: 'LK',
+      checkIn: '2026-11-20',
+      checkOut: '2026-11-21',
+      occupancy: { adults: 2, children: 0, rooms: 1 },
+      currency: 'USD',
+      correlationId: 'corr-selected-hotel',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toMatchObject({ countryCode: 'LK', hotelName: 'Selected Beach Hotel' });
+    expect(body).not.toHaveProperty('aiSearch');
+  });
+
+  it('uses a Google Place ID as the geographic key outside a known country', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [], hotels: [] }),
+    } as Response);
+    const adapter = new LiteApiSupplierAdapter({
+      baseUrl: 'https://api.liteapi.travel/v3.0',
+      apiKey: 'test-key',
+    });
+
+    await adapter.searchHotels({
+      destination: 'Paris',
+      hotelName: 'Selected Paris Hotel',
+      placeId: 'google-place-id',
+      checkIn: '2026-11-20',
+      checkOut: '2026-11-21',
+      occupancy: { adults: 2, children: 0, rooms: 1 },
+      currency: 'USD',
+      correlationId: 'corr-place-id',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toMatchObject({ placeId: 'google-place-id', hotelName: 'Selected Paris Hotel' });
+    expect(body).not.toHaveProperty('aiSearch');
+  });
+
   it('sends the documented rates request and normalizes hotels, rooms, and rates', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,

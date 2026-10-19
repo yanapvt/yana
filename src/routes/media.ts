@@ -109,9 +109,10 @@ router.get('/media/meta/:mediaId', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/media/tts/:hash.mp3', async (req: Request, res: Response) => {
+router.get('/media/tts/:hash.:extension(mp3|ogg)', async (req: Request, res: Response) => {
   try {
-    const audio = await getTextToSpeechService().readAudio(req.params.hash);
+    const extension = req.params.extension as 'mp3' | 'ogg';
+    const audio = await getTextToSpeechService().readAudio(req.params.hash, extension);
 
     if (!audio) {
       res.status(404).send('Not found');
@@ -120,7 +121,7 @@ router.get('/media/tts/:hash.mp3', async (req: Request, res: Response) => {
 
     res.set({
       'Cache-Control': 'public, max-age=86400',
-      'Content-Type': 'audio/mpeg',
+      'Content-Type': extension === 'ogg' ? 'audio/ogg' : 'audio/mpeg',
     });
     res.send(audio);
   } catch {

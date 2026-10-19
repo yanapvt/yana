@@ -395,6 +395,11 @@ export class HotelSearchFlowService {
         rooms: criteria.rooms ?? 1,
       },
       currency: criteria.budgetPerNight?.currency ?? 'USD',
+      hotelName: selectedHotel?.name.replace(/,\s*Sri Lanka\s*$/i, ''),
+      countryCode: selectedHotel && /\bsri lanka\b/i.test(`${selectedHotel.address ?? ''} ${criteria.location ?? ''}`)
+        ? 'LK'
+        : undefined,
+      placeId: selectedHotel?.googlePlaceId,
       correlationId: context.correlationId,
     });
     let verifiedMatches: VerifiedHotelMatch[] = [];
@@ -787,8 +792,9 @@ export class HotelSearchFlowService {
         const verification = hotel.sltdaVerified
           ? `\nSri Lanka Tourism registration: Verified${hotel.sltdaLicenceValidUntil ? ` (licence valid to ${hotel.sltdaLicenceValidUntil})` : ''}`
           : '';
+        const attribution = hotel.googlePlaceId || hotel.googleMapsUri ? '\nListing details: Google Maps' : '';
 
-        return `${index + 1}. ${hotel.name}${rating}${verification}${room}${meal}${cancellation}${price}${address}\nReply "book ${index + 1}" to request this stay, or "details ${index + 1}".`;
+        return `${index + 1}. ${hotel.name}${rating}${verification}${room}${meal}${cancellation}${price}${address}${attribution}\nReply "book ${index + 1}" to request this stay, or "details ${index + 1}".`;
       }),
       '',
       hasMore
@@ -976,7 +982,8 @@ function calculateNights(checkIn: string, checkOut: string): number {
 }
 
 function normalizeHotelIdentity(value: string): string {
-  return value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim();
+  return value.replace(/,\s*Sri Lanka\s*$/i, '')
+    .toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 function findInventoryRate(

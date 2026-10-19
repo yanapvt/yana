@@ -56,6 +56,7 @@ const EnvironmentSchema = z.object({
     appSecret: z.string().optional(),
     apiVersion: z.string().min(1).default('v20.0'),
     mediaProxySecret: z.string().optional(),
+    restaurantFlowId: z.string().optional(),
   }),
 
   // Database (optional in development/test)
@@ -182,6 +183,7 @@ function loadEnvironmentConfig(): EnvironmentConfig {
       appSecret: process.env.META_WHATSAPP_APP_SECRET,
       apiVersion: process.env.META_WHATSAPP_API_VERSION || 'v20.0',
       mediaProxySecret: process.env.META_WHATSAPP_MEDIA_PROXY_SECRET,
+      restaurantFlowId: process.env.META_WHATSAPP_RESTAURANT_FLOW_ID,
     },
 
     postgres: {

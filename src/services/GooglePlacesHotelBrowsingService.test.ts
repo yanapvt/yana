@@ -77,4 +77,5 @@ describe('GooglePlacesHotelBrowsingService', () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
 });

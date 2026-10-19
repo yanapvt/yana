@@ -40,6 +40,9 @@ export interface HotelRequestForm {
   facilities?: string;
   bedPreference?: string;
   specialOccasion?: string;
+  preferredHotelName?: string;
+  preferredGooglePlaceId?: string;
+  sourcingStatus?: 'awaiting_quote';
 }
 
 export interface RestaurantRequestForm {
@@ -51,6 +54,7 @@ export interface RestaurantRequestForm {
   diningStyle?: string;
   priceRange: string;
   dietaryRequirements?: string;
+  allergies?: string;
   indoorOutdoor?: string;
   specialOccasion?: string;
 }

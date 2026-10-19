@@ -48,6 +48,13 @@ export class ProfileService {
       .slice()
       .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null;
   }
+
+  async getLatestServiceRequestOverall(userId: string): Promise<StoredServiceRequest | null> {
+    const requests = await this.serviceRequestRepository.findByUserId(userId);
+    return requests
+      .slice()
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null;
+  }
 }
 
 let profileServiceInstance: ProfileService | null = null;

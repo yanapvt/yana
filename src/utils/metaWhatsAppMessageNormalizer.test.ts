@@ -116,4 +116,44 @@ describe('normalizeMetaWhatsAppInboundMessage', () => {
       selectedTitle: 'Book now',
     });
   });
+
+  it('normalizes a WhatsApp Flow submission with structured response data', () => {
+    const message = normalizeMetaWhatsAppInboundMessage({
+      entry: [{
+        changes: [{
+          value: {
+            metadata: { display_phone_number: '94700000000' },
+            messages: [{
+              id: 'wamid.flow',
+              from: '94771234567',
+              type: 'interactive',
+              interactive: {
+                type: 'nfm_reply',
+                nfm_reply: {
+                  body: 'Sent',
+                  response_json: JSON.stringify({
+                    flow_token: 'opaque-token',
+                    location: 'Moratuwa',
+                    guests: '2',
+                  }),
+                },
+              },
+            }],
+          },
+        }],
+      }],
+    });
+
+    expect(message.content).toEqual({
+      type: 'interactive',
+      interactionType: 'flow_reply',
+      selectedId: 'restaurant_flow_submit',
+      selectedTitle: 'Sent',
+      responseData: {
+        flow_token: 'opaque-token',
+        location: 'Moratuwa',
+        guests: '2',
+      },
+    });
+  });
 });

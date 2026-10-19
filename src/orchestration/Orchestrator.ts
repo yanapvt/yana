@@ -8,13 +8,22 @@ import { PromptService } from './PromptService.js';
 export type OrchestrationIntent =
   | 'hotel_search'
   | 'restaurant_search'
+  | 'excursion_search'
   | 'logistics_request'
+  | 'itinerary_plan'
   | 'profile_update'
   | 'smalltalk'
   | 'command'
   | 'unclear';
 
-export type OrchestrationFlow = 'hotel' | 'restaurant' | 'logistics' | 'profile' | 'none';
+export type OrchestrationFlow =
+  | 'hotel'
+  | 'restaurant'
+  | 'excursion'
+  | 'logistics'
+  | 'itinerary'
+  | 'profile'
+  | 'none';
 
 export type ConversationRole =
   | 'answer_to_current_question'
@@ -49,6 +58,7 @@ export interface OrchestrationSessionSnapshot {
   flow: OrchestrationFlow;
   state?: string;
   activeSchema?: string;
+  awaitedField?: string;
   collectedFields: Record<string, unknown>;
   requiredFields: string[];
   missingFields: string[];

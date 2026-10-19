@@ -188,7 +188,9 @@ function resolveTargetFlow(
 ): OrchestrationFlow {
   if (intent === 'hotel_search') return 'hotel';
   if (intent === 'restaurant_search') return 'restaurant';
+  if (intent === 'excursion_search') return 'excursion';
   if (intent === 'logistics_request') return 'logistics';
+  if (intent === 'itinerary_plan') return 'itinerary';
   if (intent === 'profile_update') return 'profile';
   if (intent === 'smalltalk' || intent === 'command' || intent === 'unclear') {
     return activeFlow ?? 'none';
@@ -197,20 +199,28 @@ function resolveTargetFlow(
 }
 
 function requiresProfile(intent: OrchestrationIntent): boolean {
-  return intent === 'hotel_search' || intent === 'restaurant_search' || intent === 'logistics_request';
+  return intent === 'hotel_search' ||
+    intent === 'restaurant_search' ||
+    intent === 'excursion_search' ||
+    intent === 'logistics_request' ||
+    intent === 'itinerary_plan';
 }
 
 function defaultRequiredFields(flow: OrchestrationFlow): string[] {
   if (flow === 'hotel') return ['location', 'checkinDate', 'checkoutDate', 'guests', 'rooms'];
   if (flow === 'restaurant') return ['location', 'guests'];
+  if (flow === 'excursion') return ['destination'];
   if (flow === 'logistics') return ['pickupLocation', 'dropOffLocation', 'date', 'passengers'];
+  if (flow === 'itinerary') return ['arrivalDate', 'departureDate', 'adults'];
   return [];
 }
 
 function schemaForFlow(flow: OrchestrationFlow): string | undefined {
   if (flow === 'hotel') return 'search_hotels';
   if (flow === 'restaurant') return 'search_restaurants';
+  if (flow === 'excursion') return 'search_excursions';
   if (flow === 'logistics') return 'logistics_request';
+  if (flow === 'itinerary') return 'plan_itinerary';
   return undefined;
 }
 

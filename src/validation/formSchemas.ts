@@ -141,6 +141,7 @@ export const restaurantRequestFormSchema = z.object({
   diningStyle: optionalText(120),
   priceRange: text('Price range', 4),
   dietaryRequirements: optionalText(180),
+  allergies: optionalText(180),
   indoorOutdoor: optionalText(40),
   specialOccasion: optionalText(120),
 });

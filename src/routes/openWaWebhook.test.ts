@@ -34,6 +34,15 @@ describe('OpenWA webhook reliability', () => {
     claim.mockResolvedValue('new'); const response = await post(payload); expect(response.status).toBe(200); expect(await response.json()).toMatchObject({ accepted: true });
     await vi.waitFor(() => expect(sendReply).toHaveBeenCalledOnce());
   });
+  it('requests audio delivery for a transcribed voice note', async () => {
+    processInbound.mockResolvedValue({ reply: 'I heard you', inboundMessage: { inputType: 'voice' } });
+    claim.mockResolvedValue('new');
+    const response = await post(payload);
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(sendReply).toHaveBeenCalledWith(
+      'openwa:test-user@c.us', 'safe reply', { voice: true }
+    ));
+  });
   it('enriches search results and dispatches image cards through OpenWA', async () => {
     buildReply.mockResolvedValue([
       { body: 'Hotel matches' },
