@@ -94,7 +94,7 @@ export const basicProfileFormSchema = z.object({
   preferredLanguage: text('Preferred language', 64),
   nationality: text('Nationality', 80),
   countryOfResidence: text('Country of residence', 80),
-  city: text('City', 80),
+  city: optionalText(80),
   dateOfBirth: requiredDate('Date of birth'),
   preferredCurrency: text('Preferred currency', 3)
     .transform((value) => value.toUpperCase())

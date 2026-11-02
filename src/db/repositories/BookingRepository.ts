@@ -104,6 +104,16 @@ export class BookingRepository {
         [booking.booking_id, data.state, 'booking_created']
       );
 
+      if (data.state === BookingState.CONFIRMED) {
+        await client.query(`INSERT INTO notifications (user_id,booking_id,notification_type,scheduled_at,content,metadata)
+          SELECT b.user_id,b.booking_id,'confirmed_service_feedback',NOW() + INTERVAL '30 minutes',
+            jsonb_build_object('flow',b.service_type),'{"source":"booking_confirmation"}'::jsonb
+          FROM bookings b JOIN user_preferences p ON p.user_id=b.user_id
+          WHERE b.booking_id=$1 AND p.proactive_messaging_enabled=true
+          ON CONFLICT (booking_id,notification_type) WHERE notification_type='confirmed_service_feedback' DO NOTHING`,
+        [booking.booking_id]);
+      }
+
       await client.query('COMMIT');
       return this.mapBooking(booking);
     } catch (error) {
@@ -229,6 +239,16 @@ export class BookingRepository {
           metadata ? JSON.stringify(metadata) : null,
         ]
       );
+
+      if (newState === BookingState.CONFIRMED && previousState !== BookingState.CONFIRMED) {
+        await client.query(`INSERT INTO notifications (user_id,booking_id,notification_type,scheduled_at,content,metadata)
+          SELECT b.user_id,b.booking_id,'confirmed_service_feedback',NOW() + INTERVAL '30 minutes',
+            jsonb_build_object('flow',b.service_type),'{"source":"booking_confirmation"}'::jsonb
+          FROM bookings b JOIN user_preferences p ON p.user_id=b.user_id
+          WHERE b.booking_id=$1 AND p.proactive_messaging_enabled=true
+          ON CONFLICT (booking_id,notification_type) WHERE notification_type='confirmed_service_feedback' DO NOTHING`,
+        [bookingId]);
+      }
 
       await client.query('COMMIT');
       return this.mapBooking(result.rows[0]);

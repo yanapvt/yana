@@ -10,14 +10,14 @@ export class ConversationAnalyzer {
   analyze(context: OrchestrationContext): ConversationAnalysis {
     const rawText = context.message.text;
     const normalized = normalize(rawText);
-    const command = detectCommand(normalized);
+    const command = detectCommand(normalized, context);
 
     if (command) {
       return {
         role: 'command',
         intent: 'command',
         targetFlow: context.activeSession?.flow ?? 'none',
-        entities: parseCommandEntities(normalized),
+        entities: parseCommandEntities(normalized, context),
         command,
         confidence: 1,
         rawText,
@@ -30,14 +30,24 @@ export class ConversationAnalyzer {
       context.activeSession?.flow
     );
     if (deterministic.intent !== 'unclear') {
+      const isServiceSwitch = Boolean(context.activeSession) &&
+        deterministic.targetFlow !== 'none' &&
+        deterministic.targetFlow !== context.activeSession?.flow;
       return {
         role: roleForIntent(deterministic.intent, context.activeSession?.flow),
         intent: deterministic.intent,
         targetFlow: deterministic.targetFlow,
-        entities: deterministic.entities,
+        entities: { ...deterministic.entities, ...resolveDisplayedResultReference(normalized, context) },
         confidence: deterministic.confidence,
         rawText,
-        shouldUseLLM: false,
+        // Explicit service switches still use the LLM for natural acknowledgement,
+        // ambiguity detection and extraction. CORE keeps routing authority.
+        // With an active journey, even polite small talk can carry control
+        // meaning (pause, defer, decline, resume). Let the bounded model
+        // interpret that nuance while CORE retains transition authority.
+        // The primary model interprets the complete current turn in context,
+        // including apparent service intents. CORE still owns execution.
+        shouldUseLLM: true,
       };
     }
 
@@ -50,10 +60,12 @@ export class ConversationAnalyzer {
         role: 'answer_to_current_question',
         intent: intentForFlow(context.activeSession.flow),
         targetFlow: context.activeSession.flow,
-        entities: { [context.activeSession.awaitedField!]: awaitedAnswer },
+        entities: { [context.activeSession.awaitedField!]: awaitedAnswer, ...resolveDisplayedResultReference(normalized, context) },
         confidence: 0.98,
         rawText,
-        shouldUseLLM: false,
+        // Short answers to an active form still benefit from contextual
+        // interpretation (and can be a side question rather than a field).
+        shouldUseLLM: true,
       };
     }
 
@@ -62,7 +74,7 @@ export class ConversationAnalyzer {
         role: 'question_or_faq',
         intent: 'unclear',
         targetFlow: context.activeSession?.flow ?? 'none',
-        entities: {},
+        entities: resolveDisplayedResultReference(normalized, context),
         question: rawText,
         confidence: 0.7,
         rawText,
@@ -74,7 +86,7 @@ export class ConversationAnalyzer {
       role: context.activeSession ? 'extra_preference' : 'unclear',
       intent: 'unclear',
       targetFlow: context.activeSession?.flow ?? 'none',
-      entities: {},
+      entities: resolveDisplayedResultReference(normalized, context),
       confidence: context.activeSession ? 0.55 : 0.35,
       rawText,
       shouldUseLLM: true,
@@ -83,7 +95,8 @@ export class ConversationAnalyzer {
 }
 
 function detectCommand(
-  normalized: string
+  normalized: string,
+  context: OrchestrationContext
 ): ConversationAnalysis['command'] | undefined {
   if (/^(reset|restart|start over|cancel|clear)$/.test(normalized)) return 'reset';
   if (/^(status|update|resume|continue|waiting|still waiting|any update|show results)$/.test(normalized)) {
@@ -92,12 +105,36 @@ function detectCommand(
   if (/^(next|more|show more|next 3|another 3)$/.test(normalized)) return 'next';
   if (/^details\s*[1-3]$/.test(normalized)) return 'details';
   if (/^(book\s*)?[1-3]$/.test(normalized) || /^book\s*[1-3]$/.test(normalized)) return 'book';
+  const ordinal = parseDisplayedOrdinal(normalized);
+  if (ordinal && !/\b(?:like|similar|more)\b/.test(normalized) &&
+      context.activeSession?.verifiedResults?.items.some((item) => item.position === ordinal)) {
+    return /\b(book|reserve|choose|select)\b/.test(normalized) ? 'book' : 'details';
+  }
   return undefined;
 }
 
-function parseCommandEntities(normalized: string): Record<string, unknown> {
+function parseCommandEntities(normalized: string, context: OrchestrationContext): Record<string, unknown> {
   const numberMatch = normalized.match(/\b([1-3])\b/);
-  return numberMatch ? { selection: Number(numberMatch[1]) } : {};
+  const selection = numberMatch ? Number(numberMatch[1]) : parseDisplayedOrdinal(normalized);
+  if (!selection) return {};
+  const displayed = context.activeSession?.verifiedResults?.items.find((item) => item.position === selection);
+  return displayed ? { selection, resultId: displayed.resultId } : { selection };
+}
+
+function parseDisplayedOrdinal(normalized: string): number | undefined {
+  if (!/\b(?:one|option|result|place|hotel|restaurant|experience|ride)\b/.test(normalized)) return undefined;
+  if (/\bfirst\b/.test(normalized)) return 1;
+  if (/\bsecond\b/.test(normalized)) return 2;
+  if (/\bthird\b/.test(normalized)) return 3;
+  return undefined;
+}
+
+/** Resolve ordinal references only against results that the backend actually displayed. */
+function resolveDisplayedResultReference(normalized: string, context: OrchestrationContext): Record<string, unknown> {
+  const position = parseDisplayedOrdinal(normalized);
+  if (!position) return {};
+  const result = context.activeSession?.verifiedResults?.items.find((item) => item.position === position);
+  return result ? { selection: position, resultId: result.resultId, referencedResultName: result.name } : {};
 }
 
 function detectDeterministicIntent(
@@ -162,7 +199,9 @@ function detectDeterministicIntent(
   }
 
   if (
-    /\b(excursions?|activity|activities|attractions?|things to do|experiences?|tours?|historic|historical|adventure|surf|surfing|safari|wildlife|museum|temple|hiking|diving)\b/.test(normalized)
+    /\b(excursions?|activity|activities|attractions?|things to do|experiences?|tours?|historic|historical|adventure|surf|surfing|safari|wildlife|museum|temple|hiking|diving|sightseeing|local sights?|what(?:'s| is) (?:on|happening))\b/.test(normalized) ||
+    /\bwhat (?:can|could|should) (?:i|we) (?:do|see|visit)(?:\s+(?:in|around|near|at)\b|\s+(?:here|nearby)\b)/.test(normalized) ||
+    /\b(?:anything|something) (?:to do|to see|happening)(?:\s+(?:in|around|near|at)\b|\s+(?:here|nearby)\b)/.test(normalized)
   ) {
     return {
       intent: 'excursion_search',

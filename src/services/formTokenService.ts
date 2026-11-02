@@ -2,6 +2,9 @@ import crypto from 'crypto';
 import type { FormType } from '../types/forms.js';
 
 export interface FormTokenRecord {
+  requestId?: string;
+  workflowRevision?: number;
+  workflowId?: string;
   userId: string;
   formType: FormType;
   expiresAt: Date;
@@ -26,6 +29,7 @@ export class FormTokenService {
     const ttlMinutes = options.ttlMinutes ?? DEFAULT_TOKEN_TTL_MINUTES;
 
     this.tokens.set(this.hash(token), {
+      requestId: crypto.randomUUID(),
       userId,
       formType,
       expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000),
@@ -43,10 +47,21 @@ export class FormTokenService {
     }
 
     return {
+      requestId: record.requestId,
+      workflowRevision: record.workflowRevision,
+      workflowId: record.workflowId,
       userId: record.userId,
       formType: record.formType,
       expiresAt: record.expiresAt,
     };
+  }
+
+  bindRevision(token: string, formType: FormType, revision: number, workflowId?: string): void {
+    const record = this.getValidToken(token, formType);
+    if (record && record.workflowRevision === undefined) {
+      record.workflowRevision = revision;
+      record.workflowId = workflowId;
+    }
   }
 
   createCsrfToken(token: string, formType: FormType): string | null {

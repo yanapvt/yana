@@ -1,5 +1,7 @@
-import { getLLMService } from '../services/LLMService.js';
+import { getLLMService, LLMServiceError } from '../services/LLMService.js';
 import type { LLMDecisionOutput } from '../types/core.js';
+import { canonicalField, decisionOutputSchema, validateCriteria } from './WorkflowDefinitions.js';
+import { modelContext } from './ContextBuilder.js';
 import type {
   ConversationRole,
   LLMInterpretation,
@@ -8,6 +10,7 @@ import type {
   OrchestrationFlow,
   OrchestrationIntent,
 } from './Orchestrator.js';
+import { validateMemoryCandidates } from './TravellerMemory.js';
 
 const ALLOWED_SCHEMAS = [
   'search_hotels',
@@ -20,25 +23,14 @@ const ALLOWED_SCHEMAS = [
 
 /** Adapts the existing structured LLM service to the bounded Orchestrator contract. */
 export class LLMDecisionInterpreter implements LLMInterpreter {
-  async interpret(_prompt: string, context: OrchestrationContext): Promise<LLMInterpretation> {
+  async interpret(prompt: string, context: OrchestrationContext): Promise<LLMInterpretation> {
     const decision = await getLLMService().decide({
-      userMessage: context.message.text,
-      userProfile: {
-        preferredLanguage: context.profile?.preferredLanguage,
-        nationality: context.profile?.nationality,
-      },
-      sessionState: context.activeSession
-        ? {
-            currentIntent: context.activeSession.flow,
-            activeSchema: context.activeSession.activeSchema,
-            collectedFields: context.activeSession.collectedFields,
-            missingFields: context.activeSession.missingFields,
-          }
-        : undefined,
+      ...modelContext(context),
       availableSchemas: [...ALLOWED_SCHEMAS],
-    });
+    }, prompt);
 
-    return validateAndMapDecision(decision, context.activeSession?.flow);
+    try { return validateAndMapDecision(decision, context.activeSession?.flow); }
+    catch { throw new LLMServiceError('Model proposal failed workflow validation', 'INVALID_WORKFLOW_OUTPUT', false); }
   }
 }
 
@@ -46,40 +38,70 @@ export function validateAndMapDecision(
   decision: LLMDecisionOutput,
   activeFlow?: OrchestrationFlow
 ): LLMInterpretation {
+  decision = decisionOutputSchema.parse(decision);
   const intent = mapIntent(decision.intent);
+  const requiresClarification = Boolean(decision.clarificationRequired || decision.ambiguity?.isAmbiguous);
   if (intent === 'unclear') {
     return {
-      role: 'unclear',
+      role: decision.intent === 'general_inquiry' ? 'question_or_faq' : 'unclear',
       intent,
       entities: {},
-      confidence: Math.min(decision.confidence, 0.49),
+      confidence: decision.intent === 'general_inquiry' ? decision.confidence : Math.min(decision.confidence, 0.49),
       missingFields: [],
+      suggestedAction: decision.intent === 'general_inquiry' && !requiresClarification ? undefined : 'clarify',
+      question: decision.clarificationQuestion,
+      responseText: decision.responseText,
+      clarificationRequired: requiresClarification,
+      taskTransition: decision.taskTransition,
+      recommendedSchema: decision.recommendedSchema,
+      uiRecommendation: decision.uiRecommendation,
+      proposedAction: decision.proposedAction,
+      unresolvedQuestions: decision.unresolvedQuestions,
       reasoning: decision.reasoning,
+      memoryCandidates: validateMemoryCandidates(decision.memoryCandidates),
     };
   }
 
   const targetFlow = flowForIntent(intent);
-  const entities = sanitizeEntities(decision.parameters, targetFlow);
+  const parameters = sanitizeEntities(decision.parameters, targetFlow);
+  const updates = sanitizeEntities(decision.fieldUpdates ?? {}, targetFlow);
+  for (const [field, value] of Object.entries(updates)) {
+    if (field in parameters && JSON.stringify(parameters[field]) !== JSON.stringify(value)) {
+      throw new Error('Conflicting model field updates');
+    }
+  }
+  const entities = { ...parameters, ...updates };
   return {
     role: roleForDecision(decision, targetFlow, activeFlow),
     intent,
     entities,
     confidence: decision.confidence,
-    missingFields: decision.missingFields.filter((field) => isAllowedField(field, targetFlow)),
+    missingFields: decision.missingFields.map((field) => canonicalField(targetFlow, field)).filter((field): field is string => Boolean(field)),
+    suggestedAction: requiresClarification ? 'clarify' : decision.suggestedAction,
+    question: decision.clarificationQuestion,
+    responseText: decision.responseText,
+    clarificationRequired: requiresClarification,
+    taskTransition: decision.taskTransition,
+    recommendedSchema: decision.recommendedSchema,
+    uiRecommendation: decision.uiRecommendation,
+    proposedAction: decision.proposedAction,
+    unresolvedQuestions: decision.unresolvedQuestions,
     reasoning: decision.reasoning,
+    memoryCandidates: validateMemoryCandidates(decision.memoryCandidates),
   };
 }
 
 function mapIntent(intent: string): OrchestrationIntent {
-  const normalized = intent.toLowerCase();
-  if (/hotel|accommodation|stay|room/.test(normalized)) return 'hotel_search';
-  if (/restaurant|dining|food|meal|cafe/.test(normalized)) return 'restaurant_search';
-  if (/excursion|activity|attraction|experience|things_to_do/.test(normalized)) return 'excursion_search';
-  if (/transport|logistics|transfer|taxi|driver/.test(normalized)) return 'logistics_request';
-  if (/itinerary|trip_plan|plan_trip/.test(normalized)) return 'itinerary_plan';
-  if (/profile/.test(normalized)) return 'profile_update';
-  if (/greeting|smalltalk/.test(normalized)) return 'smalltalk';
-  return 'unclear';
+  const aliases: Record<string, OrchestrationIntent> = {
+    search_hotels: 'hotel_search', hotel_search: 'hotel_search',
+    search_restaurants: 'restaurant_search', restaurant_search: 'restaurant_search',
+    search_excursions: 'excursion_search', excursion_search: 'excursion_search',
+    search_transport: 'logistics_request', logistics_request: 'logistics_request',
+    plan_itinerary: 'itinerary_plan', itinerary_plan: 'itinerary_plan',
+    profile_update: 'profile_update', greeting: 'smalltalk', smalltalk: 'smalltalk',
+    general_inquiry: 'general_inquiry',
+  };
+  return aliases[intent] ?? 'unclear';
 }
 
 function flowForIntent(intent: OrchestrationIntent): OrchestrationFlow {
@@ -97,6 +119,7 @@ function roleForDecision(
   targetFlow: OrchestrationFlow,
   activeFlow?: OrchestrationFlow
 ): ConversationRole {
+  if (decision.intent === 'general_inquiry') return 'question_or_faq';
   if (targetFlow === 'none') return 'unclear';
   if (activeFlow && activeFlow !== targetFlow) return 'new_intent';
   if (activeFlow === targetFlow) {
@@ -111,31 +134,7 @@ function sanitizeEntities(
   parameters: Record<string, unknown>,
   flow: OrchestrationFlow
 ): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(parameters).filter(
-      ([field, value]) => isAllowedField(field, flow) && isSafeScalarOrArray(value)
-    )
-  );
-}
-
-function isAllowedField(field: string, flow: OrchestrationFlow): boolean {
-  const normalized = field.replace(/[_-]/g, '').toLowerCase();
-  const common = ['location', 'destination', 'date', 'guests', 'adults', 'children', 'budget'];
-  const byFlow: Partial<Record<OrchestrationFlow, string[]>> = {
-    hotel: ['checkindate', 'checkoutdate', 'rooms', 'mealplan', 'preferences'],
-    restaurant: ['cuisine', 'pricerange', 'diningstyle', 'dietaryrequirements', 'seatingpreference'],
-    excursion: ['activitytype', 'experiencecategory', 'duration', 'fitnesslevel'],
-    logistics: ['pickuplocation', 'dropofflocation', 'pickupdate', 'pickuptime', 'passengers', 'vehicletype'],
-    itinerary: ['arrivaldate', 'departuredate', 'interests', 'travelstyle', 'preferredtransport'],
-  };
-  return [...common, ...(byFlow[flow] ?? [])].includes(normalized);
-}
-
-function isSafeScalarOrArray(value: unknown): boolean {
-  if (typeof value === 'string') return value.length <= 500;
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (typeof value === 'boolean') return true;
-  return Array.isArray(value) && value.length <= 20 && value.every((item) =>
-    typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean'
-  );
+  return validateCriteria(flow, Object.fromEntries(
+    Object.entries(parameters).filter(([field]) => Boolean(canonicalField(flow, field)))
+  ));
 }

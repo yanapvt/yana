@@ -1,5 +1,6 @@
 import type { LLMDecisionOutput } from '../types/core.js';
 import { getLLMService } from './LLMService.js';
+import { sanitizeConversationText } from '../utils/contextPrivacy.js';
 
 export interface ConversationManagerUserContext {
   profileName?: string;
@@ -8,6 +9,7 @@ export interface ConversationManagerUserContext {
 }
 
 export interface ConversationManagerInput {
+  context?: import('./LLMService.js').ContextPackage;
   userInput?: string;
   profile?: ConversationManagerUserContext | Record<string, unknown> | null;
   memory?: Record<string, unknown> | null;
@@ -75,6 +77,7 @@ export class ConversationManager {
 
   async createMessage(input: ConversationManagerInput): Promise<ConversationManagerOutput> {
     const fallbackText = this.createFallbackMessage(input).text;
+    if (input.context?.historyStatus === 'unavailable') return { text: sanitizeUserFacingText(fallbackText) };
 
     try {
       const prompt = buildConversationPrompt(input, fallbackText);
@@ -287,7 +290,10 @@ function formatList(items: string[]): string {
 
 const defaultConversationLLM: ConversationManagerLLM = {
   async generateText(prompt: string): Promise<string> {
-    return getLLMService().generateUIContent(prompt, 'en');
+    const data = JSON.parse(prompt) as Record<string, unknown>;
+    return getLLMService().generateUIContent(
+      data, typeof data.targetLanguage === 'string' ? data.targetLanguage : 'en'
+    );
   },
 };
 
@@ -303,39 +309,21 @@ function buildConversationPrompt(input: ConversationManagerInput, fallbackText: 
     ...(input.constraints ?? {}),
   };
 
-  return [
-    'You are Yana, a warm personal travel concierge.',
-    '',
-    'Write the next user-facing WhatsApp reply.',
-    '',
-    'Use the provided interpretation and decision, but do not expose them.',
-    '',
-    'Rules:',
-    '- Do not mention intent names, schemas, actions, confidence, or internal tools.',
-    '- Do not say "I understood this as...".',
-    '- Do not say "Could you share more detail?" if the user already gave useful details.',
-    '- Acknowledge specific details the user shared.',
-    '- Ask only the next useful question or questions.',
-    '- Keep it natural and concise.',
-    '- If user asks what you can do, explain available services naturally.',
-    '- If user is planning a trip, guide them like a human concierge.',
-    '- If the decision is ASK_MISSING_FIELDS, ask for those fields in natural language.',
-    '- If the decision is EXECUTE_SEARCH, briefly confirm and proceed.',
-    '- If the decision is RESET_FLOW, reassure the user and start fresh.',
-    '- Return only the final message text.',
-    '',
-    'ConversationManager must not choose the next action. The action below is already decided.',
-    '',
-    `User input: ${input.userInput ?? ''}`,
-    `Profile: ${JSON.stringify(input.profile ?? {})}`,
-    `Memory: ${JSON.stringify(input.memory ?? {})}`,
-    `Session: ${JSON.stringify(input.session ?? {})}`,
-    `Interpretation: ${JSON.stringify(interpretation)}`,
-    `Decision: ${JSON.stringify(decision)}`,
-    `Available services: ${(input.availableServices ?? DEFAULT_AVAILABLE_SERVICES).join(', ')}`,
-    `Constraints: ${JSON.stringify(constraints)}`,
-    `Deterministic fallback style reference: ${fallbackText}`,
-  ].join('\n');
+  const profile = { ...input.profile, ...input.context?.userProfile };
+  return JSON.stringify({
+    userInput: sanitizeConversationText(input.userInput ?? '', 4000),
+    profile,
+    context: input.context,
+    targetLanguage: 'preferredLanguage' in profile && typeof profile.preferredLanguage === 'string'
+      ? profile.preferredLanguage : 'en',
+    memory: input.memory ?? {},
+    session: input.session ?? {},
+    interpretation,
+    decision,
+    availableServices: input.availableServices ?? DEFAULT_AVAILABLE_SERVICES,
+    constraints,
+    fallbackText,
+  });
 }
 
 function normalizeDecisionForPrompt(
@@ -463,7 +451,7 @@ function shouldClarifyTravelOptions(input: TemplateResponseInput, normalized: st
 }
 
 function buildTravelOptionsClarification(): string {
-  return 'I’d be happy to help. Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations? Tell me what sounds useful and I’ll guide you from there.';
+  return 'I’d be happy to help with your travel plans. Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations? Tell me what sounds useful and I’ll guide you from there.';
 }
 
 function isSriLankaTripPlanningRequest(normalized: string, intent?: string): boolean {

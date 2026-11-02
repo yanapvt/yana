@@ -13,6 +13,14 @@ import {
 import { InMemoryProfileRepository } from '../storage/profileRepository.js';
 import { InMemoryServiceRequestRepository } from '../storage/serviceRequestRepository.js';
 import { env } from '../config/environment.js';
+vi.mock('../services/WorkflowLockService.js', () => ({ withWorkflowLock: async (_user: string, operation: () => Promise<unknown>) => operation() }));
+import { FixtureSessionRepository, FixtureStateStore } from '../tests/fixtures/sessionStorage.js';
+import { ItinerarySessionService, initItinerarySessionService } from '../services/itinerarySessionService.js';
+import { HotelSearchSessionService, initHotelSearchSessionService } from '../services/hotelSearchSessionService.js';
+import { RestaurantSearchSessionService, initRestaurantSearchSessionService } from '../services/restaurantSearchSessionService.js';
+import { ExcursionSearchSessionService, initExcursionSearchSessionService } from '../services/excursionSearchSessionService.js';
+import { LogisticsSearchSessionService, initLogisticsSearchSessionService } from '../services/logisticsSearchSessionService.js';
+import { ItineraryWorkspaceService, initItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
 
 describe('external form routes', () => {
   let server: Server;
@@ -20,6 +28,7 @@ describe('external form routes', () => {
   let tokenService: FormTokenService;
   let profileService: ProfileService;
   let sendWhatsAppTextMock: ReturnType<typeof vi.fn>;
+  let hotelRepository: FixtureSessionRepository<any>;
 
   beforeAll(async () => {
     server = createApp().listen(0);
@@ -35,6 +44,14 @@ describe('external form routes', () => {
   });
 
   beforeEach(() => {
+    const store = new FixtureStateStore() as any;
+    const itinerary = initItinerarySessionService(new ItinerarySessionService(store, new FixtureSessionRepository()));
+    hotelRepository = new FixtureSessionRepository();
+    initHotelSearchSessionService(new HotelSearchSessionService(store, hotelRepository));
+    initRestaurantSearchSessionService(new RestaurantSearchSessionService(store, new FixtureSessionRepository()));
+    initExcursionSearchSessionService(new ExcursionSearchSessionService(store, new FixtureSessionRepository()));
+    initLogisticsSearchSessionService(new LogisticsSearchSessionService(store, new FixtureSessionRepository()));
+    initItineraryWorkspaceService(new ItineraryWorkspaceService(store, itinerary));
     tokenService = initFormTokenService(new FormTokenService());
     profileService = initProfileService(
       new ProfileService(new InMemoryProfileRepository(), new InMemoryServiceRequestRepository())
@@ -102,17 +119,11 @@ describe('external form routes', () => {
     const body = new URLSearchParams({
       _csrf: csrf,
       fullName: '<b>Jane Doe</b>',
-      preferredName: 'Jane',
       email: 'JANE@example.com',
-      phone: '+94770000001',
       preferredLanguage: 'English',
       nationality: 'Sri Lankan',
-      countryOfResidence: 'Sri Lanka',
-      city: 'Colombo',
       dateOfBirth: '1990-05-03',
-      preferredCurrency: 'usd',
       travelStyle: 'Luxury',
-      dietaryRestrictions: 'Vegetarian',
       accessibilityNeeds: '',
       consent: 'on',
     });
@@ -139,9 +150,26 @@ describe('external form routes', () => {
       expect.stringContaining('I am back with you here on WhatsApp now')
     );
     expect(profile?.form.fullName).toBe('Jane Doe');
+    expect(profile?.form.preferredName).toBe('Jane');
+    expect(profile?.form.phone).toBe('+94770000001');
+    expect(profile?.form.countryOfResidence).toBe('Sri Lanka');
     expect(profile?.form.email).toBe('jane@example.com');
-    expect(profile?.form.preferredCurrency).toBe('USD');
+    expect(profile?.form.preferredCurrency).toBe('LKR');
+    expect(profile?.form.dietaryRestrictions).toBeUndefined();
     expect(replayResponse.status).toBe(410);
+  });
+
+  it('does not ask for values already known from WhatsApp or collected during service searches', async () => {
+    const token = tokenService.createToken('whatsapp:+94770000003', 'profile');
+    const response = await fetch(`${origin}/forms/profile/${token}`);
+    const html = await response.text();
+
+    expect(html).not.toContain('Preferred Name');
+    expect(html).not.toContain('>Phone<');
+    expect(html).not.toContain('Country of Residence');
+    expect(html).not.toContain('>City<');
+    expect(html).not.toContain('Preferred Currency');
+    expect(html).not.toContain('Dietary Restrictions');
   });
 
   it('rejects POST submissions without the form CSRF nonce', async () => {
@@ -266,14 +294,67 @@ describe('external form routes', () => {
     const stateResponse = await fetch(`${origin}${workspacePath}/state`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selectedDay: 2, pendingChange: 'Move beach time earlier' }),
+      body: JSON.stringify({ selectedDay: 2, expectedRevision: Number(workspaceHtml.match(/expectedRevision: (\d+)/)?.[1]),
+        _formToken: workspaceHtml.match(/_formToken: "([^"]+)"/)?.[1], _csrf: workspaceHtml.match(/_csrf: "([^"]+)"/)?.[1] }),
     });
     const state = await stateResponse.json();
 
     expect(stateResponse.status).toBe(200);
     expect(state.ok).toBe(true);
     expect(state.selectedDay).toBe(2);
-    expect(state.pendingChanges).toContain('Move beach time earlier');
+    expect(state.pendingChanges).toEqual([]);
+    const editingHtml = await (await fetch(`${origin}${workspacePath}`)).text();
+    const staleHtml = await (await fetch(`${origin}${workspacePath}`)).text();
+    expect((await fetch(`${origin}${workspacePath}/edit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingChange: 'change day 2 afternoon to an unauthorized update' }) })).status).toBe(403);
+    const editResponse = await fetch(`${origin}${workspacePath}/edit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingChange: 'change day 2 afternoon to a quiet beach visit', expectedRevision: Number(editingHtml.match(/expectedRevision: (\d+)/)?.[1]),
+        _formToken: editingHtml.match(/_formToken: "([^"]+)"/)?.[1], _csrf: editingHtml.match(/_csrf: "([^"]+)"/)?.[1] }),
+    });
+    expect(editResponse.status).toBe(200);
+    const sessions = (await import('../services/itinerarySessionService.js')).getItinerarySessionService();
+    expect((await sessions.getAuthoritative(userId))?.itinerary?.days[1].afternoon).toBe('a quiet beach visit');
+    expect(await (await fetch(`${origin}${workspacePath}`)).text()).toContain('a quiet beach visit');
+    const staleResponse = await fetch(`${origin}${workspacePath}/edit`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingChange: 'change day 2 afternoon to a stale replacement', expectedRevision: Number(staleHtml.match(/expectedRevision: (\d+)/)?.[1]),
+        _formToken: staleHtml.match(/_formToken: "([^"]+)"/)?.[1], _csrf: staleHtml.match(/_csrf: "([^"]+)"/)?.[1] }) });
+    expect(staleResponse.status).toBe(409);
+    expect((await sessions.getAuthoritative(userId))?.itinerary?.days[1].afternoon).toBe('a quiet beach visit');
+  });
+
+  it('does not show success or notify after a durable workflow write fails, and retries without duplicating the saved request', async () => {
+    const user = 'whatsapp:+94770000009';
+    const token = tokenService.createToken(user, 'hotel');
+    const csrf = extractCsrf(await (await fetch(`${origin}/forms/hotel/${token}`)).text());
+    const form = { destination: 'Galle', checkIn: '2026-11-01', checkOut: '2026-11-03', adults: '2', children: '0', rooms: '1', budget: 'USD 100' };
+    const save = hotelRepository.upsert.bind(hotelRepository);
+    hotelRepository.upsert = async () => { throw new Error('private durable failure'); };
+    const failed = await fetch(`${origin}/forms/hotel/${token}`, { method: 'POST', body: new URLSearchParams({ ...form, _csrf: csrf }) });
+    expect(failed.status).toBe(503);
+    expect(await failed.text()).not.toContain('private durable failure');
+    expect(sendWhatsAppTextMock).not.toHaveBeenCalled();
+    expect(await profileService.getServiceRequests(user, 'hotel')).toHaveLength(1);
+    hotelRepository.upsert = save;
+    const retryCsrf = extractCsrf(await (await fetch(`${origin}/forms/hotel/${token}`)).text());
+    const succeeded = await fetch(`${origin}/forms/hotel/${token}`, { method: 'POST', body: new URLSearchParams({ ...form, _csrf: retryCsrf }) });
+    expect(succeeded.status).toBe(200);
+    expect(await profileService.getServiceRequests(user, 'hotel')).toHaveLength(1);
+    expect(sendWhatsAppTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a stale form before saving a request or sending a completion message', async () => {
+    const user = 'whatsapp:+94770000010';
+    const token = tokenService.createToken(user, 'hotel');
+    const csrf = extractCsrf(await (await fetch(`${origin}/forms/hotel/${token}`)).text());
+    const sessions = (await import('../services/hotelSearchSessionService.js')).getHotelSearchSessionService();
+    await sessions.saveAwaitingPreferences(user, { location: 'Kandy' });
+    const response = await fetch(`${origin}/forms/hotel/${token}`, { method: 'POST', body: new URLSearchParams({
+      _csrf: csrf, destination: 'Galle', checkIn: '2026-11-01', checkOut: '2026-11-03', adults: '2', children: '0', rooms: '1', budget: 'USD 100',
+    }) });
+    expect(response.status).toBe(409);
+    expect(await profileService.getServiceRequests(user, 'hotel')).toHaveLength(0);
+    expect(sendWhatsAppTextMock).not.toHaveBeenCalled();
+    expect((await sessions.get(user))?.criteria.location).toBe('Kandy');
   });
 
   it('expires form links and stores a validated service request submission', async () => {

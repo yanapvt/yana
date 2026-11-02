@@ -1,5 +1,23 @@
 # LLMService
 
+The production prompt owner is `src/orchestration/PromptService.ts`.
+Decision, hotel-extraction and response purposes share the YANA core system
+instructions. Model requests send instructions in the system role and serialized
+data in the user role; do not interpolate traveller/provider content into system
+instructions. `decide(context, systemInstructions?)` accepts the trusted prompt
+built by the existing Orchestrator. Direct decision callers use the same default
+decision instructions.
+
+`extractHotelCriteria({ userMessage, referenceDate, alreadyExtracted })` is the
+structured extraction entry point. It is not a text-generation task.
+`generateUIContent(task, language)` accepts a string or a data object and always
+uses the response-purpose instructions. The default ConversationManager adapter
+supplies a data object and the supplied profile's preferred language.
+
+See `LLMPromptDelivery.contract.test.ts` and the webhook transport assertions in
+`src/routes/webhook.hotel-flow.test.ts` for actual outbound-request evidence.
+These tests stub HTTP and do not certify live-model compliance or persistence.
+
 The `LLMService` wraps LLM interactions with two distinct modes: **decision mode** and **UI-support mode**. This service ensures that the LLM provides recommendations and content generation without having direct execution capabilities.
 
 ## Architecture Principle

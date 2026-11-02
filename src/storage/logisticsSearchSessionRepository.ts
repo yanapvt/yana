@@ -1,10 +1,11 @@
+import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
 import type { LogisticsSearchSession } from '../services/logisticsSearchSessionService.js';
 
 const LOGISTICS_SESSIONS_KEY = 'yanaLogisticsSearchSessions';
 
 export interface LogisticsSearchSessionRepository {
-  upsert(session: LogisticsSearchSession): Promise<void>;
+  upsert(session: LogisticsSearchSession, expectedRevision?: number): Promise<void>;
   findLatestActiveByUserId(userId: string): Promise<LogisticsSearchSession | null>;
   clearActiveByUserId(userId: string): Promise<void>;
 }
@@ -12,7 +13,7 @@ export interface LogisticsSearchSessionRepository {
 export class PostgresLogisticsSearchSessionRepository
   implements LogisticsSearchSessionRepository
 {
-  async upsert(session: LogisticsSearchSession): Promise<void> {
+  async upsert(session: LogisticsSearchSession, expectedRevision?: number): Promise<void> {
     const phoneNumber = normalizePhoneNumber(session.whatsappUserId);
     const client = await pool.connect();
 
@@ -23,10 +24,7 @@ export class PostgresLogisticsSearchSessionRepository
         [phoneNumber]
       );
       const databaseUserId = userResult.rows[0]?.user_id;
-      if (!databaseUserId) {
-        await client.query('COMMIT');
-        return;
-      }
+      if (!databaseUserId) throw new PersistenceError();
 
       await client.query(
         `INSERT INTO user_preferences (
@@ -50,6 +48,9 @@ export class PostgresLogisticsSearchSessionRepository
         [databaseUserId]
       );
       const notificationPreferences = readPreferences(preferencesResult.rows[0]);
+      const expected = expectedRevision ?? session.revision ?? 0;
+      assertExpectedRevision(readPersistedSessions(notificationPreferences), session, expected);
+      session = { ...session, revision: expected + 1 };
       const sessions = readPersistedSessions(notificationPreferences).filter(
         (persisted) => persisted.whatsappUserId !== session.whatsappUserId
       );

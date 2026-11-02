@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HotelSearchSessionService } from './hotelSearchSessionService.js';
 import { ExcursionSearchSessionService } from './excursionSearchSessionService.js';
+import { RestaurantSearchSessionService } from './restaurantSearchSessionService.js';
 import { InMemoryHotelSearchSessionRepository } from '../storage/hotelSearchSessionRepository.js';
+import { InMemoryRestaurantSearchSessionRepository } from '../storage/restaurantSearchSessionRepository.js';
 
 class InstanceStateStore {
   private values = new Map<string, unknown>();
@@ -12,6 +14,27 @@ class InstanceStateStore {
 }
 
 describe('shared session continuity contract', () => {
+  it('keeps a confirmed dining location across app instances and restart', async () => {
+    const durable = new InMemoryRestaurantSearchSessionRepository();
+    const user = 'whatsapp:test-dining-handoff';
+    await new RestaurantSearchSessionService(new InstanceStateStore() as any, durable)
+      .saveLocationConfirmation(user, 'Hikkaduwa', 'What can I do for dinner there?');
+    const second = new RestaurantSearchSessionService(new InstanceStateStore() as any, durable);
+    expect(await second.get(user)).toMatchObject({
+      state: 'confirming_location', pendingLocationConfirmation: 'Hikkaduwa', criteria: {},
+    });
+    await second.saveAwaitingPreferences(user, { location: 'Hikkaduwa' });
+    expect(await new RestaurantSearchSessionService(new InstanceStateStore() as any, durable).get(user))
+      .toMatchObject({ state: 'awaiting_preferences', criteria: { location: 'Hikkaduwa' } });
+  });
+  it('keeps a remembered location in the hotel form session across restart', async () => {
+    const durable = new InMemoryHotelSearchSessionRepository();
+    const user = 'whatsapp:test-location-prefill';
+    await new HotelSearchSessionService(new InstanceStateStore() as any, durable)
+      .saveHotelFormSent(user, 'Find a hotel near me', undefined, { location: 'Galle' });
+    const restarted = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    expect((await restarted.get(user))?.criteria.location).toBe('Galle');
+  });
   it('resumes on a second app instance and after restart using the durable repository', async () => {
     const durable = new InMemoryHotelSearchSessionRepository();
     const first = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
@@ -20,6 +43,52 @@ describe('shared session continuity contract', () => {
     expect(await second.get('whatsapp:test-user-1')).toMatchObject({ stage: 'awaiting_preferences', criteria: { location: 'Galle' } });
     const restarted = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
     expect((await restarted.get('whatsapp:test-user-1'))?.criteria.checkoutDate).toBe('2026-10-03');
+  });
+  it('preserves a paused journey and its collected fields across restart', async () => {
+    const durable = new InMemoryHotelSearchSessionRepository();
+    const user = 'whatsapp:test-paused-user';
+    const first = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    await first.saveAwaitingPreferences(user, {
+      location: 'Galle', checkinDate: '2026-12-01', checkoutDate: '2026-12-03', guests: 2,
+      additionalPreferences: 'Anniversary trip',
+    });
+
+    await first.pause(user);
+
+    const restarted = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    expect(await restarted.get(user)).toMatchObject({
+      lifecycleStatus: 'paused',
+      criteria: {
+        location: 'Galle', checkinDate: '2026-12-01', checkoutDate: '2026-12-03', guests: 2,
+        additionalPreferences: 'Anniversary trip',
+      },
+    });
+    await restarted.resume(user);
+    expect(await new HotelSearchSessionService(new InstanceStateStore() as any, durable).get(user)).toMatchObject({
+      lifecycleStatus: 'active',
+      criteria: { location: 'Galle', additionalPreferences: 'Anniversary trip' },
+    });
+  });
+
+  it('preserves a completed sourcing transaction when its journey is paused and resumed', async () => {
+    const durable = new InMemoryHotelSearchSessionRepository();
+    const user = 'whatsapp:test-completed-transaction';
+    const first = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    const criteria = { location: 'Galle', checkinDate: '2026-11-10', checkoutDate: '2026-11-12', guests: 2 };
+    await first.saveResults(user, criteria, [{ id: 'place-1', name: 'Selected Stay' }], 1);
+    await first.selectHotel(user, 1);
+    await first.markSourcingConsentPending(user);
+    await first.markSourcingRequestSaved(user, 'durable-request-1');
+    await first.pause(user);
+
+    const resumed = new HotelSearchSessionService(new InstanceStateStore() as any, durable);
+    await resumed.resume(user);
+
+    expect(await resumed.get(user)).toMatchObject({
+      lifecycleStatus: 'active',
+      sourcingRequestId: 'durable-request-1',
+      selectedHotel: { selectedHotelSnapshot: { name: 'Selected Stay' } },
+    });
   });
   it('propagates reset across provider or app-instance switching', async () => {
     const durable = new InMemoryHotelSearchSessionRepository(); const user = 'whatsapp:test-user-1';
@@ -47,7 +116,7 @@ describe('shared session continuity contract', () => {
   });
   it('fails safely after restart when durable state is unavailable', async () => {
     const durable = { upsert: vi.fn(), clearActiveByUserId: vi.fn(), findLatestActiveByUserId: vi.fn().mockRejectedValue(new Error('secret database detail')) };
-    expect(await new HotelSearchSessionService(new InstanceStateStore() as any, durable).get('whatsapp:test-user-1')).toBeNull();
+    await expect(new HotelSearchSessionService(new InstanceStateStore() as any, durable).get('whatsapp:test-user-1')).rejects.toThrow('could not save');
   });
 
   it('moves an excursion session out of searching when a search has no results', async () => {

@@ -4,6 +4,8 @@ import { ConversationAnalyzer } from './ConversationAnalyzer.js';
 import { DecisionEngine } from './DecisionEngine.js';
 import { MemoryUpdater } from './MemoryUpdater.js';
 import { PromptService } from './PromptService.js';
+import { semanticDecision, type SemanticUI } from './SemanticUI.js';
+import type { MemoryCandidate, TravellerMemoryFact } from './TravellerMemory.js';
 
 export type OrchestrationIntent =
   | 'hotel_search'
@@ -12,6 +14,7 @@ export type OrchestrationIntent =
   | 'logistics_request'
   | 'itinerary_plan'
   | 'profile_update'
+  | 'general_inquiry'
   | 'smalltalk'
   | 'command'
   | 'unclear';
@@ -38,9 +41,11 @@ export type ConversationRole =
 export type OrchestrationActionType =
   | 'require_profile'
   | 'answer_smalltalk'
+  | 'answer_general_question'
   | 'ask_clarifying_question'
   | 'send_form'
   | 'continue_flow'
+  | 'pause_flow'
   | 'switch_flow'
   | 'execute_search'
   | 'handle_command'
@@ -55,6 +60,12 @@ export interface OrchestrationMessage {
 }
 
 export interface OrchestrationSessionSnapshot {
+  lifecycleStatus?: 'active' | 'paused';
+  id?: string;
+  revision?: number;
+  schemaVersion?: string;
+  itinerary?: import('../services/ItineraryPlannerService.js').GeneratedItinerary;
+  verifiedResults?: { source: string; retrievedAt: string; items: Array<{ resultId: string; position: number; name: string; rating?: number }> };
   flow: OrchestrationFlow;
   state?: string;
   activeSchema?: string;
@@ -66,11 +77,16 @@ export interface OrchestrationSessionSnapshot {
 }
 
 export interface OrchestrationContext {
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  historyStatus?: 'available' | 'empty' | 'unavailable';
   userId: string;
   message: OrchestrationMessage;
   profileComplete: boolean;
   profile?: StoredProfile['form'];
+  travellerMemories?: TravellerMemoryFact[];
+  memoryStatus?: 'available' | 'empty' | 'unavailable';
   activeSession?: OrchestrationSessionSnapshot;
+  pausedSessions?: OrchestrationSessionSnapshot[];
   recentServiceRequests?: Array<{
     type: string;
     form: unknown;
@@ -92,13 +108,25 @@ export interface ConversationAnalysis {
 }
 
 export interface LLMInterpretation {
+  suggestedAction?: 'ask_missing' | 'execute_tool' | 'clarify' | 'handoff';
   role: ConversationRole;
   intent: OrchestrationIntent;
   entities: Record<string, unknown>;
   confidence: number;
   missingFields?: string[];
   question?: string;
+  responseText?: string;
+  clarificationRequired?: boolean;
+  taskTransition?: 'continue' | 'pause' | 'resume' | 'switch' | 'none';
+  recommendedSchema?: string;
+  uiRecommendation?: {
+    mode: 'chat_reply' | 'clarification' | 'clarification_form' | 'results_list' | 'itinerary_editor' | 'confirmation';
+    schemaId?: string;
+  };
+  proposedAction?: { name: 'none' | 'search' | 'open_form' | 'handoff'; arguments: Record<string, unknown> };
+  unresolvedQuestions?: string[];
   reasoning?: string;
+  memoryCandidates?: MemoryCandidate[];
 }
 
 export interface OrchestrationDecision {
@@ -116,6 +144,7 @@ export interface MemoryUpdateResult {
   shouldPersist: boolean;
   session?: OrchestrationSessionSnapshot;
   profilePatch?: Partial<StoredProfile['form']>;
+  memoryCandidates?: MemoryCandidate[];
   reason: string;
 }
 
@@ -124,6 +153,7 @@ export interface LLMInterpreter {
 }
 
 export interface OrchestrationResult {
+  ui?: SemanticUI;
   context: OrchestrationContext;
   analysis: ConversationAnalysis;
   prompt?: string;
@@ -174,9 +204,9 @@ export class Orchestrator {
       analysis,
       interpretation,
     });
-    const memoryUpdate = this.memoryUpdater.prepareUpdate(context, decision);
+    const memoryUpdate = this.memoryUpdater.prepareUpdate(context, decision, interpretation?.memoryCandidates);
 
-    return {
+    const result: OrchestrationResult = {
       context,
       analysis,
       prompt,
@@ -184,6 +214,8 @@ export class Orchestrator {
       decision,
       memoryUpdate,
     };
+    result.ui = semanticDecision(result);
+    return result;
   }
 }
 

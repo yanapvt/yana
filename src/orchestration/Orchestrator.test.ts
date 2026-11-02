@@ -15,7 +15,7 @@ function inbound(text: string): InboundMessage {
 }
 
 describe('Orchestrator', () => {
-  it('coordinates deterministic planning without invoking the LLM interpreter', async () => {
+  it('uses the primary interpreter for a natural-language hotel request', async () => {
     const llmInterpreter: LLMInterpreter = {
       interpret: vi.fn(),
     };
@@ -28,10 +28,10 @@ describe('Orchestrator', () => {
 
     expect(result.decision.action).toBe('require_profile');
     expect(result.decision.confidence).toBe(0.9);
-    expect(llmInterpreter.interpret).not.toHaveBeenCalled();
+    expect(llmInterpreter.interpret).toHaveBeenCalledTimes(1);
   });
 
-  it('uses LLM as interpreter only when deterministic analysis needs help', async () => {
+  it('uses the same interpreter to understand a short answer in an active journey', async () => {
     const llmInterpreter: LLMInterpreter = {
       interpret: vi.fn().mockResolvedValue({
         role: 'extra_preference',

@@ -26,6 +26,35 @@ describe('ConversationAnalyzer', () => {
     expect(result.shouldUseLLM).toBe(false);
   });
 
+  it('resolves an ordinal reference against the current persisted result id without an LLM call', () => {
+    const activeContext = context('show me the second one');
+    activeContext.activeSession = {
+      flow: 'hotel',
+      state: 'results',
+      activeSchema: 'search_hotels',
+      collectedFields: { location: 'Galle' },
+      requiredFields: ['location'],
+      missingFields: [],
+      verifiedResults: {
+        source: 'saved_discovery_results_not_confirmed_inventory',
+        retrievedAt: '2026-10-22T00:00:00.000Z',
+        items: [
+          { resultId: 'place-1', position: 1, name: 'Hotel One' },
+          { resultId: 'place-2', position: 2, name: 'Hotel Two' },
+        ],
+      },
+    };
+
+    const result = new ConversationAnalyzer().analyze(activeContext);
+
+    expect(result).toMatchObject({
+      role: 'command',
+      command: 'details',
+      entities: { selection: 2, resultId: 'place-2' },
+      shouldUseLLM: false,
+    });
+  });
+
   it('detects restaurant intent and extracts common entities', () => {
     const result = new ConversationAnalyzer().analyze(
       context('Find a vegetarian rooftop restaurant in Colombo for 4')
@@ -49,6 +78,19 @@ describe('ConversationAnalyzer', () => {
     expect(result.shouldUseLLM).toBe(true);
   });
 
+  it('sends polite acknowledgements through the LLM when a workflow is active', () => {
+    const activeContext = context("Thanks, I'll think about it");
+    activeContext.activeSession = {
+      flow: 'hotel', state: 'results', activeSchema: 'search_hotels',
+      collectedFields: { location: 'Waskaduwa' }, requiredFields: ['location'], missingFields: [],
+    };
+
+    const result = new ConversationAnalyzer().analyze(activeContext);
+
+    expect(result.intent).toBe('smalltalk');
+    expect(result.shouldUseLLM).toBe(true);
+  });
+
   it('treats a short reply as the active schema field before intent reclassification', () => {
     const activeContext = context('Kollupitiya');
     activeContext.activeSession = {
@@ -66,7 +108,19 @@ describe('ConversationAnalyzer', () => {
     expect(result.role).toBe('answer_to_current_question');
     expect(result.intent).toBe('restaurant_search');
     expect(result.entities).toEqual({ location: 'Kollupitiya' });
-    expect(result.shouldUseLLM).toBe(false);
+    expect(result.shouldUseLLM).toBe(true);
+  });
+
+  it('routes a new unrelated request from its message instead of applying the old awaited field', () => {
+    const activeContext = context('Find a restaurant in Moratuwa');
+    activeContext.activeSession = {
+      flow: 'hotel', state: 'awaiting_preferences', activeSchema: 'search_hotels',
+      awaitedField: 'location', collectedFields: {}, requiredFields: ['location'], missingFields: ['location'],
+    };
+
+    expect(new ConversationAnalyzer().analyze(activeContext)).toMatchObject({
+      intent: 'restaurant_search', targetFlow: 'restaurant', role: 'new_intent',
+    });
   });
 
   it('honors an explicit restaurant correction instead of matching the negated hotel word', () => {
@@ -88,7 +142,7 @@ describe('ConversationAnalyzer', () => {
     expect(result).toMatchObject({
       intent: 'restaurant_search',
       targetFlow: 'restaurant',
-      shouldUseLLM: false,
+      shouldUseLLM: true,
     });
   });
 
@@ -113,13 +167,19 @@ describe('ConversationAnalyzer', () => {
     "We're looking for adventure",
     "I'd like to go surfing",
     'I want a safari',
+    'What can I do in Kandy?',
+    'What should we see around Galle?',
+    "What's happening around here?",
+    'Is there anything to do nearby?',
+    'I am looking for experiences in Colombo',
+    'Show me local sights in Negombo',
   ])('classifies broad excursion language without legacy routing: %s', (message) => {
     const result = new ConversationAnalyzer().analyze(context(message));
 
     expect(result).toMatchObject({
       intent: 'excursion_search',
       targetFlow: 'excursion',
-      shouldUseLLM: false,
+      shouldUseLLM: true,
     });
   });
 
@@ -134,6 +194,18 @@ describe('ConversationAnalyzer', () => {
       intent: 'hotel_search',
       targetFlow: 'hotel',
     });
+  });
+
+  it('sends an explicit hotel-to-excursion switch through the LLM while selecting excursions deterministically', () => {
+    const activeContext = context('What activity can I do in Hikkaduwa?');
+    activeContext.activeSession = {
+      flow: 'hotel', state: 'results', activeSchema: 'search_hotels',
+      collectedFields: { location: 'Hikkaduwa', checkinDate: '2026-11-10', checkoutDate: '2026-11-12', guests: 2 },
+      requiredFields: ['location', 'checkinDate', 'checkoutDate', 'guests'], missingFields: [],
+    };
+    const result = new ConversationAnalyzer().analyze(activeContext);
+    expect(result).toMatchObject({ role: 'new_intent', intent: 'excursion_search', targetFlow: 'excursion',
+      entities: { location: 'Hikkaduwa' }, shouldUseLLM: true });
   });
 
   it('keeps a day-specific hotel change inside the active itinerary', () => {
@@ -157,7 +229,7 @@ describe('ConversationAnalyzer', () => {
     expect(result).toMatchObject({
       intent: 'itinerary_plan',
       targetFlow: 'itinerary',
-      shouldUseLLM: false,
+      shouldUseLLM: true,
     });
   });
 });

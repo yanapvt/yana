@@ -1,10 +1,11 @@
+import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
 import type { RestaurantSearchSession } from '../services/restaurantSearchSessionService.js';
 
 const RESTAURANT_SESSIONS_KEY = 'yanaRestaurantSearchSessions';
 
 export interface RestaurantSearchSessionRepository {
-  upsert(session: RestaurantSearchSession): Promise<void>;
+  upsert(session: RestaurantSearchSession, expectedRevision?: number): Promise<void>;
   findLatestActiveByUserId(userId: string): Promise<RestaurantSearchSession | null>;
   clearActiveByUserId(userId: string): Promise<void>;
 }
@@ -14,8 +15,10 @@ export class InMemoryRestaurantSearchSessionRepository
 {
   private readonly sessions = new Map<string, RestaurantSearchSession>();
 
-  upsert(session: RestaurantSearchSession): Promise<void> {
-    this.sessions.set(session.whatsappUserId, session);
+  upsert(session: RestaurantSearchSession, expectedRevision?: number): Promise<void> {
+    const expected = expectedRevision ?? session.revision ?? 0;
+    assertExpectedRevision([...this.sessions.values()], session, expected);
+    this.sessions.set(session.whatsappUserId, structuredClone({ ...session, revision: expected + 1 }));
     return Promise.resolve();
   }
 
@@ -29,6 +32,7 @@ export class InMemoryRestaurantSearchSessionRepository
     if (session) {
       this.sessions.set(userId, {
         ...session,
+        revision: (session.revision ?? 0) + 1,
         state: 'reset',
         stage: 'reset',
         updatedAt: new Date().toISOString(),
@@ -45,7 +49,7 @@ interface PreferencesRow {
 export class PostgresRestaurantSearchSessionRepository
   implements RestaurantSearchSessionRepository
 {
-  async upsert(session: RestaurantSearchSession): Promise<void> {
+  async upsert(session: RestaurantSearchSession, expectedRevision?: number): Promise<void> {
     const phoneNumber = normalizePhoneNumber(session.whatsappUserId);
     const client = await pool.connect();
 
@@ -57,10 +61,7 @@ export class PostgresRestaurantSearchSessionRepository
       );
       const databaseUserId = userResult.rows[0]?.user_id;
 
-      if (!databaseUserId) {
-        await client.query('COMMIT');
-        return;
-      }
+      if (!databaseUserId) throw new PersistenceError();
 
       await client.query(
         `INSERT INTO user_preferences (
@@ -84,6 +85,9 @@ export class PostgresRestaurantSearchSessionRepository
         [databaseUserId]
       );
       const notificationPreferences = readPreferences(preferencesResult.rows[0]);
+      const expected = expectedRevision ?? session.revision ?? 0;
+      assertExpectedRevision(readPersistedSessions(notificationPreferences), session, expected);
+      session = { ...session, revision: expected + 1 };
       const sessions = readPersistedSessions(notificationPreferences).filter(
         (persisted) => persisted.whatsappUserId !== session.whatsappUserId
       );

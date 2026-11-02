@@ -1,5 +1,55 @@
 # YANA project handoff
 
+## Architecture completion checkpoint — 2026-10-21
+
+Starting/remaining HEAD: `b7c657e86845dc80a3cd491cd2e987e5fa583b9a` on
+`codex/yana-sports-icc-hackathon-20261001`. The changes in this checkpoint are
+uncommitted. The older baseline below is historical.
+
+Actions 0-6 of the architecture action set are implemented in the working tree:
+baseline, core/purpose prompt delivery, retrieved context, canonical validation,
+durable outcomes/revisions, shared semantic UI and applied itinerary edits. Prompt ownership is
+`src/orchestration/PromptService.ts`; all four identified LLM paths now deliver
+the core instructions as system content, separately from request data. Actual
+HTTP payloads are covered by stub-transport tests, including webhook general
+interpretation and active hotel routing, the control-plane/interpreter path,
+hotel extraction and the default ConversationManager adapter.
+
+ContextBuilder now retrieves bounded durable history and projects relevant profile,
+workflow, itinerary and result data into the model request. Active hotel
+interpretation uses the control plane. Canonical criteria live in
+WorkflowDefinitions; SemanticUI validates the channel-independent decisions.
+Session/profile revisions, durable-before-cache writes, per-traveller mutation
+locks and captured background generations prevent stale overwrites. Conversation
+write failures and failed durable workflow saves no longer produce false success.
+
+The 2026-10-26 traveller-context extension adds an allowlisted structured memory
+contract and durable `traveller_memories` repository. Confirmed profile/trip/task
+facts can follow the traveller across service switches; sensitive allergy and
+accessibility facts remain pending until confirmation and are excluded from
+confirmed recommendation context. The model proposes facts, while CORE validates
+scope, confidence, sensitivity and persistence.
+
+Both channels use ItineraryEditService. Supported day/target replacements now
+change the saved itinerary and survive cache loss. Ambiguous/unsupported edits
+clarify. Website edits preserve token/CSRF protection and reject stale revisions.
+Itinerary workspace access is recoverable through token hashes on durable sessions.
+
+Acceptance includes 1,140 unit/contract tests and 79 real PostgreSQL/Redis
+integration tests across three files. The latter ran on a freshly migrated
+isolated test database and previously empty Redis DB 15; all 23 migrations passed.
+The configured local application database was also checked by the migration
+runner: all 23 migrations were already applied. The integration launcher now
+loads local configuration, runs on Windows, and fails when prerequisites are
+absent; direct integration runs reject application database destinations.
+Production load/failure drills and live-model compliance still require staging
+acceptance. No live provider calls, bookings/payments, deployment or merge ran.
+
+See `docs/YANA_ARCHITECTURE_IMPLEMENTATION_2026-10-21.md` for test evidence,
+changed files, finding statuses and the exact continuation boundary.
+
+## Historical handoff — 2026-08-24
+
 Last reconciled: 2026-08-24
 Verified commit: `e6183e6`
 Development branch: `codex/yana-next-development-20260824`

@@ -1,5 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { renderWebsiteDecision } from '../orchestration/SemanticUI.js';
+import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
+import { WORKFLOW_DEFINITIONS, validateCriteria, missingFields } from '../orchestration/WorkflowDefinitions.js';
+import { PersistenceError } from '../storage/Persistence.js';
+import { withWorkflowLock } from '../services/WorkflowLockService.js';
+import { getPhoneLocale, normalizeWhatsAppPhone } from '../utils/phoneLocale.js';
 import type {
   BasicProfileForm,
   ExcursionBookingForm,
@@ -73,9 +79,7 @@ const formDefinitions: Record<FormType, FormRouteDefinition> = {
     schema: basicProfileFormSchema,
     fields: [
       { name: 'fullName', label: 'Full Name', type: 'text', required: true, autocomplete: 'name' },
-      { name: 'preferredName', label: 'Preferred Name', type: 'text', required: true },
       { name: 'email', label: 'Email', type: 'email', required: true, autocomplete: 'email' },
-      { name: 'phone', label: 'Phone', type: 'tel', required: true, autocomplete: 'tel' },
       {
         name: 'preferredLanguage',
         label: 'Preferred Language',
@@ -84,28 +88,13 @@ const formDefinitions: Record<FormType, FormRouteDefinition> = {
         options: options(['English', 'Sinhala', 'Tamil', 'Arabic', 'French', 'German', 'Italian']),
       },
       { name: 'nationality', label: 'Nationality', type: 'text', required: true },
-      { name: 'countryOfResidence', label: 'Country of Residence', type: 'text', required: true },
-      { name: 'city', label: 'City', type: 'text', required: true, autocomplete: 'address-level2' },
       { name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true },
-      {
-        name: 'preferredCurrency',
-        label: 'Preferred Currency',
-        type: 'select',
-        required: true,
-        options: options(['USD', 'EUR', 'GBP', 'LKR', 'AED', 'AUD', 'INR']),
-      },
       {
         name: 'travelStyle',
         label: 'Travel Style',
         type: 'select',
         required: true,
         options: options(['Luxury', 'Boutique', 'Family', 'Adventure', 'Wellness', 'Business']),
-      },
-      {
-        name: 'dietaryRestrictions',
-        label: 'Dietary Restrictions',
-        type: 'textarea',
-        placeholder: 'Optional',
       },
       {
         name: 'accessibilityNeeds',
@@ -589,15 +578,31 @@ router.use((_req, res, next) => {
 });
 
 for (const type of Object.keys(formDefinitions) as FormType[]) {
-  router.get(`/forms/${type}/:token`, (req, res) => renderForm(req, res, type));
+  router.get(`/forms/${type}/:token`, (req, res, next) => { void renderForm(req, res, type).catch(next); });
   router.post(`/forms/${type}/:token`, (req, res, next) => {
     void submitForm(req, res, type).catch(next);
   });
 }
 
-function renderForm(req: Request, res: Response, type: FormType): void {
+async function currentWorkflow(userId: string, type: FormType) {
+  if (type === 'hotel') return getHotelSearchSessionService().getAuthoritative(userId);
+  if (type === 'restaurant') return getRestaurantSearchSessionService().getAuthoritative(userId);
+  if (type === 'excursion' || type === 'excursion_booking') return getExcursionSearchSessionService().getAuthoritative(userId);
+  if (type === 'logistics' || type === 'logistics_booking') return getLogisticsSearchSessionService().getAuthoritative(userId);
+  if (type === 'itinerary') return getItinerarySessionService().getAuthoritative(userId);
+  return null;
+}
+
+async function renderForm(req: Request, res: Response, type: FormType): Promise<void> {
   const token = req.params.token;
   const tokenService = getFormTokenService();
+  const owner = tokenService.resolveToken(token, type);
+  let current: Awaited<ReturnType<typeof currentWorkflow>> = null;
+  if (owner && type !== 'profile') {
+    current = await currentWorkflow(owner.userId, type);
+    tokenService.bindRevision(token, type, current?.revision ?? 0, current?.id);
+  }
+  if (owner && type === 'profile') tokenService.bindRevision(token, type, (await getProfileService().getProfile(owner.userId))?.revision ?? 0);
   const csrfToken = tokenService.createCsrfToken(token, type);
 
   if (!csrfToken) {
@@ -605,18 +610,37 @@ function renderForm(req: Request, res: Response, type: FormType): void {
     return;
   }
 
+  // Collection/booking forms retain their Zod and CSRF validation below.
+  const flow = type.replace(/_booking$/, '') as keyof typeof WORKFLOW_DEFINITIONS | 'profile';
+  const bound = tokenService.resolveToken(token, type)!;
+  const values = flow === 'profile' ? {} : validateCriteria(flow, { ...current?.criteria }, false);
+  const view = renderWebsiteDecision({ version: '1.0', mode: 'clarification_form', formId: type,
+    workflow: flow, schemaId: flow === 'profile' ? 'profile' : WORKFLOW_DEFINITIONS[flow].schema,
+    schemaVersion: '1.0', values, missingFields: flow === 'profile' ? [] : missingFields(flow, values), actions: ['submit_form'], text: '',
+    correlationId: bound.workflowId ?? bound.requestId!, expectedRevision: bound.workflowRevision ?? 0 });
+  const initialValues = type === 'hotel' ? { ...view.initialValues, destination: values.location, checkIn: values.checkinDate,
+    checkOut: values.checkoutDate, adults: values.guests, budget: values.budgetPerNight && typeof values.budgetPerNight === 'object'
+      ? `${(values.budgetPerNight as any).currency} ${(values.budgetPerNight as any).amount} per night` : undefined } : view.initialValues;
+
   res
     .type('html')
     .send(
       renderFormPage(
-        formDefinitions[type],
+        formDefinitions[view.formId ?? type],
         `/forms/${type}/${encodeURIComponent(token)}`,
-        csrfToken
+        csrfToken,
+        initialValues
       )
     );
 }
 
 async function submitForm(req: Request, res: Response, type: FormType): Promise<void> {
+  const owner = getFormTokenService().resolveToken(req.params.token, type);
+  if (!owner) { res.status(410).type('html').send(renderExpiredPage()); return; }
+  return withWorkflowLock(owner.userId, () => submitFormCore(req, res, type));
+}
+
+async function submitFormCore(req: Request, res: Response, type: FormType): Promise<void> {
   const token = req.params.token;
   const tokenService = getFormTokenService();
   const tokenRecord = tokenService.resolveToken(token, type);
@@ -634,8 +658,14 @@ async function submitForm(req: Request, res: Response, type: FormType): Promise<
     return;
   }
 
+  if (type !== 'profile' && tokenRecord.workflowRevision !== undefined) {
+    const current = await currentWorkflow(tokenRecord.userId, type);
+    if ((current?.revision ?? 0) !== tokenRecord.workflowRevision || current?.id !== tokenRecord.workflowId) throw new PersistenceError('conflict');
+  }
+
   const definition = formDefinitions[type];
-  const parsed = definition.schema.safeParse(body);
+  const input = type === 'profile' ? hydrateProfileForm(body, tokenRecord.userId) : body;
+  const parsed = definition.schema.safeParse(input);
 
   if (!parsed.success) {
     const nextCsrfToken = tokenService.createCsrfToken(token, type);
@@ -661,18 +691,26 @@ async function submitForm(req: Request, res: Response, type: FormType): Promise<
     const profileForm = parsed.data as BasicProfileForm;
     await profileService.saveProfile(
       tokenRecord.userId,
-      profileForm as z.infer<typeof basicProfileFormSchema>
+      profileForm as z.infer<typeof basicProfileFormSchema>,
+      tokenRecord.workflowRevision
     );
     completionMessages = [buildProfileCompletionMessage(profileForm)];
   } else {
     const serviceRequest = await profileService.saveServiceRequest(
       tokenRecord.userId,
       type,
-      parsed.data as ServiceRequestForm
+      parsed.data as ServiceRequestForm,
+      token
     );
 
     if (type === 'hotel') {
-      const criteria = mapHotelRequestFormToCriteria(parsed.data as HotelRequestForm);
+      const criteria = await reconcileFormCriteria(
+        tokenRecord.userId,
+        'hotel',
+        mapHotelRequestFormToCriteria(parsed.data as HotelRequestForm),
+        tokenRecord.workflowId,
+        tokenRecord.workflowRevision
+      ) as HotelSearchCriteria;
       await clearCompetingSearchSessions(tokenRecord.userId, 'hotel');
       await getHotelSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
@@ -683,7 +721,13 @@ async function submitForm(req: Request, res: Response, type: FormType): Promise<
       );
       completionMessages = [buildHotelCompletionMessage(criteria)];
     } else if (type === 'restaurant') {
-      const criteria = mapRestaurantRequestFormToCriteria(parsed.data as RestaurantRequestForm);
+      const criteria = await reconcileFormCriteria(
+        tokenRecord.userId,
+        'restaurant',
+        mapRestaurantRequestFormToCriteria(parsed.data as RestaurantRequestForm),
+        tokenRecord.workflowId,
+        tokenRecord.workflowRevision
+      );
       await clearCompetingSearchSessions(tokenRecord.userId, 'restaurant');
       await getRestaurantSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
@@ -694,7 +738,13 @@ async function submitForm(req: Request, res: Response, type: FormType): Promise<
       );
       completionMessages = [buildRestaurantCompletionMessage(criteria)];
     } else if (type === 'itinerary') {
-      const criteria = mapItineraryRequestFormToCriteria(parsed.data as ItineraryRequestForm);
+      const criteria = await reconcileFormCriteria(
+        tokenRecord.userId,
+        'itinerary',
+        mapItineraryRequestFormToCriteria(parsed.data as ItineraryRequestForm),
+        tokenRecord.workflowId,
+        tokenRecord.workflowRevision
+      );
       await clearCompetingSearchSessions(tokenRecord.userId, 'itinerary');
       const sessionService = getItinerarySessionService();
       await sessionService.saveAwaitingPreferences(
@@ -718,7 +768,13 @@ async function submitForm(req: Request, res: Response, type: FormType): Promise<
         buildItineraryReply(itinerary, buildItineraryWorkspaceLink(workspace.shareToken)),
       ];
     } else if (type === 'excursion') {
-      const criteria = mapExcursionRequestFormToCriteria(parsed.data as ExcursionRequestForm);
+      const criteria = await reconcileFormCriteria(
+        tokenRecord.userId,
+        'excursion',
+        mapExcursionRequestFormToCriteria(parsed.data as ExcursionRequestForm),
+        tokenRecord.workflowId,
+        tokenRecord.workflowRevision
+      );
       await clearCompetingSearchSessions(tokenRecord.userId, 'excursion');
       await getExcursionSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
@@ -745,7 +801,13 @@ async function submitForm(req: Request, res: Response, type: FormType): Promise<
       }
       completionMessages = [buildExcursionBookingCompletionMessage()];
     } else if (type === 'logistics') {
-      const criteria = mapLogisticsRequestFormToCriteria(parsed.data as LogisticsRequestForm);
+      const criteria = await reconcileFormCriteria(
+        tokenRecord.userId,
+        'logistics',
+        mapLogisticsRequestFormToCriteria(parsed.data as LogisticsRequestForm),
+        tokenRecord.workflowId,
+        tokenRecord.workflowRevision
+      );
       await clearCompetingSearchSessions(tokenRecord.userId, 'logistics');
       await getLogisticsSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
@@ -786,6 +848,22 @@ async function submitForm(req: Request, res: Response, type: FormType): Promise<
         outboundSent,
       })
     );
+}
+
+async function reconcileFormCriteria<T extends object>(
+  userId: string,
+  flow: 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary',
+  criteria: T,
+  workflowId?: string,
+  workflowRevision?: number
+): Promise<T> {
+  const reconciled = await getConversationControlPlane().reconcileFormSubmission(
+    userId,
+    flow,
+    criteria as Record<string, unknown>,
+    { id: workflowId, revision: workflowRevision }
+  );
+  return reconciled.collectedFields as T;
 }
 
 function options(labels: string[]): Array<{ value: string; label: string }> {
@@ -832,21 +910,13 @@ async function clearCompetingSearchSessions(
   userId: string,
   activeType: 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary'
 ): Promise<void> {
-  if (activeType !== 'hotel') {
-    await getHotelSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'restaurant') {
-    await getRestaurantSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'excursion') {
-    await getExcursionSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'logistics') {
-    await getLogisticsSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'itinerary') {
-    await getItinerarySessionService().clear(userId);
-  }
+  await Promise.all([
+    activeType !== 'hotel' ? getHotelSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'restaurant' ? getRestaurantSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'excursion' ? getExcursionSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'logistics' ? getLogisticsSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'itinerary' ? getItinerarySessionService().pause(userId) : Promise.resolve(),
+  ]);
 }
 
 function buildProfileCompletionMessage(form: BasicProfileForm): string {
@@ -862,6 +932,32 @@ function buildProfileCompletionMessage(form: BasicProfileForm): string {
     '',
     'What would you like help with first?',
   ].join('\n');
+}
+
+function hydrateProfileForm(
+  submitted: Record<string, unknown>,
+  userId: string
+): Record<string, unknown> {
+  const fullName = typeof submitted.fullName === 'string' ? submitted.fullName : '';
+  const phoneLocale = getPhoneLocale(userId);
+
+  return {
+    ...submitted,
+    preferredName: firstName(fullName),
+    phone: normalizeWhatsAppPhone(userId),
+    countryOfResidence: phoneLocale?.country ?? 'Not determined',
+    city: undefined,
+    preferredCurrency: phoneLocale?.currency ?? 'USD',
+    dietaryRestrictions: undefined,
+  };
+}
+
+function firstName(fullName: string): string {
+  return fullName
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .trim()
+    .match(/[\p{L}][\p{L}\p{M}'’-]*/u)?.[0] ?? 'Traveler';
 }
 
 function buildHotelCompletionMessage(criteria: HotelSearchCriteria): string {

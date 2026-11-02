@@ -1,3 +1,5 @@
+import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
+import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
 import type { BasicProfileForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
@@ -39,6 +41,9 @@ export interface SelectedExperience {
 }
 
 export interface ExcursionSearchSession {
+  lifecycleStatus?: 'active' | 'paused';
+  revision?: number;
+  resultsRetrievedAt?: string;
   id: string;
   userId: string;
   whatsappUserId: string;
@@ -83,6 +88,7 @@ export class ExcursionSearchSessionService {
       originalMessage,
       profileContext: profileContext ?? existing?.profileContext,
       state: 'excursion_form_sent',
+      lifecycleStatus: 'active',
       stage: 'awaiting_preferences',
     });
   }
@@ -91,10 +97,10 @@ export class ExcursionSearchSessionService {
     userId: string,
     criteria: ExcursionSearchCriteria,
     options: { originalMessage?: string; excursionFormResponseId?: string; profileContext?: Partial<BasicProfileForm> } = {}
-  ): Promise<void> {
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const existing = await this.get(userId);
     const now = new Date();
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       profileContext: options.profileContext ?? existing?.profileContext,
       originalMessage: options.originalMessage ?? existing?.originalMessage,
@@ -103,6 +109,7 @@ export class ExcursionSearchSessionService {
       criteria,
       additionalPreferences: undefined,
       state: 'awaiting_preferences',
+      lifecycleStatus: 'active',
       stage: 'awaiting_preferences',
       resultBatches: [],
       latestDisplayedBatchIndex: -1,
@@ -122,6 +129,7 @@ export class ExcursionSearchSessionService {
       criteria,
       additionalPreferences: criteria.additionalPreferences,
       state: 'searching_excursions',
+      lifecycleStatus: 'active',
       stage: 'searching',
       resultBatches: [],
       latestDisplayedBatchIndex: -1,
@@ -134,20 +142,24 @@ export class ExcursionSearchSessionService {
     userId: string,
     criteria: ExcursionSearchCriteria,
     results: ExcursionBrowseResult[],
-    nextOffset: number
-  ): Promise<void> {
+    nextOffset: number,
+    expected?: { id: string; revision: number }
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const existing = await this.get(userId);
+    if (expected && (!existing || existing.id !== expected.id || (existing.revision ?? 0) !== expected.revision)) throw new PersistenceError('conflict');
     const now = new Date();
     const limitedResults = defaultSearchFlowEngine.limitResults(results);
     const resultBatches = defaultSearchFlowEngine.batchResults(limitedResults);
     const latestDisplayedBatchIndex = defaultSearchFlowEngine.latestBatchIndex(nextOffset, limitedResults.length);
 
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       normalizedCriteria: criteria,
       criteria,
+      resultsRetrievedAt: new Date().toISOString(),
       additionalPreferences: criteria.additionalPreferences,
       state: latestDisplayedBatchIndex >= 0 ? 'awaiting_selection' : 'showing_results',
+      lifecycleStatus: 'active',
       stage: 'results',
       resultBatches,
       latestDisplayedBatchIndex,
@@ -188,6 +200,18 @@ export class ExcursionSearchSessionService {
     return selectedExperience;
   }
 
+  async pause(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session || session.lifecycleStatus === 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'paused', updatedAt: new Date().toISOString() });
+  }
+
+  async resume(userId: string): Promise<void> {
+    const session = await this.getAuthoritative(userId);
+    if (!session || session.lifecycleStatus !== 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'active', updatedAt: new Date().toISOString() });
+  }
+
   async saveProviderPending(userId: string, bookingRequest: ExcursionBookingRequest): Promise<void> {
     const session = await this.get(userId);
     if (!session) return;
@@ -199,6 +223,25 @@ export class ExcursionSearchSessionService {
       stage: 'provider_pending',
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  async getAuthoritative(userId: string): Promise<ExcursionSearchSession | null> {
+    try {
+      const session = await this.repository.findLatestActiveByUserId(userId);
+      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
+    }
+    catch { throw new PersistenceError(); }
+  }
+
+  async applyCriteriaPatch(userId: string, expectedRevision: number, fields: Record<string, unknown>): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const current = await this.repository.findLatestActiveByUserId(userId);
+    if (!current || (current.revision ?? 0) !== expectedRevision) throw new PersistenceError('conflict');
+    const patch = validateCriteria('excursion', fields);
+    const criteria = { ...current.criteria, ...patch };
+    validateCriteria('excursion', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('excursion', key))));
+    if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
+    await this.save({ ...current, criteria, normalizedCriteria: criteria, results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1, state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
+    return { status: 'durable' };
   }
 
   async get(userId: string): Promise<ExcursionSearchSession | null> {
@@ -219,17 +262,26 @@ export class ExcursionSearchSessionService {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('excursion_session', 'durable_clear', 'memory_only');
+      throw new PersistenceError();
     }
   }
 
-  private async save(session: ExcursionSearchSession): Promise<void> {
+  private async save(session: ExcursionSearchSession): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const expectedRevision = session.revision ?? 0;
     const normalized = normalizeSession(session);
-    await this.store.setJson(this.getKey(normalized.whatsappUserId), normalized, EXCURSION_SEARCH_SESSION_TTL_SECONDS);
+    normalized.revision = expectedRevision + 1;
     try {
-      await this.repository.upsert(normalized);
+      await this.repository.upsert(normalized, expectedRevision);
     } catch (error) {
-      logInfrastructureFallback('excursion_session', 'durable_save', 'memory_only');
+      if (error instanceof PersistenceError) {
+        if (error.status === 'conflict') await this.store.deleteKey(this.getKey(session.whatsappUserId)).catch(() => false);
+        throw error;
+      }
+      throw new PersistenceError();
     }
+    try { await this.store.setJson(this.getKey(normalized.whatsappUserId), normalized, EXCURSION_SEARCH_SESSION_TTL_SECONDS); }
+    catch { return { status: 'degraded', reason: 'Saved durably; active cache unavailable' }; }
+    return { status: this.store.isConnected?.() === false ? 'degraded' : 'durable', reason: this.store.isConnected?.() === false ? 'Saved durably; active cache uses memory fallback' : undefined };
   }
 
   private async findDurableSession(userId: string): Promise<ExcursionSearchSession | null> {
@@ -237,13 +289,16 @@ export class ExcursionSearchSessionService {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('excursion_session', 'durable_lookup', 'none');
-      return null;
+      throw new PersistenceError();
     }
   }
 
   private baseSession(userId: string, now: Date, existing?: ExcursionSearchSession | null): ExcursionSearchSession {
     return {
       id: existing?.id ?? crypto.randomUUID(),
+      lifecycleStatus: existing?.lifecycleStatus ?? 'active',
+      revision: existing?.revision ?? 0,
+      resultsRetrievedAt: existing?.resultsRetrievedAt,
       userId,
       whatsappUserId: userId,
       profileContext: existing?.profileContext,
@@ -273,6 +328,10 @@ export class ExcursionSearchSessionService {
 }
 
 let excursionSearchSessionServiceInstance: ExcursionSearchSessionService | null = null;
+export function initExcursionSearchSessionService(service: ExcursionSearchSessionService): ExcursionSearchSessionService {
+  excursionSearchSessionServiceInstance = service;
+  return service;
+}
 
 export function getExcursionSearchSessionService(): ExcursionSearchSessionService {
   if (!excursionSearchSessionServiceInstance) {

@@ -6,6 +6,7 @@ import { toOpenWaChatId } from '../utils/openWaMessageNormalizer.js';
 interface SendOpenWaOptions {
   voice?: boolean;
   from?: string;
+  shouldContinue?: () => boolean | Promise<boolean>;
 }
 
 interface OpenWaOutboundConfig { baseUrl?: string; apiKey?: string; sessionId?: string }
@@ -42,12 +43,14 @@ export class OpenWaOutboundService {
 
     let sentAny = false;
     for (const [index, message] of messages.entries()) {
+      if (options.shouldContinue && !(await options.shouldContinue())) break;
       if (index > 0) {
         await this.pause(OPENWA_SEND_GAP_MS);
+        if (options.shouldContinue && !(await options.shouldContinue())) break;
       }
       const sent =
         message.mediaUrl && isPublicHttpsUrl(message.mediaUrl)
-          ? await this.sendImageCardWithTextFallback(to, message.mediaUrl, message.body)
+          ? await this.sendImageCardWithTextFallback(to, message.mediaUrl, message.body, options.shouldContinue)
           : await this.sendWhatsAppText(to, message.body);
       sentAny = sentAny || sent;
     }
@@ -136,7 +139,8 @@ export class OpenWaOutboundService {
   private async sendImageCardWithTextFallback(
     to: string,
     mediaUrl: string,
-    caption: string
+    caption: string,
+    shouldContinue?: () => boolean | Promise<boolean>
   ): Promise<boolean> {
     let imageSent = false;
     try {
@@ -152,6 +156,7 @@ export class OpenWaOutboundService {
     // it. Always follow the image with the complete text card so local testing
     // cannot stop at the carousel intro after a silent downstream media failure.
     await this.pause(OPENWA_SEND_GAP_MS);
+    if (shouldContinue && !(await shouldContinue())) return imageSent;
     const textSent = await this.sendWhatsAppText(to, caption);
     return imageSent || textSent;
   }

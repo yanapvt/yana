@@ -44,6 +44,7 @@ const REQUIRED_TABLES = [
   'operator_auth_events',
   'inbound_message_claims',
   'hotel_recheck_receipts',
+  'traveller_memories',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -74,6 +75,8 @@ const REQUIRED_INDEX_TYPES = {
     'operator_auth_events_correlation_idx',
     'inbound_message_claims_expiry_idx',
     'hotel_recheck_receipts_expiry_idx',
+    'traveller_memories_context_idx',
+    'traveller_memories_expiry_idx',
   ],
   registered_accommodation_lookup: [
     'registered_accommodations_normalized_name_idx',
@@ -123,6 +126,9 @@ async function validateMigrations(): Promise<void> {
     '021_handoff_operations_hardening.sql',
     '022_operator_dashboard_security.sql',
     '023_reliability_receipts.sql',
+    '024_create_traveller_memories.sql',
+    '025_traveller_location_memory.sql',
+    '026_concierge_followups.sql',
   ];
 
   let allContent = '';

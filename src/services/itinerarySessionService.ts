@@ -1,3 +1,5 @@
+import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
+import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
 import type { BasicProfileForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
@@ -20,6 +22,9 @@ export type ItineraryState =
   | 'completed';
 
 export interface ItinerarySession {
+  lifecycleStatus?: 'active' | 'paused';
+  workspaceAccess?: { tokenHash: string; createdAt: string };
+  revision?: number;
   id: string;
   userId: string;
   whatsappUserId: string;
@@ -45,6 +50,37 @@ export class ItinerarySessionService {
     private readonly repository: ItinerarySessionRepository = new PostgresItinerarySessionRepository()
   ) {}
 
+  async getAuthoritative(userId: string): Promise<ItinerarySession | null> {
+    try {
+      const session = await this.repository.findLatestActiveByUserId(userId);
+      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
+    }
+    catch { throw new PersistenceError(); }
+  }
+
+  async getByWorkspaceToken(token: string): Promise<ItinerarySession | null> {
+    try { return await this.repository.findByWorkspaceTokenHash?.(crypto.createHash('sha256').update(token).digest('hex')) ?? null; }
+    catch { throw new PersistenceError(); }
+  }
+
+  async attachWorkspace(userId: string, token: string): Promise<ItinerarySession> {
+    const session = await this.getAuthoritative(userId);
+    if (!session?.itinerary) throw new PersistenceError();
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    if (session.workspaceAccess?.tokenHash === tokenHash) return session;
+    const updated = { ...session, workspaceAccess: { tokenHash, createdAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
+    await this.save(updated);
+    return { ...updated, revision: (session.revision ?? 0) + 1 };
+  }
+
+  async commitEdit(userId: string, tripId: string, expectedRevision: number, itinerary: GeneratedItinerary): Promise<ItinerarySession> {
+    const session = await this.getAuthoritative(userId);
+    if (!session || session.id !== tripId || (session.revision ?? 0) !== expectedRevision) throw new PersistenceError('conflict');
+    const updated = { ...session, itinerary, state: 'editing_itinerary' as const, updatedAt: new Date().toISOString() };
+    await this.save(updated);
+    return { ...updated, revision: expectedRevision + 1 };
+  }
+
   async saveFormSent(
     userId: string,
     originalMessage: string,
@@ -57,6 +93,7 @@ export class ItinerarySessionService {
       originalMessage,
       profileContext: profileContext ?? existing?.profileContext,
       state: 'itinerary_form_sent',
+      lifecycleStatus: 'active',
     });
   }
 
@@ -64,10 +101,10 @@ export class ItinerarySessionService {
     userId: string,
     criteria: ItineraryCriteria,
     options: { itineraryFormResponseId?: string; originalMessage?: string; profileContext?: Partial<BasicProfileForm> } = {}
-  ): Promise<void> {
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const now = new Date();
     const existing = await this.get(userId);
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       criteria,
       itineraryFormResponseId: options.itineraryFormResponseId ?? existing?.itineraryFormResponseId,
@@ -77,6 +114,7 @@ export class ItinerarySessionService {
       itinerary: undefined,
       currentDay: undefined,
       state: 'awaiting_preferences',
+      lifecycleStatus: 'active',
     });
   }
 
@@ -88,6 +126,7 @@ export class ItinerarySessionService {
       criteria,
       additionalPreferences: criteria.additionalPreferences,
       state: 'planning',
+      lifecycleStatus: 'active',
     });
   }
 
@@ -95,23 +134,24 @@ export class ItinerarySessionService {
     userId: string,
     criteria: ItineraryCriteria,
     itinerary: GeneratedItinerary
-  ): Promise<void> {
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const now = new Date();
     const existing = await this.get(userId);
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       criteria,
       additionalPreferences: criteria.additionalPreferences,
       itinerary,
       currentDay: 1,
       state: 'showing_itinerary',
+      lifecycleStatus: 'active',
     });
   }
 
-  async saveEditing(userId: string, criteria: ItineraryCriteria, itinerary: GeneratedItinerary): Promise<void> {
+  async saveEditing(userId: string, criteria: ItineraryCriteria, itinerary: GeneratedItinerary): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const now = new Date();
     const existing = await this.get(userId);
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       criteria,
       itinerary,
@@ -123,6 +163,29 @@ export class ItinerarySessionService {
     const session = await this.get(userId);
     if (!session) return;
     await this.save({ ...session, currentDay, updatedAt: new Date().toISOString() });
+  }
+
+  async pause(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session || session.lifecycleStatus === 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'paused', updatedAt: new Date().toISOString() });
+  }
+
+  async resume(userId: string): Promise<void> {
+    const session = await this.getAuthoritative(userId);
+    if (!session || session.lifecycleStatus !== 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'active', updatedAt: new Date().toISOString() });
+  }
+
+  async applyCriteriaPatch(userId: string, expectedRevision: number, fields: Record<string, unknown>): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const current = await this.repository.findLatestActiveByUserId(userId);
+    if (!current || (current.revision ?? 0) !== expectedRevision) throw new PersistenceError('conflict');
+    const patch = validateCriteria('itinerary', fields);
+    const criteria = { ...current.criteria, ...patch };
+    validateCriteria('itinerary', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('itinerary', key))));
+    if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
+    await this.save({ ...current, criteria, state: 'awaiting_preferences', itinerary: undefined, updatedAt: new Date().toISOString() });
+    return { status: 'durable' };
   }
 
   async get(userId: string): Promise<ItinerarySession | null> {
@@ -143,17 +206,26 @@ export class ItinerarySessionService {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('itinerary_session', 'durable_clear', 'memory_only');
+      throw new PersistenceError();
     }
   }
 
-  private async save(session: ItinerarySession): Promise<void> {
+  private async save(session: ItinerarySession): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const expectedRevision = session.revision ?? 0;
     const normalized = normalizeSession(session);
-    await this.store.setJson(this.getKey(normalized.whatsappUserId), normalized, ITINERARY_SESSION_TTL_SECONDS);
+    normalized.revision = expectedRevision + 1;
     try {
-      await this.repository.upsert(normalized);
+      await this.repository.upsert(normalized, expectedRevision);
     } catch (error) {
-      logInfrastructureFallback('itinerary_session', 'durable_save', 'memory_only');
+      if (error instanceof PersistenceError) {
+        if (error.status === 'conflict') await this.store.deleteKey(this.getKey(session.whatsappUserId)).catch(() => false);
+        throw error;
+      }
+      throw new PersistenceError();
     }
+    try { await this.store.setJson(this.getKey(normalized.whatsappUserId), normalized, ITINERARY_SESSION_TTL_SECONDS); }
+    catch { return { status: 'degraded', reason: 'Saved durably; active cache unavailable' }; }
+    return { status: this.store.isConnected?.() === false ? 'degraded' : 'durable', reason: this.store.isConnected?.() === false ? 'Saved durably; active cache uses memory fallback' : undefined };
   }
 
   private async findDurableSession(userId: string): Promise<ItinerarySession | null> {
@@ -161,7 +233,7 @@ export class ItinerarySessionService {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('itinerary_session', 'durable_lookup', 'none');
-      return null;
+      throw new PersistenceError();
     }
   }
 
@@ -172,6 +244,9 @@ export class ItinerarySessionService {
   ): ItinerarySession {
     return {
       id: existing?.id ?? crypto.randomUUID(),
+      lifecycleStatus: existing?.lifecycleStatus ?? 'active',
+      revision: existing?.revision ?? 0,
+      workspaceAccess: existing?.workspaceAccess,
       userId,
       whatsappUserId: userId,
       profileContext: existing?.profileContext,
@@ -202,6 +277,11 @@ export function getItinerarySessionService(): ItinerarySessionService {
     itinerarySessionServiceInstance = new ItinerarySessionService();
   }
   return itinerarySessionServiceInstance;
+}
+
+export function initItinerarySessionService(service: ItinerarySessionService): ItinerarySessionService {
+  itinerarySessionServiceInstance = service;
+  return service;
 }
 
 function normalizeSession(session: ItinerarySession): ItinerarySession {

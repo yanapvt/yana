@@ -1,16 +1,28 @@
+import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
 import type { ItinerarySession } from '../services/itinerarySessionService.js';
 
 const ITINERARY_SESSIONS_KEY = 'yanaItinerarySessions';
 
 export interface ItinerarySessionRepository {
-  upsert(session: ItinerarySession): Promise<void>;
+  findByWorkspaceTokenHash?(tokenHash: string): Promise<ItinerarySession | null>;
+  upsert(session: ItinerarySession, expectedRevision?: number): Promise<void>;
   findLatestActiveByUserId(userId: string): Promise<ItinerarySession | null>;
   clearActiveByUserId(userId: string): Promise<void>;
 }
 
 export class PostgresItinerarySessionRepository implements ItinerarySessionRepository {
-  async upsert(session: ItinerarySession): Promise<void> {
+  async findByWorkspaceTokenHash(tokenHash: string): Promise<ItinerarySession | null> {
+    const result = await pool.query<{ session: ItinerarySession }>(
+      `SELECT trip AS session FROM user_preferences,
+       LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(notification_preferences->'yanaItinerarySessions')='array'
+         THEN notification_preferences->'yanaItinerarySessions' ELSE '[]'::jsonb END) AS entries(trip)
+       WHERE trip->'workspaceAccess'->>'tokenHash'=$1 AND trip->>'state' <> 'completed'
+         AND (trip->>'expiresAt')::timestamptz > NOW() LIMIT 1`, [tokenHash]
+    );
+    return result.rows[0]?.session ?? null;
+  }
+  async upsert(session: ItinerarySession, expectedRevision?: number): Promise<void> {
     const phoneNumber = normalizePhoneNumber(session.whatsappUserId);
     const client = await pool.connect();
 
@@ -21,10 +33,7 @@ export class PostgresItinerarySessionRepository implements ItinerarySessionRepos
         [phoneNumber]
       );
       const databaseUserId = userResult.rows[0]?.user_id;
-      if (!databaseUserId) {
-        await client.query('COMMIT');
-        return;
-      }
+      if (!databaseUserId) throw new PersistenceError();
 
       await client.query(
         `INSERT INTO user_preferences (
@@ -48,6 +57,9 @@ export class PostgresItinerarySessionRepository implements ItinerarySessionRepos
         [databaseUserId]
       );
       const notificationPreferences = readPreferences(preferencesResult.rows[0]);
+      const expected = expectedRevision ?? session.revision ?? 0;
+      assertExpectedRevision(readPersistedSessions(notificationPreferences), session, expected);
+      session = { ...session, revision: expected + 1 };
       const sessions = readPersistedSessions(notificationPreferences).filter(
         (persisted) => persisted.whatsappUserId !== session.whatsappUserId
       );

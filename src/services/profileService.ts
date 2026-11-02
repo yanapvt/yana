@@ -23,16 +23,17 @@ export class ProfileService {
     return this.profileRepository.findByUserId(userId);
   }
 
-  saveProfile(userId: string, form: BasicProfileForm): Promise<StoredProfile> {
-    return this.profileRepository.upsert(userId, form);
+  saveProfile(userId: string, form: BasicProfileForm, expectedRevision?: number): Promise<StoredProfile> {
+    return this.profileRepository.upsert(userId, form, expectedRevision);
   }
 
   saveServiceRequest<T extends ServiceRequestForm>(
     userId: string,
     type: ServiceFormType,
-    form: T
+    form: T,
+    idempotencyKey?: string
   ): Promise<StoredServiceRequest<T>> {
-    return this.serviceRequestRepository.create(userId, type, form);
+    return this.serviceRequestRepository.create(userId, type, form, idempotencyKey);
   }
 
   getServiceRequests(userId: string, type?: ServiceFormType): Promise<StoredServiceRequest[]> {

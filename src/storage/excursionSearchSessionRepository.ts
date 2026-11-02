@@ -1,10 +1,11 @@
+import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
 import type { ExcursionSearchSession } from '../services/excursionSearchSessionService.js';
 
 const EXCURSION_SESSIONS_KEY = 'yanaExcursionSearchSessions';
 
 export interface ExcursionSearchSessionRepository {
-  upsert(session: ExcursionSearchSession): Promise<void>;
+  upsert(session: ExcursionSearchSession, expectedRevision?: number): Promise<void>;
   findLatestActiveByUserId(userId: string): Promise<ExcursionSearchSession | null>;
   clearActiveByUserId(userId: string): Promise<void>;
 }
@@ -14,7 +15,7 @@ interface PreferencesRow {
 }
 
 export class PostgresExcursionSearchSessionRepository implements ExcursionSearchSessionRepository {
-  async upsert(session: ExcursionSearchSession): Promise<void> {
+  async upsert(session: ExcursionSearchSession, expectedRevision?: number): Promise<void> {
     const phoneNumber = normalizePhoneNumber(session.whatsappUserId);
     const client = await pool.connect();
 
@@ -25,10 +26,7 @@ export class PostgresExcursionSearchSessionRepository implements ExcursionSearch
         [phoneNumber]
       );
       const databaseUserId = userResult.rows[0]?.user_id;
-      if (!databaseUserId) {
-        await client.query('COMMIT');
-        return;
-      }
+      if (!databaseUserId) throw new PersistenceError();
 
       await client.query(
         `INSERT INTO user_preferences (
@@ -52,6 +50,9 @@ export class PostgresExcursionSearchSessionRepository implements ExcursionSearch
         [databaseUserId]
       );
       const notificationPreferences = readPreferences(preferencesResult.rows[0]);
+      const expected = expectedRevision ?? session.revision ?? 0;
+      assertExpectedRevision(readPersistedSessions(notificationPreferences), session, expected);
+      session = { ...session, revision: expected + 1 };
       const sessions = readPersistedSessions(notificationPreferences).filter(
         (persisted) => persisted.whatsappUserId !== session.whatsappUserId
       );

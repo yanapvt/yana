@@ -131,6 +131,8 @@ const EnvironmentSchema = z.object({
   features: z.object({
     ttsEnabled: z.boolean().default(false),
     proactiveMessagingEnabled: z.boolean().default(false),
+    conciergeEnabled: z.boolean().default(true),
+    weatherContextEnabled: z.boolean().default(false),
     vendorCmsEnabled: z.boolean().default(false),
   }),
 
@@ -258,6 +260,9 @@ function loadEnvironmentConfig(): EnvironmentConfig {
     features: {
       ttsEnabled: process.env.FEATURE_TTS_ENABLED === 'true',
       proactiveMessagingEnabled: process.env.FEATURE_PROACTIVE_MESSAGING_ENABLED === 'true',
+      conciergeEnabled: process.env.FEATURE_CONCIERGE_ENABLED === undefined
+        ? !isTestMode : process.env.FEATURE_CONCIERGE_ENABLED === 'true',
+      weatherContextEnabled: process.env.FEATURE_WEATHER_CONTEXT_ENABLED === 'true',
       vendorCmsEnabled: process.env.FEATURE_VENDOR_CMS_ENABLED === 'true',
     },
 

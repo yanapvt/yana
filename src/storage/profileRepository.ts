@@ -2,10 +2,11 @@ import crypto from 'node:crypto';
 import type { BasicProfileForm, StoredProfile } from '../types/forms.js';
 import { basicProfileFormSchema } from '../validation/formSchemas.js';
 import { pool } from '../db/connection.js';
+import { PersistenceError } from './Persistence.js';
 
 export interface ProfileRepository {
   findByUserId(userId: string): Promise<StoredProfile | null>;
-  upsert(userId: string, profile: BasicProfileForm): Promise<StoredProfile>;
+  upsert(userId: string, profile: BasicProfileForm, expectedRevision?: number): Promise<StoredProfile>;
 }
 
 /**
@@ -16,21 +17,23 @@ export class InMemoryProfileRepository implements ProfileRepository {
   private readonly profiles = new Map<string, StoredProfile>();
 
   findByUserId(userId: string): Promise<StoredProfile | null> {
-    return Promise.resolve(this.profiles.get(userId) ?? null);
+    return Promise.resolve(structuredClone(this.profiles.get(userId) ?? null));
   }
 
-  upsert(userId: string, form: BasicProfileForm): Promise<StoredProfile> {
+  upsert(userId: string, form: BasicProfileForm, expectedRevision?: number): Promise<StoredProfile> {
     const existing = this.profiles.get(userId);
+    if (expectedRevision !== undefined && (existing?.revision ?? 0) !== expectedRevision) throw new PersistenceError('conflict');
     const now = new Date();
     const profile: StoredProfile = {
+      revision: (existing?.revision ?? 0) + 1,
       userId,
       form,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
 
-    this.profiles.set(userId, profile);
-    return Promise.resolve(profile);
+    this.profiles.set(userId, structuredClone(profile));
+    return Promise.resolve(structuredClone(profile));
   }
 
   clear(): void {
@@ -76,12 +79,13 @@ export class PostgresProfileRepository implements ProfileRepository {
     return {
       userId,
       form,
+      revision: isRecord(row.notification_preferences) ? Number(row.notification_preferences.yanaBasicProfileRevision ?? 0) : 0,
       createdAt: row.profile_created_at,
       updatedAt: row.profile_updated_at,
     };
   }
 
-  async upsert(userId: string, form: BasicProfileForm): Promise<StoredProfile> {
+  async upsert(userId: string, form: BasicProfileForm, expectedRevision?: number): Promise<StoredProfile> {
     const phoneNumber = normalizePhoneNumber(userId);
     const phoneHash = crypto.createHash('sha256').update(phoneNumber).digest('hex');
     const now = new Date();
@@ -102,6 +106,13 @@ export class PostgresProfileRepository implements ProfileRepository {
       if (!databaseUserId) {
         throw new Error('Failed to upsert profile user');
       }
+
+      const preferences = await client.query<{ notification_preferences: Record<string, unknown> }>(
+        'SELECT notification_preferences FROM user_preferences WHERE user_id=$1 FOR UPDATE', [databaseUserId]
+      );
+      const currentRevision = Number(preferences.rows[0]?.notification_preferences?.yanaBasicProfileRevision ?? 0);
+      if (expectedRevision !== undefined && currentRevision !== expectedRevision) throw new PersistenceError('conflict');
+      const revision = currentRevision + 1;
 
       const profileResult = await client.query<{
         created_at: Date;
@@ -132,7 +143,7 @@ export class PostgresProfileRepository implements ProfileRepository {
           form.fullName,
           form.nationality.slice(0, 3).toUpperCase(),
           form.preferredLanguage,
-          `${form.city}, ${form.countryOfResidence}`,
+          [form.city, form.countryOfResidence].filter(Boolean).join(', '),
           form.preferredCurrency,
         ]
       );
@@ -146,14 +157,14 @@ export class PostgresProfileRepository implements ProfileRepository {
            created_at,
            updated_at
          )
-         VALUES ($1, false, false, jsonb_build_object($2::text, $3::jsonb), NOW(), NOW())
+         VALUES ($1, false, false, jsonb_build_object($2::text, $3::jsonb, 'yanaBasicProfileRevision', $4::int), NOW(), NOW())
          ON CONFLICT (user_id)
          DO UPDATE SET
            notification_preferences =
              COALESCE(user_preferences.notification_preferences, '{}'::jsonb)
-             || jsonb_build_object($2::text, $3::jsonb),
+             || jsonb_build_object($2::text, $3::jsonb, 'yanaBasicProfileRevision', $4::int),
            updated_at = NOW()`,
-        [databaseUserId, PROFILE_FORM_KEY, JSON.stringify(form)]
+        [databaseUserId, PROFILE_FORM_KEY, JSON.stringify(form), revision]
       );
 
       await client.query(
@@ -179,6 +190,7 @@ export class PostgresProfileRepository implements ProfileRepository {
       return {
         userId,
         form,
+        revision,
         createdAt: timestamps?.created_at ?? now,
         updatedAt: timestamps?.updated_at ?? now,
       };

@@ -1,10 +1,12 @@
+import crypto from 'node:crypto';
+import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
 import type { HotelSearchSession } from '../services/hotelSearchSessionService.js';
 
 const HOTEL_SESSIONS_KEY = 'yanaHotelSearchSessions';
 
 export interface HotelSearchSessionRepository {
-  upsert(session: HotelSearchSession): Promise<void>;
+  upsert(session: HotelSearchSession, expectedRevision?: number): Promise<void>;
   findLatestActiveByUserId(userId: string): Promise<HotelSearchSession | null>;
   clearActiveByUserId(userId: string): Promise<void>;
 }
@@ -12,8 +14,10 @@ export interface HotelSearchSessionRepository {
 export class InMemoryHotelSearchSessionRepository implements HotelSearchSessionRepository {
   private readonly sessions = new Map<string, HotelSearchSession>();
 
-  upsert(session: HotelSearchSession): Promise<void> {
-    this.sessions.set(session.whatsappUserId, session);
+  upsert(session: HotelSearchSession, expectedRevision?: number): Promise<void> {
+    const expected = expectedRevision ?? session.revision ?? 0;
+    assertExpectedRevision([...this.sessions.values()], session, expected);
+    this.sessions.set(session.whatsappUserId, structuredClone({ ...session, revision: expected + 1 }));
     return Promise.resolve();
   }
 
@@ -27,6 +31,7 @@ export class InMemoryHotelSearchSessionRepository implements HotelSearchSessionR
     if (session) {
       this.sessions.set(userId, {
         ...session,
+        revision: (session.revision ?? 0) + 1,
         state: 'reset',
         stage: 'reset',
         updatedAt: new Date().toISOString(),
@@ -45,22 +50,27 @@ interface PreferencesRow {
 }
 
 export class PostgresHotelSearchSessionRepository implements HotelSearchSessionRepository {
-  async upsert(session: HotelSearchSession): Promise<void> {
+  async upsert(session: HotelSearchSession, expectedRevision?: number): Promise<void> {
     const phoneNumber = normalizePhoneNumber(session.whatsappUserId);
     const client = await pool.connect();
 
     try {
       await client.query('BEGIN');
+      // The first inbound message can arrive before the profile form is
+      // completed. Persisting its profile-required session must therefore
+      // establish the identity row instead of assuming the user already exists.
+      const phoneHash = crypto.createHash('sha256').update(phoneNumber).digest('hex');
       const userResult = await client.query<{ user_id: string }>(
-        `SELECT user_id FROM users WHERE phone_number = $1`,
-        [phoneNumber]
+        `INSERT INTO users (phone_number, phone_hash, created_at, updated_at)
+         VALUES ($1, $2, NOW(), NOW())
+         ON CONFLICT (phone_number)
+         DO UPDATE SET updated_at = NOW()
+         RETURNING user_id`,
+        [phoneNumber, phoneHash]
       );
       const databaseUserId = userResult.rows[0]?.user_id;
 
-      if (!databaseUserId) {
-        await client.query('COMMIT');
-        return;
-      }
+      if (!databaseUserId) throw new PersistenceError();
 
       await client.query(
         `INSERT INTO user_preferences (
@@ -84,6 +94,9 @@ export class PostgresHotelSearchSessionRepository implements HotelSearchSessionR
         [databaseUserId]
       );
       const notificationPreferences = readPreferences(preferencesResult.rows[0]);
+      const expected = expectedRevision ?? session.revision ?? 0;
+      assertExpectedRevision(readPersistedSessions(notificationPreferences), session, expected);
+      session = { ...session, revision: expected + 1 };
       const sessions = readPersistedSessions(notificationPreferences).filter(
         (persisted) => persisted.whatsappUserId !== session.whatsappUserId
       );

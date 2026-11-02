@@ -113,6 +113,18 @@ describe('PayHerePaymentService', () => {
     );
     expect(result).toEqual({ accepted: true, duplicate: false, state: expected });
   });
+
+  it('keeps a verified failed payment in failed state and never reports success', async () => {
+    const callbackStore = store();
+    const result = await new PayHerePaymentService(config, callbackStore).handleCallback(
+      signedCallback({ status_code: '-2' })
+    );
+    expect(result).toMatchObject({ accepted: true, state: PaymentState.FAILED });
+    expect(result.state).not.toBe(PaymentState.SUCCEEDED);
+    expect(callbackStore.applyVerifiedCallback).toHaveBeenCalledWith(expect.objectContaining({
+      nextState: PaymentState.FAILED,
+    }));
+  });
 });
 
 function checkoutRequest() {

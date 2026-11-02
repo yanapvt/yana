@@ -40,6 +40,7 @@ describe('PostgresProfileRepository', () => {
         .fn()
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ user_id: 'database-user-id' }] })
+        .mockResolvedValueOnce({ rows: [{ notification_preferences: {} }] })
         .mockResolvedValueOnce({ rows: [{ created_at: createdAt, updated_at: updatedAt }] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
@@ -54,6 +55,7 @@ describe('PostgresProfileRepository', () => {
     expect(saved).toEqual({
       userId: 'whatsapp:+94770000001',
       form: profileForm,
+      revision: 1,
       createdAt,
       updatedAt,
     });
@@ -100,6 +102,7 @@ describe('PostgresProfileRepository', () => {
     expect(saved).toEqual({
       userId: 'whatsapp:+94770000001',
       form: profileForm,
+      revision: 0,
       createdAt,
       updatedAt,
     });
@@ -107,5 +110,17 @@ describe('PostgresProfileRepository', () => {
       expect.stringContaining('WHERE users.phone_number = $1'),
       ['+94770000001']
     );
+  });
+
+  it('rejects a stale profile revision under the preference lock before updating profile data', async () => {
+    const client = { query: vi.fn().mockResolvedValue({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ user_id: 'fixture-user' }] })
+      .mockResolvedValueOnce({ rows: [{ notification_preferences: { yanaBasicProfileRevision: 2 } }] }), release: vi.fn() };
+    vi.mocked(pool.connect).mockResolvedValue(client as any);
+    await expect(new PostgresProfileRepository().upsert('fixture', profileForm, 1)).rejects.toMatchObject({ status: 'conflict' });
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE'), ['fixture-user']);
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO user_profiles'))).toBe(false);
   });
 });

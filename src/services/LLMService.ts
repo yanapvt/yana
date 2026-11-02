@@ -13,6 +13,8 @@
 
 import { LLMDecisionOutput } from '../types/core.js';
 import { env } from '../config/environment.js';
+import { PromptService, type LLMPurpose } from '../orchestration/PromptService.js';
+import { decisionOutputSchema } from '../orchestration/WorkflowDefinitions.js';
 
 // ============================================================================
 // Types
@@ -22,19 +24,49 @@ import { env } from '../config/environment.js';
  * Context package provided to the LLM for decision making
  */
 export interface ContextPackage {
+  allowedUIModes?: string[];
+  workflowDefinition?: { schema: string; version: string; required: readonly string[]; fields: readonly string[]; fieldTypes: Record<string, string>; allowedValues: Record<string, readonly string[]> };
+  requestId?: string;
+  channel?: string;
+  eventType?: string;
+  messageType?: string;
+  historyStatus?: 'available' | 'empty' | 'unavailable';
+  itinerary?: { days: Array<{ day: number; date: string; location: string; morning: string; afternoon: string; evening: string }> };
+  verifiedResults?: { source: string; retrievedAt: string; items: Array<{ resultId: string; position: number; name: string; rating?: number }> };
   userMessage: string;
   conversationHistory?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   userProfile?: {
+    preferredName?: string;
     preferredLanguage?: string;
     nationality?: string;
+    preferredCurrency?: string;
+    travelStyle?: string;
+    dietaryRestrictions?: string;
+    accessibilityNeeds?: string;
     recentActions?: string[];
   };
+  travellerContext?: {
+    confirmedFacts: Array<{ key: string; value: string; scope: string }>;
+    pendingConfirmations: Array<{ key: string; value: string; scope: string }>;
+  };
   sessionState?: {
+    sessionId?: string;
+    revision?: number;
+    updatedAt?: string;
+    lifecycleStatus?: 'active' | 'paused';
+    state?: string;
+    schemaVersion?: string;
     currentIntent?: string;
     activeSchema?: string;
     collectedFields?: Record<string, unknown>;
+    requiredFields?: string[];
     missingFields?: string[];
   };
+  pausedTasks?: Array<{
+    currentIntent: string; activeSchema?: string; revision?: number; updatedAt?: string;
+    lifecycleStatus?: 'active' | 'paused'; state?: string;
+    collectedFields: Record<string, unknown>; missingFields: string[];
+  }>;
   availableSchemas?: string[];
 }
 
@@ -69,6 +101,7 @@ export class LLMServiceError extends Error {
 
 export class LLMService {
   private config: LLMConfig;
+  private readonly prompts = new PromptService();
 
   constructor(config?: Partial<LLMConfig>) {
     this.config = {
@@ -106,13 +139,12 @@ export class LLMService {
    * @returns Structured decision output for the Orchestrator
    * @throws LLMServiceError if the LLM call fails
    */
-  async decide(contextPackage: ContextPackage): Promise<LLMDecisionOutput> {
+  async decide(contextPackage: ContextPackage, systemInstructions?: string): Promise<LLMDecisionOutput> {
     try {
       // Build the decision prompt
-      const prompt = this.buildDecisionPrompt(contextPackage);
-
-      // Call the LLM (implementation depends on provider)
-      const response = await this.callLLM(prompt, 'decision');
+      const response = await this.callLLM(
+        JSON.stringify(contextPackage), 'decision', systemInstructions
+      );
 
       // Parse and validate the structured output
       const decision = this.parseDecisionOutput(response);
@@ -152,13 +184,12 @@ export class LLMService {
    * @returns Generated content string
    * @throws LLMServiceError if the LLM call fails
    */
-  async generateUIContent(prompt: string, userLanguage: string = 'en'): Promise<string> {
+  async generateUIContent(prompt: string | Record<string, unknown>, userLanguage: string = 'en'): Promise<string> {
     try {
       // Build the UI content generation prompt
-      const fullPrompt = this.buildUIContentPrompt(prompt, userLanguage);
-
-      // Call the LLM
-      const response = await this.callLLM(fullPrompt, 'ui-support');
+      const response = await this.callLLM(
+        JSON.stringify({ task: prompt, targetLanguage: userLanguage }), 'response'
+      );
 
       // Extract and validate the content
       const content = this.parseUIContentOutput(response);
@@ -177,104 +208,36 @@ export class LLMService {
     }
   }
 
+  /** Structured extraction has its own instructions, separate from response wording. */
+  async extractHotelCriteria(data: {
+    context?: ContextPackage;
+    userMessage: string;
+    referenceDate: string;
+    alreadyExtracted: Record<string, unknown>;
+  }): Promise<string> {
+    return this.callLLM(JSON.stringify(data), 'hotel-extraction');
+  }
+
   // ==========================================================================
   // Private Helper Methods
   // ==========================================================================
 
   /**
-   * Builds the prompt for decision mode
-   */
-  private buildDecisionPrompt(contextPackage: ContextPackage): string {
-    const parts: string[] = [
-      'You are an intent detection and parameter extraction assistant for a WhatsApp-based booking platform.',
-      'Analyze the user message and context, then provide a structured decision output.',
-      '',
-      'Routing guidance:',
-      '- A request for ideas, activities, excursions, or things to do in one place on a specific day is an explore/discovery request; classify it as search_excursions, not plan_itinerary.',
-      '- Use plan_itinerary only when the user asks for a full trip, multi-day route, or day-by-day itinerary.',
-      '- Explore/discovery is not a booking request. Use a booking intent only when the user explicitly asks to reserve, book, purchase, pay, or says they are ready to book.',
-      '- If you cannot tell which service the user wants, use general_inquiry or unclear with suggestedAction clarify instead of guessing a service.',
-      '',
-      'User message:',
-      contextPackage.userMessage,
-    ];
-
-    if (contextPackage.conversationHistory && contextPackage.conversationHistory.length > 0) {
-      parts.push('', 'Conversation history:');
-      contextPackage.conversationHistory.forEach((msg) => {
-        parts.push(`${msg.role}: ${msg.content}`);
-      });
-    }
-
-    if (contextPackage.sessionState) {
-      parts.push('', 'Current session state:');
-      if (contextPackage.sessionState.currentIntent) {
-        parts.push(`Current intent: ${contextPackage.sessionState.currentIntent}`);
-      }
-      if (contextPackage.sessionState.activeSchema) {
-        parts.push(`Active schema: ${contextPackage.sessionState.activeSchema}`);
-      }
-      if (contextPackage.sessionState.collectedFields) {
-        parts.push(`Collected fields: ${JSON.stringify(contextPackage.sessionState.collectedFields)}`);
-      }
-      if (contextPackage.sessionState.missingFields) {
-        parts.push(`Missing fields: ${contextPackage.sessionState.missingFields.join(', ')}`);
-      }
-    }
-
-    if (contextPackage.availableSchemas && contextPackage.availableSchemas.length > 0) {
-      parts.push('', `Available schemas: ${contextPackage.availableSchemas.join(', ')}`);
-    }
-
-    parts.push(
-      '',
-      'Respond with a JSON object containing:',
-      '- intent: detected user intent (string)',
-      '- parameters: extracted parameters (object)',
-      '- missingFields: list of required fields not yet provided (array of strings)',
-      '- suggestedAction: one of "ask_missing", "execute_tool", "clarify", "handoff"',
-      '- confidence: confidence score between 0 and 1 (number)',
-      '- reasoning: brief explanation of your decision (string, optional)',
-      '',
-      'Respond ONLY with valid JSON, no additional text.'
-    );
-
-    return parts.join('\n');
-  }
-
-  /**
-   * Builds the prompt for UI content generation
-   */
-  private buildUIContentPrompt(prompt: string, userLanguage: string): string {
-    return [
-      `You are a helpful assistant generating user-facing content for a WhatsApp booking platform.`,
-      `Target language: ${userLanguage}`,
-      ``,
-      `Task: ${prompt}`,
-      ``,
-      `Generate clear, friendly, concise content suitable for WhatsApp.`,
-      `Keep messages short and actionable.`,
-      `Do not include any instructions to execute actions, bookings, or payments.`,
-    ].join('\n');
-  }
-
-  /**
    * Calls the LLM API (provider-specific implementation)
    * 
-   * NOTE: This is a placeholder implementation. In production, this would
-   * integrate with the actual LLM provider (OpenAI, Anthropic, etc.)
+   * Compatible providers share the same trusted-system / untrusted-data boundary.
    */
-  private async callLLM(prompt: string, mode: 'decision' | 'ui-support'): Promise<string> {
+  private async callLLM(prompt: string, mode: LLMPurpose, systemInstructions?: string): Promise<string> {
     if (this.config.provider === 'mock') {
       return this.getMockResponse(prompt, mode);
     }
 
     if (this.config.provider === 'openai') {
-      return this.callOpenAICompatible(prompt, mode);
+      return this.callOpenAICompatible(prompt, mode, systemInstructions);
     }
 
     if (this.config.provider === 'openrouter' || this.config.provider === 'groq') {
-      return this.callOpenAICompatible(prompt, mode);
+      return this.callOpenAICompatible(prompt, mode, systemInstructions);
     }
 
     throw new LLMServiceError(
@@ -287,7 +250,7 @@ export class LLMService {
   /**
    * Calls OpenAI-compatible Chat Completions APIs.
    */
-  private async callOpenAICompatible(prompt: string, mode: 'decision' | 'ui-support'): Promise<string> {
+  private async callOpenAICompatible(prompt: string, mode: LLMPurpose, systemInstructions?: string): Promise<string> {
     const baseUrl = this.config.baseUrl ?? 'https://api.openai.com/v1';
     const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -297,14 +260,11 @@ export class LLMService {
       },
       body: JSON.stringify({
         model: this.config.model,
-        temperature: mode === 'decision' ? 0.1 : 0.4,
+        temperature: mode === 'response' ? 0.4 : 0.1,
         messages: [
           {
             role: 'system',
-            content:
-              mode === 'decision'
-                ? 'Return only valid JSON matching the requested schema.'
-                : 'Return concise WhatsApp-ready text only.',
+            content: systemInstructions ?? this.prompts.buildSystemPrompt(mode),
           },
           {
             role: 'user',
@@ -315,9 +275,9 @@ export class LLMService {
     });
 
     if (!response.ok) {
-      const errorBody = await response.text();
+      await response.text();
       throw new LLMServiceError(
-        `OpenAI request failed with ${response.status}: ${errorBody}`,
+        `Model provider request failed with ${response.status}`,
         'PROVIDER_REQUEST_FAILED',
         response.status >= 500 || response.status === 429
       );
@@ -344,7 +304,7 @@ export class LLMService {
    */
   private parseDecisionOutput(response: string): LLMDecisionOutput {
     try {
-      const parsed = JSON.parse(extractJsonResponse(response));
+      const parsed = decisionOutputSchema.parse(JSON.parse(extractJsonResponse(response)));
 
       // Validate required fields
       if (!parsed.intent || typeof parsed.intent !== 'string') {
@@ -368,9 +328,22 @@ export class LLMService {
       }
 
       return {
+        contractVersion: parsed.contractVersion,
+        responseText: parsed.responseText,
         intent: parsed.intent,
+        intentConfidence: parsed.intentConfidence ?? parsed.confidence,
+        ambiguity: parsed.ambiguity,
+        clarificationRequired: parsed.clarificationRequired,
+        clarificationQuestion: parsed.clarificationQuestion,
         parameters: parsed.parameters,
+        fieldUpdates: parsed.fieldUpdates,
+        memoryCandidates: parsed.memoryCandidates,
         missingFields: parsed.missingFields,
+        taskTransition: parsed.taskTransition,
+        recommendedSchema: parsed.recommendedSchema,
+        uiRecommendation: parsed.uiRecommendation,
+        proposedAction: parsed.proposedAction,
+        unresolvedQuestions: parsed.unresolvedQuestions,
         suggestedAction: parsed.suggestedAction,
         confidence: parsed.confidence,
         reasoning: parsed.reasoning,
@@ -407,7 +380,6 @@ export class LLMService {
    */
   private logDecision(contextPackage: ContextPackage, decision: LLMDecisionOutput): void {
     console.log('[LLMService] Decision made:', {
-      userMessage: contextPackage.userMessage.substring(0, 100),
       intent: decision.intent,
       suggestedAction: decision.suggestedAction,
       confidence: decision.confidence,
@@ -418,7 +390,8 @@ export class LLMService {
   /**
    * Returns mock responses for testing
    */
-  private getMockResponse(prompt: string, mode: 'decision' | 'ui-support'): string {
+  private getMockResponse(prompt: string, mode: LLMPurpose): string {
+    if (mode === 'hotel-extraction') return '{}';
     if (mode === 'decision') {
       return JSON.stringify({
         intent: 'search_hotels',
@@ -440,13 +413,6 @@ function extractJsonResponse(response: string): string {
 
   if (fencedJson) {
     return fencedJson[1].trim();
-  }
-
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    return trimmed.slice(firstBrace, lastBrace + 1);
   }
 
   return trimmed;

@@ -1,3 +1,6 @@
+import { workflow, missingFields as canonicalMissingFields, validateCriteria } from '../orchestration/WorkflowDefinitions.js';
+import { withWorkflowLock } from '../services/WorkflowLockService.js';
+const searchSnapshots = new WeakMap<object, { id: string; revision: number }>();
 /**
  * WhatsApp Webhook Routes
  * Handles inbound WhatsApp messages from Twilio
@@ -7,7 +10,7 @@ import {
   normalizeInboundMessage,
   TwilioWebhookPayload,
 } from '../utils/messageNormalizer.js';
-import { getLLMService, LLMServiceError } from '../services/LLMService.js';
+import { LLMServiceError } from '../services/LLMService.js';
 import { getHotelIntakeService } from '../services/HotelIntakeService.js';
 import {
   getHotelSearchFlowService,
@@ -80,7 +83,6 @@ import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
 import { getMetaWhatsAppOutboundService } from '../services/MetaWhatsAppOutboundService.js';
 import { env } from '../config/environment.js';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
-import { getConversationManager } from '../services/ConversationManager.js';
 import { getOutOfScopeSupportService } from '../services/OutOfScopeSupportService.js';
 import {
   getSpeechToTextService,
@@ -89,6 +91,10 @@ import {
 } from '../services/SpeechToTextService.js';
 import { getTextToSpeechService, isTextToSpeechEnabled } from '../services/TextToSpeechService.js';
 import { getConversationOpeningService } from '../services/ConversationOpeningService.js';
+import { getConciergeConversationService, joinConciergeBubbles, unfinishedRequestHint, CONCIERGE_BUBBLE_SEPARATOR } from '../services/ConciergeConversationService.js';
+import { getWeatherContextService } from '../services/WeatherContextService.js';
+import { getUnfinishedWorkflowReminderService } from '../services/UnfinishedWorkflowReminderService.js';
+import { ActiveConversationStateLoader } from '../orchestration/ActiveConversationStateLoader.js';
 import { getOpenWaContactService } from '../services/OpenWaContactService.js';
 import {
   buildHotelCollectionResponse,
@@ -111,10 +117,18 @@ import {
 import type { ExcursionRequestForm, HotelRequestForm, ItineraryRequestForm, LogisticsRequestForm, RestaurantRequestForm } from '../types/forms.js';
 import type { InboundMessage, LLMDecisionOutput } from '../types/core.js';
 import type { OrchestrationResult } from '../orchestration/Orchestrator.js';
+import { modelContext } from '../orchestration/ContextBuilder.js';
+import { MessageRepository } from '../db/repositories/MessageRepository.js';
+import type { ConversationControlInput } from '../orchestration/ConversationControlPlane.js';
+import { PersistenceError } from '../storage/Persistence.js';
+import { ItineraryEditService, resolveItineraryEdit } from '../services/ItineraryEditService.js';
+import { MemoryUpdater } from '../orchestration/MemoryUpdater.js';
+import { renderWhatsAppDecision } from '../orchestration/SemanticUI.js';
 import type { HotelSearchCriteria } from '../services/HotelIntakeService.js';
 import type { HotelBrowseResult } from '../services/GooglePlacesHotelBrowsingService.js';
 import type { RestaurantBrowseResult } from '../services/GooglePlacesRestaurantBrowsingService.js';
 import type { ExcursionBrowseResult } from '../services/GooglePlacesExcursionBrowsingService.js';
+import { socialPlatformIcon, socialPlatformLabel, type SocialProfileLink } from '../utils/socialProfileLinks.js';
 import type { TransportOption } from '../services/TransportProvider.js';
 import { handleTravelFailure, logSafeOperatorFailure } from '../services/SafeFailureService.js';
 import { getHumanHandoffRuntime } from '../services/handoff/HumanHandoffRuntime.js';
@@ -127,9 +141,49 @@ import {
 } from '../services/TravelJourneyStateService.js';
 import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
 import { WorkflowExecutorRegistry } from '../orchestration/WorkflowExecutorRegistry.js';
+import { PostgresTravellerMemoryRepository } from '../storage/travellerMemoryRepository.js';
+import type { MemoryCandidate } from '../orchestration/TravellerMemory.js';
 
 const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
   "Sorry, I couldn't clearly read that voice note. Could you send it again or type your request?";
+
+export function buildMemoryConfirmationPrompt(candidates: MemoryCandidate[]): string {
+  const sensitive = candidates.filter((candidate) => candidate.requiresConfirmation);
+  if (!sensitive.length) return '';
+  const descriptions = sensitive.map((candidate) => {
+    const label = candidate.key === 'allergy' ? 'allergy' : 'accessibility need';
+    return `${label}: ${candidate.value}`;
+  });
+  return `Before I use this personal information in future suggestions, may I remember ${descriptions.join(' and ')} for this trip? Reply “remember it” or “not now”.`;
+}
+
+export function withConversationalLead(reply: string, plan: OrchestrationResult): string {
+  if (plan.decision.action !== 'switch_flow') return reply;
+  const lead = plan.interpretation?.responseText?.trim();
+  if (!lead || lead.length > 500 || /https?:\/\//i.test(lead) || reply.includes(lead)) return reply;
+  return `${lead}\n\n${reply}`;
+}
+
+export async function handleTravellerMemoryConsent(
+  userId: string,
+  text: string,
+  repository = new PostgresTravellerMemoryRepository()
+): Promise<string | null> {
+  const normalized = text.trim().toLocaleLowerCase().replace(/[.!?]+$/g, '');
+  if (!['remember it', 'yes remember it', 'yes, remember it', 'not now', "don't remember it", 'do not remember it'].includes(normalized)) return null;
+  try {
+    const pending = (await repository.findForContext(userId, ['trip:current'])).filter((fact) => fact.status === 'proposed');
+    if (!pending.length) return null;
+    if (normalized === 'not now' || normalized.includes("don't") || normalized.includes('do not')) {
+      await repository.rejectPending(userId);
+      return 'Of course — I won’t retain that personal information. We can continue with your current travel request.';
+    }
+    await repository.confirmPending(userId);
+    return 'Thank you for confirming. I’ll keep that in mind for this trip and use it only when it is relevant.';
+  } catch {
+    return 'I couldn’t safely update that preference just now, so I have not treated it as confirmed. We can continue without it.';
+  }
+}
 const VOICE_OPENAI_CONFIG_ERROR_MESSAGE =
   'Voice notes are temporarily unavailable. Please type your request for now or ask for human help.';
 const VOICE_TWILIO_CONFIG_ERROR_MESSAGE =
@@ -166,6 +220,37 @@ export async function processNormalizedInboundMessage(
   inboundMessage: InboundMessage,
   correlationId: string
 ): Promise<{ inboundMessage: InboundMessage; reply: string }> {
+  try {
+    return await withWorkflowLock(inboundMessage.from, async () => {
+    await getUnfinishedWorkflowReminderService().onInbound(inboundMessage.from).catch(() => undefined);
+    const result = await processNormalizedInboundMessageCore(inboundMessage, correlationId);
+    const messages = new MessageRepository();
+    try {
+      const text = extractMessageText(result.inboundMessage);
+      if (text) {
+        await messages.appendConversationTurn({ traveller: inboundMessage.from, peer: inboundMessage.to,
+          requestId: inboundMessage.messageId || correlationId, role: 'user', text });
+        await messages.appendConversationTurn({ traveller: inboundMessage.from, peer: inboundMessage.to,
+          requestId: inboundMessage.messageId || correlationId, role: 'assistant', text: result.reply.replaceAll(CONCIERGE_BUBBLE_SEPARATOR, '\n\n') });
+      }
+    } catch {
+      result.reply += '\n\nI could not save this conversation for later. Please keep the details until we reconnect.';
+    }
+    await getUnfinishedWorkflowReminderService().scheduleFromReply(
+      inboundMessage.from, result.reply, extractMessageText(result.inboundMessage) ?? ''
+    ).catch(() => undefined);
+    return result;
+    });
+  } catch (error) {
+    if (error instanceof PersistenceError) return { inboundMessage, reply: error.message };
+    throw error;
+  }
+}
+
+async function processNormalizedInboundMessageCore(
+  inboundMessage: InboundMessage,
+  correlationId: string
+): Promise<{ inboundMessage: InboundMessage; reply: string }> {
   const voiceInput = await transcribeVoiceInputIfNeeded(inboundMessage, correlationId);
 
   if (voiceInput.status === 'error') {
@@ -180,49 +265,83 @@ export async function processNormalizedInboundMessage(
   const isTextMessage = !voiceInput.transcript && voiceInput.inboundMessage.content.type === 'text' && Boolean(userText);
   if (isTextMessage) await opening.markTextActivity(voiceInput.inboundMessage.from);
   const nameState = isTextMessage ? await opening.getNameState(voiceInput.inboundMessage.from) : null;
-  if (isTextMessage && nameState) {
-    const nameReply = await opening.handleNameReply(voiceInput.inboundMessage.from, userText, nameState);
-    if (nameReply) return { inboundMessage: voiceInput.inboundMessage, reply: nameReply };
+  const storedProfile = isTextMessage
+    ? await getProfileService().getProfile(voiceInput.inboundMessage.from).catch(() => null)
+    : null;
+  const whatsappName = isTextMessage
+    ? getInboundUserContext(voiceInput.inboundMessage).profileName ??
+      (voiceInput.inboundMessage.metadata?.provider === 'openwa'
+        ? await getOpenWaContactService().getWhatsAppDisplayName(voiceInput.inboundMessage.from)
+        : null)
+    : null;
+  const journeyName = storedProfile?.form.preferredName || nameState?.preferredName || whatsappName || undefined;
+  if (isTextMessage && journeyName) {
+    await opening.rememberExistingName(voiceInput.inboundMessage.from, journeyName);
   }
 
-  const effectiveMessage = nameState?.preferredName
+  let effectiveMessage = journeyName
     ? {
         ...voiceInput.inboundMessage,
-        metadata: { ...voiceInput.inboundMessage.metadata, preferredName: nameState.preferredName },
+        metadata: { ...voiceInput.inboundMessage.metadata, preferredName: journeyName },
       }
     : voiceInput.inboundMessage;
+  let conciergeLead: string | undefined;
+  let personalEventLead: string | undefined;
+  if (userText && env.features.conciergeEnabled && !/^(reset|restart|cancel|status|resume|next|more|book\s*[1-3]|details\s*[1-3])$/i.test(userText.trim())) {
+    const recentConversation = await new MessageRepository().findRecentByTraveller(effectiveMessage.from, 4).catch(() => []);
+    const active = await new ActiveConversationStateLoader().load(effectiveMessage.from).catch(() => null);
+    if (active) {
+      const hint = unfinishedRequestHint(active, userText);
+      if (hint) return { inboundMessage: voiceInput.inboundMessage, reply: hint };
+      personalEventLead = await getConciergeConversationService().proposeLead(userText, journeyName, 'personal_event', recentConversation);
+    } else {
+      const concierge = getConciergeConversationService();
+      const stage = await concierge.stage(effectiveMessage.from);
+      const proposed = stage === null
+        ? await getConversationControlPlane().interpret({ inboundMessage: effectiveMessage, text: userText,
+          correlationId, profileComplete: false }).then((plan) => plan.interpretation).catch(() => undefined)
+        : undefined;
+      const modelLead = await concierge.proposeLead(userText, journeyName, stage === null ? 'opening' : 'personal_event', recentConversation);
+      const proposedFlow = proposed && !proposed.clarificationRequired && proposed.confidence >= env.llm.confidenceThreshold
+        ? ({ hotel_search: 'hotel', restaurant_search: 'restaurant', excursion_search: 'excursion',
+          logistics_request: 'logistics', itinerary_plan: 'itinerary' } as Record<string, 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary'>)[proposed.intent]
+        : undefined;
+      const openingResult = await concierge.open(
+        effectiveMessage.from, effectiveMessage.messageId, userText, journeyName,
+        { flow: proposedFlow, lead: modelLead ?? proposed?.responseText }
+      );
+      if (openingResult.reply) return { inboundMessage: voiceInput.inboundMessage, reply: openingResult.reply };
+      conciergeLead = openingResult.lead;
+      if (!conciergeLead && stage === 'opened') personalEventLead = modelLead;
+      if (openingResult.text !== userText) {
+        effectiveMessage = { ...effectiveMessage, content: { type: 'text', body: openingResult.text } };
+      }
+    }
+  }
   let reply = await processInboundMessage(effectiveMessage, correlationId, {
     voicePreferred: Boolean(voiceInput.transcript),
   });
+  if (env.features.weatherContextEnabled && /\b(outdoor|hike|hiking|safari|beach|surf|surfing|walking tour|boat|kayak|cycling)\b/i.test(userText)) {
+    const location = /\b(here|near me|nearby)\b/i.test(userText)
+      ? await new PostgresTravellerMemoryRepository()
+        .findForContext(effectiveMessage.from, ['trip:current'])
+        .then((facts) => facts.find((fact) => fact.key === 'current_location' && fact.status === 'confirmed')?.value)
+        .catch(() => undefined)
+      : undefined;
+    const weatherAdvice = await getWeatherContextService().outdoorAdvice(userText, location);
+    if (weatherAdvice) reply += `\n\n${weatherAdvice}`;
+  }
+  if (conciergeLead || personalEventLead) reply = joinConciergeBubbles(conciergeLead ?? personalEventLead!, reply);
   await synchronizeTravelJourneyState(voiceInput.inboundMessage.from, userText);
 
   if (voiceInput.transcript) {
-    if (await opening.shouldOpenVoiceConversation(voiceInput.inboundMessage.from) && !/^hi\b/i.test(reply)) {
+    if (await opening.shouldOpenVoiceConversation(voiceInput.inboundMessage.from) && !/^(hi|hello|good\s+(morning|afternoon|evening)|i'm sorry)\b/i.test(reply)) {
       reply = `Hi there! Sure, let me help with that. ${reply}`;
     }
     return {
       inboundMessage: voiceInput.inboundMessage,
       reply: `I heard: "${voiceInput.transcript}"\n\n${reply}`,
     };
-  }
-
-  if (isTextMessage && !nameState) {
-    const displayName = getInboundUserContext(voiceInput.inboundMessage).profileName ??
-      (voiceInput.inboundMessage.metadata?.provider === 'openwa'
-        ? await getOpenWaContactService().getWhatsAppDisplayName(voiceInput.inboundMessage.from)
-        : null);
-    if (displayName) {
-      const profile = await getProfileService().getProfile(voiceInput.inboundMessage.from).catch(() => null);
-      if (profile) {
-        await opening.rememberExistingName(voiceInput.inboundMessage.from, profile.form.preferredName);
-      } else {
-        const name = await opening.askAboutName(voiceInput.inboundMessage.from, displayName);
-        if (name) {
-          const greeting = /^Hi\b/i.test(reply) ? '' : `Hi ${name}! `;
-          reply = `${greeting}${reply}\n\nWould you like me to call you ${name}, or would you prefer another name?`;
-        }
-      }
-    }
   }
 
   return {
@@ -236,7 +355,7 @@ export async function processInboundMessage(
   correlationId: string,
   options: { voicePreferred?: boolean } = {}
 ): Promise<string> {
-  const inboundText = extractMessageText(inboundMessage);
+  let inboundText = extractMessageText(inboundMessage);
 
   if (inboundText) {
     const outOfScopeReply = await getOutOfScopeSupportService().handleMessage(
@@ -251,6 +370,7 @@ export async function processInboundMessage(
   }
 
   const profileGateResult = await getProfileGate().check(inboundMessage.from);
+  const userContext = getInboundUserContext(inboundMessage);
 
   if (!profileGateResult.complete) {
     await savePendingProfileGateRequest(inboundMessage, correlationId);
@@ -259,10 +379,8 @@ export async function processInboundMessage(
       extractMessageText(inboundMessage) ?? undefined
     );
     const token = getFormTokenService().createToken(inboundMessage.from, 'profile');
-    return buildProfileCollectionResponse(buildProfileFormLink(token));
+    return buildProfileCollectionResponse(buildProfileFormLink(token), userContext.profileName);
   }
-
-  const userContext = getInboundUserContext(inboundMessage);
 
   if (!inboundText) {
     console.log(
@@ -270,6 +388,18 @@ export async function processInboundMessage(
     );
     return 'I received your message, but I can only handle text messages in this test build.';
   }
+
+  const reminderPreferenceReply = await getUnfinishedWorkflowReminderService()
+    .handlePreferenceMessage(inboundMessage.from, inboundText).catch(() => null);
+  if (reminderPreferenceReply) return reminderPreferenceReply;
+
+  const memoryConsentReply = await handleTravellerMemoryConsent(inboundMessage.from, inboundText);
+  if (memoryConsentReply) return memoryConsentReply;
+
+  const pendingRestaurantLocationReply = await handlePendingRestaurantLocationConfirmation(
+    inboundMessage.from, inboundText
+  );
+  if (pendingRestaurantLocationReply) return pendingRestaurantLocationReply;
 
   console.log(
     `[${correlationId}] Inbound user context:`,
@@ -280,7 +410,7 @@ export async function processInboundMessage(
     return resetConversation(inboundMessage.from, userContext);
   }
 
-  if (isResumeConversationCue(inboundText) && !isResumeCue(inboundText)) {
+  if (isResumeConversationCue(inboundText) && (!isResumeCue(inboundText) || /^resume$/i.test(inboundText.trim()))) {
     const resumedReply = await resumeConversation(inboundMessage.from);
     if (resumedReply) {
       return resumedReply;
@@ -306,7 +436,23 @@ export async function processInboundMessage(
     profileComplete: true,
     profile: await getProfileService().getProfile(inboundMessage.from),
   };
-  const orchestrationPlan = await getConversationControlPlane().plan(conversationControlInput);
+  let orchestrationPlan = await getConversationControlPlane().plan(conversationControlInput);
+  const hotelIntakeService = getHotelIntakeService();
+  const legacyHotelIntakeActive = !orchestrationPlan.context.activeSession &&
+    typeof hotelIntakeService.hasActiveSession === 'function' &&
+    await hotelIntakeService.hasActiveSession(inboundMessage.from);
+  if (orchestrationPlan.analysis.shouldUseLLM && !legacyHotelIntakeActive) {
+    try {
+      orchestrationPlan = await getConversationControlPlane().interpret(conversationControlInput);
+    } catch (error) {
+      logSafeOperatorFailure(console, 'conversation_control_interpretation_failed', correlationId, error);
+    }
+  }
+  const canonicalCommand = canonicalCommandText(orchestrationPlan);
+  if (canonicalCommand) {
+    inboundText = canonicalCommand;
+    userMessage = canonicalCommand;
+  }
   console.log('conversation_control_decision', {
     correlationId,
     action: orchestrationPlan.decision.action,
@@ -316,8 +462,94 @@ export async function processInboundMessage(
     redacted: true,
   });
 
+  let memoryConfirmationPrompt = '';
+  if (orchestrationPlan.interpretation?.memoryCandidates?.length) {
+    const memoryOutcome = await new MemoryUpdater().persistContextMemories(
+      orchestrationPlan.context,
+      orchestrationPlan.memoryUpdate
+    );
+    console.log('conversation_context_reconciled', {
+      correlationId,
+      outcome: memoryOutcome.status,
+      candidateCount: orchestrationPlan.interpretation.memoryCandidates.length,
+      redacted: true,
+    });
+    if (memoryOutcome.status === 'durable') {
+      memoryConfirmationPrompt = buildMemoryConfirmationPrompt(orchestrationPlan.interpretation.memoryCandidates);
+    }
+  }
+  const withMemoryConfirmation = (reply: string): string => memoryConfirmationPrompt && !reply.includes(memoryConfirmationPrompt)
+    ? `${reply}\n\n${memoryConfirmationPrompt}` : reply;
+
+  if (
+    orchestrationPlan.decision.action === 'pause_flow' ||
+    (!orchestrationPlan.interpretation && isStopConversationCue(inboundText))
+  ) {
+    await pauseActiveOutboundSearches(inboundMessage.from);
+    return withMemoryConfirmation(
+      orchestrationPlan.interpretation?.responseText ||
+      'Of course. I have paused this request and kept your saved details. Say “show results” when you want to continue, or ask me for something else.'
+    );
+  }
+
+  if (
+    orchestrationPlan.interpretation &&
+    orchestrationPlan.memoryUpdate.shouldPersist &&
+    orchestrationPlan.context.activeSession &&
+    !isTransactionalWorkflowState(orchestrationPlan.context.activeSession.state) &&
+    orchestrationPlan.decision.targetFlow === orchestrationPlan.context.activeSession.flow &&
+    (orchestrationPlan.decision.action === 'continue_flow' ||
+      orchestrationPlan.decision.action === 'execute_search') &&
+    Object.keys(orchestrationPlan.decision.entities).length > 0
+  ) {
+    const outcome = await new MemoryUpdater().persistUpdate(
+      orchestrationPlan.context,
+      orchestrationPlan.memoryUpdate
+    );
+    if (outcome.status === 'failed') {
+      return 'I could not safely apply that change. Please try again or use the current request form.';
+    }
+    if (outcome.status === 'degraded' && orchestrationPlan.decision.targetFlow === 'hotel') {
+      return startFreshHotelSearch(inboundMessage.from, userMessage);
+    }
+    console.log('conversation_control_state_reconciled', {
+      correlationId,
+      flow: orchestrationPlan.decision.targetFlow,
+      outcome: outcome.status,
+      redacted: true,
+    });
+  }
+
+  if (
+    orchestrationPlan.decision.action === 'ask_clarifying_question' &&
+    orchestrationPlan.context.activeSession &&
+    orchestrationPlan.interpretation &&
+    (orchestrationPlan.interpretation.question || orchestrationPlan.interpretation.responseText)
+  ) {
+    return withMemoryConfirmation(orchestrationPlan.interpretation?.question || orchestrationPlan.interpretation?.responseText ||
+      'Please confirm what you would like to change. I have kept your current saved details.');
+  }
+  if (orchestrationPlan.decision.action === 'answer_general_question' && orchestrationPlan.interpretation?.responseText) {
+    return withMemoryConfirmation(orchestrationPlan.interpretation.responseText);
+  }
+
   if (isFlightServiceRequestMessage(userMessage)) {
     return buildUnsupportedFlightServiceReply();
+  }
+
+  if (orchestrationPlan.decision.action === 'switch_flow') {
+    const switchedReply = await handleValidatedServiceSwitch(
+      orchestrationPlan,
+      inboundMessage.from,
+      inboundMessage.to,
+      userMessage,
+      inboundText,
+      correlationId,
+      options
+    );
+    if (switchedReply) {
+      return withMemoryConfirmation(withConversationalLead(switchedReply, orchestrationPlan));
+    }
   }
 
   const explicitServiceSwitchReply = await handleExplicitServiceSwitch(
@@ -327,7 +559,7 @@ export async function processInboundMessage(
   );
 
   if (explicitServiceSwitchReply) {
-    return explicitServiceSwitchReply;
+    return withMemoryConfirmation(withConversationalLead(explicitServiceSwitchReply, orchestrationPlan));
   }
 
   if (isBroadExploreRequest(userMessage)) {
@@ -347,7 +579,7 @@ export async function processInboundMessage(
     { requireActiveFlow: true }
   );
   if (orchestratedContinuation.handled && orchestratedContinuation.reply) {
-    return orchestratedContinuation.reply;
+    return withMemoryConfirmation(orchestratedContinuation.reply);
   }
 
   const activeFlow = orchestrationPlan.context.activeSession?.flow;
@@ -390,7 +622,7 @@ export async function processInboundMessage(
       correlationId,
       activeItinerarySession
     );
-    if (activeItineraryReply) return activeItineraryReply;
+    if (activeItineraryReply) return withMemoryConfirmation(activeItineraryReply);
   }
 
   const itineraryFormReply = await handleItineraryFormGate(
@@ -417,7 +649,7 @@ export async function processInboundMessage(
   );
 
   if (restaurantFormReply) {
-    return restaurantFormReply;
+    return withMemoryConfirmation(restaurantFormReply);
   }
 
   const excursionFormReply = await handleExcursionFormGate(
@@ -427,7 +659,7 @@ export async function processInboundMessage(
   );
 
   if (excursionFormReply) {
-    return excursionFormReply;
+    return withMemoryConfirmation(excursionFormReply);
   }
 
   const activeLogisticsSession = await getLogisticsSearchSessionService().get(inboundMessage.from);
@@ -442,28 +674,31 @@ export async function processInboundMessage(
   );
 
   if (activeLogisticsSearchReply) {
-    return activeLogisticsSearchReply;
+    return withMemoryConfirmation(activeLogisticsSearchReply);
   }
 
   const logisticsFormReply = await handleLogisticsFormGate(
     inboundMessage.from,
     userMessage,
-    inboundText
+    inboundText,
+    validateCriteria('logistics', orchestrationPlan.decision.entities, false) as LogisticsSearchCriteria
   );
 
   if (logisticsFormReply) {
-    return logisticsFormReply;
+    return withMemoryConfirmation(logisticsFormReply);
   }
 
-  const activeHotelSession = await getHotelSearchSessionService().get(inboundMessage.from);
+  const storedHotelSession = await getHotelSearchSessionService().get(inboundMessage.from);
+  const activeHotelSession = storedHotelSession?.lifecycleStatus === 'paused' ? null : storedHotelSession;
   const conversationRoute = await routeActiveConversation(
     userMessage,
     activeHotelSession,
-    correlationId
+    correlationId,
+    orchestrationPlan
   );
 
   if (conversationRoute.action === 'start_new_hotel_search') {
-    return startFreshHotelSearch(inboundMessage.from, userMessage);
+    return withMemoryConfirmation(await startFreshHotelSearch(inboundMessage.from, userMessage));
   }
 
   if (conversationRoute.action === 'reset_current_flow') {
@@ -480,17 +715,18 @@ export async function processInboundMessage(
   );
 
   if (activeHotelSearchReply) {
-    return activeHotelSearchReply;
+    return withMemoryConfirmation(activeHotelSearchReply);
   }
 
   const hotelFormReply = await handleHotelFormGate(
     inboundMessage.from,
     userMessage,
-    inboundText
+    inboundText,
+    validateCriteria('hotel', orchestrationPlan.decision.entities, false) as HotelSearchCriteria
   );
 
   if (hotelFormReply) {
-    return hotelFormReply;
+    return withMemoryConfirmation(hotelFormReply);
   }
 
   if (isResumeCue(inboundText)) {
@@ -498,6 +734,7 @@ export async function processInboundMessage(
   }
 
   if (isGreeting(userMessage)) {
+    if (orchestrationPlan.interpretation?.responseText) return orchestrationPlan.interpretation.responseText;
     return buildWelcomeMessage(userContext);
   }
 
@@ -508,23 +745,47 @@ export async function processInboundMessage(
       profileName: userContext.profileName,
       country: userContext.country,
       countryCode: userContext.countryCode,
+      modelContext: modelContext(orchestrationPlan.context),
     }
   );
 
   if (hotelIntakeResult.handled) {
-    return startFreshHotelSearch(inboundMessage.from, userMessage);
+    return withMemoryConfirmation(await startFreshHotelSearch(inboundMessage.from, userMessage));
   }
 
   try {
-    const interpretedPlan = orchestrationPlan.analysis.shouldUseLLM
-      ? await getConversationControlPlane().interpret(conversationControlInput)
-      : orchestrationPlan;
+    const interpretedPlan = orchestrationPlan;
     const decision = mapOrchestrationPlanToLegacyDecision(interpretedPlan);
+    const renderedUI = interpretedPlan.ui ? renderWhatsAppDecision(interpretedPlan.ui) : undefined;
 
     console.log(
       `[${correlationId}] Validated orchestration decision:`,
       JSON.stringify(decision, null, 2)
     );
+
+    if (interpretedPlan.decision.action === 'ask_clarifying_question' && interpretedPlan.context.activeSession) {
+      return renderedUI?.text || interpretedPlan.interpretation?.question || interpretedPlan.interpretation?.responseText ||
+        'Please confirm what you would like to change. I have kept your current saved details.';
+    }
+    if (interpretedPlan.decision.action === 'ask_clarifying_question' && interpretedPlan.interpretation?.question) {
+      return renderedUI?.text || interpretedPlan.interpretation.question;
+    }
+    if (interpretedPlan.decision.action === 'answer_general_question' && interpretedPlan.interpretation?.responseText) {
+      return renderedUI?.text || interpretedPlan.interpretation.responseText;
+    }
+    if (interpretedPlan.decision.action === 'handoff') {
+      const hotel = await getHotelSearchSessionService().get(inboundMessage.from);
+      if (hotel?.selectedHotel) {
+        await getHotelSearchSessionService().markHandoffConsentPending(inboundMessage.from);
+        return 'Would you like me to share the minimum stay-request details with a human travel concierge? Reply "yes, connect me" to consent, or "no" to keep the request here.';
+      }
+      return 'A human concierge may be able to help. Please choose a stay first if you would like help with a hotel request. No details have been forwarded.';
+    }
+
+    if (interpretedPlan.decision.targetFlow === 'profile') {
+      const token = getFormTokenService().createToken(inboundMessage.from, 'profile');
+      return buildProfileCollectionResponse(buildProfileFormLink(token), userContext.profileName);
+    }
 
     if (/hotel|accommodation|stay|room/i.test(decision.intent)) {
       return startFreshHotelSearch(inboundMessage.from, userMessage);
@@ -580,17 +841,8 @@ export async function processInboundMessage(
         return buildWelcomeMessage(userContext);
       }
 
-      return (await getConversationManager().createMessage({
-        userInput: userMessage,
-        profile: userContext,
-        interpretation: {
-          intent: decision.intent,
-          entities: decision.parameters,
-          confidence: decision.confidence,
-        },
-        decision,
-        missingFields: decision.missingFields,
-      })).text;
+      return interpretedPlan.interpretation?.responseText ||
+        `Could you share a little more about ${decision.missingFields.join(', ')}?`;
     }
 
     if (decision.suggestedAction === 'execute_tool') {
@@ -685,17 +937,7 @@ export async function processInboundMessage(
       }
 
       if (isGeneralInquiryIntent(decision.intent) || isLowConfidenceDecision(decision)) {
-        return (await getConversationManager().createMessage({
-          userInput: userMessage,
-          profile: userContext,
-          interpretation: {
-            intent: decision.intent,
-            entities: decision.parameters,
-            confidence: decision.confidence,
-          },
-          decision,
-          missingFields: decision.missingFields,
-        })).text;
+        return interpretedPlan.interpretation?.responseText || buildIntentClarificationReply();
       }
 
       return 'I can help with travel planning, but I need a little more detail before I can guide this properly.';
@@ -710,17 +952,7 @@ export async function processInboundMessage(
       isLowConfidenceDecision(decision) ||
       isTripPlanningPrompt(userMessage)
     ) {
-      return (await getConversationManager().createMessage({
-        userInput: userMessage,
-        profile: userContext,
-        interpretation: {
-          intent: decision.intent,
-          entities: decision.parameters,
-          confidence: decision.confidence,
-        },
-        decision,
-        missingFields: decision.missingFields,
-      })).text;
+      return interpretedPlan.interpretation?.responseText || buildIntentClarificationReply();
     }
 
     return 'I can help with that. Could you tell me a little more about what you need for this trip?';
@@ -734,8 +966,95 @@ export async function processInboundMessage(
   }
 }
 
+async function handleValidatedServiceSwitch(
+  plan: OrchestrationResult,
+  userId: string,
+  outboundFrom: string,
+  userMessage: string,
+  inboundText: string,
+  correlationId: string,
+  options: { voicePreferred?: boolean }
+): Promise<string | null> {
+  const fields = plan.decision.sessionPatch?.collectedFields ?? plan.decision.entities;
+  if (plan.decision.targetFlow === 'excursion') {
+    const destination = getStringParam(fields, ['destination', 'location']);
+    if (!destination) {
+      const previous = getStringParam(plan.context.activeSession?.collectedFields ?? {}, ['destination', 'location']);
+      return previous
+        ? `Would you like me to use ${previous} for the activity search, or are you interested in a different town or area?`
+        : 'Which town or area should I use for the activity search?';
+    }
+    await clearCompetingSearchSessions(userId, 'excursion');
+    return startExcursionDiscovery(userId, outboundFrom, userMessage, destination, fields,
+      `excursion-switch-${correlationId}`, options);
+  }
+  if (plan.decision.targetFlow === 'restaurant') {
+    const location = getStringParam(fields, ['location', 'destination']);
+    if (!location) {
+      const previous = getStringParam(plan.context.activeSession?.collectedFields ?? {}, ['location', 'destination']);
+      await clearCompetingSearchSessions(userId, 'restaurant');
+      if (previous) {
+        await getRestaurantSearchSessionService().saveLocationConfirmation(userId, previous, userMessage);
+        return `Would you like me to use ${previous} for the restaurant search, or should I look somewhere else?`;
+      }
+      await getRestaurantSearchSessionService().saveAwaitingPreferences(userId, {}, { originalMessage: userMessage });
+      return 'Which town or area should I use for the restaurant search?';
+    }
+    await clearCompetingSearchSessions(userId, 'restaurant');
+    return presentRestaurantPreferenceIntake(userId, location, userMessage);
+  }
+  if (plan.decision.targetFlow === 'hotel') {
+    return startFreshHotelSearch(userId, userMessage);
+  }
+  if (plan.decision.targetFlow === 'logistics') {
+    return handleLogisticsFormGate(userId, userMessage, inboundText);
+  }
+  if (plan.decision.targetFlow === 'itinerary') {
+    return handleItineraryFormGate(userId, userMessage, inboundText);
+  }
+  return null;
+}
+
+async function handlePendingRestaurantLocationConfirmation(userId: string, text: string): Promise<string | null> {
+  const session = await getRestaurantSearchSessionService().get(userId);
+  const proposed = session?.lifecycleStatus === 'paused' ? undefined : session?.pendingLocationConfirmation;
+  if (!proposed || session?.state !== 'confirming_location') return null;
+  const reply = text.trim().replace(/[.!?]+$/, '');
+  if (/\bsource it\b/i.test(reply)) return null;
+  if (/^(?:no|no thanks|somewhere else|another place)$/i.test(reply)) {
+    await getRestaurantSearchSessionService().saveAwaitingPreferences(userId, {}, {
+      originalMessage: session.originalMessage,
+    });
+    return 'Of course. Which town or area would you prefer for dining?';
+  }
+  const yes = reply.match(/^(?:yes|yeah|yep|sure|ok|okay)(?:[,\s]+(?:use\s+)?(.+))?$/i);
+  const alternate = yes?.[1]?.trim();
+  const candidate = (yes ? alternate ?? '' : reply)
+    .replace(/^(?:no,?\s+|use\s+|try\s+|search\s+in\s+|look\s+in\s+|(?:i(?:'d| would) prefer)\s+)/i, '')
+    .replace(/\s+instead$/i, '').trim();
+  const explicit = candidate.split(/\s+/).length <= 3
+    ? getPendingDiscoveryLocation(candidate)
+    : getDiscoveryLocation({}, candidate);
+  if (!yes && !explicit) return null;
+  const location = explicit && !/^(?:there|here|same place|same location)$/i.test(explicit) ? explicit : proposed;
+  return presentRestaurantPreferenceIntake(userId, location, session.originalMessage ?? text);
+}
+
+function canonicalCommandText(plan: OrchestrationResult): string | undefined {
+  if (plan.analysis.role !== 'command') return undefined;
+  const selection = plan.analysis.entities.selection;
+  if (typeof selection !== 'number' || selection < 1 || selection > 3) return undefined;
+  if (plan.analysis.command === 'book') return `book ${selection}`;
+  if (plan.analysis.command === 'details') return `details ${selection}`;
+  return undefined;
+}
+
+function isTransactionalWorkflowState(state?: string): boolean {
+  return Boolean(state && /(?:booking|reservation|payment|provider|handoff|confirmed|cancel)/i.test(state));
+}
+
 function buildIntentClarificationReply(): string {
-  return 'I’d be happy to help with your trip. Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations? Tell me what sounds useful and I’ll guide you from there.';
+  return 'I’d be happy to help with your travel plans. Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations? Tell me what sounds useful and I’ll guide you from there.';
 }
 
 type VoiceInputResult =
@@ -836,7 +1155,8 @@ function buildVoiceTranscriptionErrorMessage(error: SpeechToTextServiceError): s
 async function handleHotelFormGate(
   userId: string,
   userMessage: string,
-  inboundText: string
+  inboundText: string,
+  initialCriteria: HotelSearchCriteria = {}
 ): Promise<string | null> {
   if (isResumeCue(inboundText)) {
     const restoredHotelRequest = await restoreLatestHotelRequest(userId);
@@ -860,11 +1180,11 @@ async function handleHotelFormGate(
     const profile = await getProfileService().getProfile(userId);
     const token = getFormTokenService().createToken(userId, 'hotel');
     const hotelFormResponse = buildHotelCollectionResponse(buildHotelFormLink(token));
-    await getHotelSearchSessionService().saveHotelFormSent(
-      userId,
-      userMessage,
-      profile?.form
-    );
+    if (Object.keys(initialCriteria).length) {
+      await getHotelSearchSessionService().saveHotelFormSent(userId, userMessage, profile?.form, initialCriteria);
+    } else {
+      await getHotelSearchSessionService().saveHotelFormSent(userId, userMessage, profile?.form);
+    }
 
     if (isResumeCue(inboundText) && userMessage !== inboundText) {
       return `${await buildPostProfileGreeting(userId)}\n\n${hotelFormResponse}`;
@@ -935,17 +1255,13 @@ async function handleActiveItinerarySession(
     }
 
     if (isItineraryEditCue(inboundText)) {
-      const criteria = {
-        ...session.criteria,
-        additionalPreferences: [session.criteria.additionalPreferences, userMessage]
-          .filter(Boolean)
-          .join('; '),
-      };
-      const itinerary = await getItineraryPlannerService().plan(criteria);
-      await sessionService.saveEditing(userId, criteria, itinerary);
+      const command = resolveItineraryEdit(userMessage, session);
+      if (!command) return 'Which day and part of the plan would you like to change? For example: change day 2 afternoon to a museum visit.';
+      const updated = await new ItineraryEditService(sessionService).apply(userId, command);
+      const itinerary = updated.itinerary!;
       return buildItineraryReply(
         itinerary,
-        await createItineraryWorkspaceLink(userId, itinerary, criteria, 'Edited from WhatsApp')
+        await createItineraryWorkspaceLink(userId, itinerary, updated.criteria, 'Edited from WhatsApp')
       );
     }
 
@@ -1089,9 +1405,14 @@ async function handleExplicitServiceSwitch(
       return handleRestaurantFormGate(userId, userMessage, inboundText);
     }
     await clearCompetingSearchSessions(userId, 'restaurant');
-    if (activeHotelSession) {
+    if (activeHotelSession || (activeItinerarySession && /\b(restaurants?|dining|place to eat)\b/i.test(userMessage))) {
       const location = getDiscoveryLocation({}, userMessage);
       if (!location) {
+        const previous = getStringParam({ ...(activeHotelSession?.criteria ?? activeItinerarySession?.criteria ?? {}) }, ['location', 'destination']);
+        if (previous) {
+          await getRestaurantSearchSessionService().saveLocationConfirmation(userId, previous, userMessage);
+          return `Would you like me to use ${previous} for the restaurant search, or should I look somewhere else?`;
+        }
         await getRestaurantSearchSessionService().saveAwaitingPreferences(
           userId,
           {},
@@ -1124,7 +1445,7 @@ async function handleExplicitServiceSwitch(
       return handleExcursionFormGate(userId, userMessage, inboundText);
     }
     await clearCompetingSearchSessions(userId, 'excursion');
-    if (activeHotelSession) {
+    if (activeHotelSession || (activeItinerarySession && /\b(excursions?|activities|things to do|attractions?|tours?)\b/i.test(userMessage))) {
       const destination = getDiscoveryLocation({}, userMessage);
       if (!destination) {
         await getExcursionSearchSessionService().saveAwaitingPreferences(
@@ -1217,6 +1538,10 @@ async function handleActiveRestaurantSearchSession(
       : 'I have your restaurant selection saved. The table availability and reservation check is the next step.';
   }
 
+  if (session.pendingLocationConfirmation) {
+    return `Would you like me to use ${session.pendingLocationConfirmation} for dining, or should I search another area?`;
+  }
+
   if (
     session.stage === 'awaiting_preferences' &&
     !session.criteria.location
@@ -1304,11 +1629,11 @@ async function handleActiveRestaurantSearchSession(
   }
 
   if (!hasCompleteRestaurantCriteria(session.criteria)) {
-    if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+    if (!session.criteria.location && (isResumeCue(inboundText) || isResumeConversationCue(inboundText))) {
       return restoreLatestRestaurantRequest(userId);
     }
-
-    return null;
+    const token = getFormTokenService().createToken(userId, 'restaurant');
+    return `I have ${session.criteria.location ?? 'your dining area'} saved. Please complete the dining details here so I can search: ${buildRestaurantFormLink(token)}`;
   }
 
   if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
@@ -1752,6 +2077,12 @@ async function handleActiveHotelSearchSession(
       );
     }
 
+    if (!(isResumeCue(inboundText) || isResumeConversationCue(inboundText))) {
+      // Saved results are rendered only for explicit result commands. Small
+      // talk, deferrals and topic changes must not replay the first page.
+      return null;
+    }
+
     const firstPage = session.results.slice(0, 3);
     if (firstPage.length > 0) {
       const nextOffset = Math.min(3, session.results.length);
@@ -1825,7 +2156,8 @@ type ConversationRoute =
 async function routeActiveConversation(
   userMessage: string,
   activeHotelSession: HotelSearchSession | null,
-  correlationId: string
+  correlationId: string,
+  plan: OrchestrationResult
 ): Promise<ConversationRoute> {
   if (!activeHotelSession) {
     return { action: 'continue_current_flow' };
@@ -1847,58 +2179,21 @@ async function routeActiveConversation(
     return { action: 'start_new_hotel_search' };
   }
 
-  const llmRoute = await routeActiveConversationWithLlm(
-    userMessage,
-    activeHotelSession,
-    correlationId
-  );
-
-  return llmRoute ?? { action: 'continue_current_flow' };
-}
-
-async function routeActiveConversationWithLlm(
-  userMessage: string,
-  activeHotelSession: HotelSearchSession,
-  correlationId: string
-): Promise<ConversationRoute | null> {
-  if (!shouldAskLlmToRouteActiveMessage(userMessage, activeHotelSession)) {
-    return null;
+  const decision = mapOrchestrationPlanToLegacyDecision(plan);
+  console.log(`[${correlationId}] Reusing primary conversation decision for hotel routing:`,
+    JSON.stringify(decision, null, 2));
+  if (decision.confidence >= 0.7 && isHotelRelatedIntent(decision.intent) &&
+      (decision.suggestedAction === 'ask_missing' || decision.suggestedAction === 'execute_tool')) {
+    return { action: 'start_new_hotel_search' };
   }
-
-  try {
-    const decision = await getLLMService().decide({
-      userMessage,
-      sessionState: {
-        currentIntent: 'hotel_search',
-        activeSchema: 'search_hotels',
-        collectedFields: { ...activeHotelSession.criteria },
-      },
-      availableSchemas: ['search_hotels'],
-    });
-
-    console.log(
-      `[${correlationId}] Conversation route decision received:`,
-      JSON.stringify(decision, null, 2)
-    );
-
-    if (
-      decision.confidence >= 0.7 &&
-      isHotelRelatedIntent(decision.intent) &&
-      (decision.suggestedAction === 'ask_missing' || decision.suggestedAction === 'execute_tool')
-    ) {
-      return { action: 'start_new_hotel_search' };
-    }
-  } catch (error) {
-    logSafeOperatorFailure(console, 'conversation_route_fallback_used', correlationId, error);
-  }
-
-  return null;
+  return { action: 'continue_current_flow' };
 }
 
 async function handleLogisticsFormGate(
   userId: string,
   userMessage: string,
-  inboundText: string
+  inboundText: string,
+  initialCriteria: LogisticsSearchCriteria = {}
 ): Promise<string | null> {
   if (isResumeCue(inboundText)) {
     const restoredLogisticsRequest = await restoreLatestLogisticsRequest(userId);
@@ -1912,11 +2207,11 @@ async function handleLogisticsFormGate(
     const token = getFormTokenService().createToken(userId, 'logistics');
     const logisticsFormResponse = buildLogisticsCollectionResponse(buildLogisticsFormLink(token));
     const profile = await getProfileService().getProfile(userId);
-    await getLogisticsSearchSessionService().saveTransportFormSent(
-      userId,
-      userMessage,
-      profile?.form
-    );
+    if (Object.keys(initialCriteria).length) {
+      await getLogisticsSearchSessionService().saveTransportFormSent(userId, userMessage, profile?.form, initialCriteria);
+    } else {
+      await getLogisticsSearchSessionService().saveTransportFormSent(userId, userMessage, profile?.form);
+    }
 
     return logisticsFormResponse;
   }
@@ -2053,21 +2348,6 @@ async function handleActiveLogisticsSearchSession(
   return logisticsSearchResult.reply;
 }
 
-function shouldAskLlmToRouteActiveMessage(
-  message: string,
-  activeHotelSession: HotelSearchSession
-): boolean {
-  if (activeHotelSession.stage === 'awaiting_preferences') {
-    return hasDirectionChangeCue(message);
-  }
-
-  return (
-    activeHotelSession.stage === 'results' ||
-    activeHotelSession.stage === 'searching' ||
-    activeHotelSession.stage === 'booking_provider_pending'
-  );
-}
-
 function shouldTreatHotelRequestAsNewSearch(
   message: string,
   activeHotelSession: HotelSearchSession
@@ -2131,24 +2411,16 @@ async function clearCompetingSearchSessions(
   userId: string,
   activeType: 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary'
 ): Promise<void> {
-  if (activeType !== 'hotel') {
-    await getHotelIntakeService().clear(userId);
-  }
-  if (activeType !== 'hotel') {
-    await getHotelSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'restaurant') {
-    await getRestaurantSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'excursion') {
-    await getExcursionSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'logistics') {
-    await getLogisticsSearchSessionService().clear(userId);
-  }
-  if (activeType !== 'itinerary') {
-    await getItinerarySessionService().clear(userId);
-  }
+  // Explicit lifecycle state, rather than timestamp ordering, determines the
+  // active workflow. Preserve competing journeys and their validated fields.
+  await Promise.all([
+    activeType !== 'hotel' ? getHotelSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'restaurant' ? getRestaurantSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'excursion' ? getExcursionSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'logistics' ? getLogisticsSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'itinerary' ? getItinerarySessionService().pause(userId) : Promise.resolve(),
+  ]);
+  if (activeType !== 'hotel') await getHotelIntakeService().clear(userId);
 }
 
 async function resetConversation(
@@ -2156,16 +2428,35 @@ async function resetConversation(
   userContext: InboundUserContext
 ): Promise<string> {
   await getHotelIntakeService().clear(userId);
-  await getHotelSearchSessionService().clear(userId);
-  await getRestaurantSearchSessionService().clear(userId);
-  await getExcursionSearchSessionService().clear(userId);
-  await getLogisticsSearchSessionService().clear(userId);
-  await getItinerarySessionService().clear(userId);
-  await getItineraryWorkspaceService().clearUserWorkspace(userId);
+  // Reset only the active conversation. Keep durable journey snapshots,
+  // selected options, and any provider/booking receipts available for resume.
+  await pauseActiveOutboundSearches(userId);
   await getPendingRequestService().clearProfileGateRequest(userId);
+  await getTravelJourneyStateService().clear(userId);
 
   const greeting = await buildPostProfileGreeting(userId, userContext);
-  return `${greeting}\n\nI have cleared the active request. Tell me what you would like to do next, or say "resume" if you want me to check for a saved request.`;
+  return `${greeting}\n\nI have reset the active conversation and paused your saved requests. Tell me what you would like to do next, or say "where were we" to resume one.`;
+}
+
+async function pauseActiveOutboundSearches(userId: string): Promise<void> {
+  const hotelService = getHotelSearchSessionService();
+  const restaurantService = getRestaurantSearchSessionService();
+  const excursionService = getExcursionSearchSessionService();
+  const logisticsService = getLogisticsSearchSessionService();
+  const [hotel, restaurant, excursion, logistics] = await Promise.all([
+    hotelService.get(userId),
+    restaurantService.get(userId),
+    excursionService.get(userId),
+    logisticsService.get(userId),
+  ]);
+
+  if (hotel) await hotelService.pauseOutbound(userId);
+  await Promise.all([
+    restaurant ? restaurantService.pause(userId) : Promise.resolve(),
+    excursion ? excursionService.pause(userId) : Promise.resolve(),
+    logistics ? logisticsService.pause(userId) : Promise.resolve(),
+    getItinerarySessionService().pause(userId),
+  ]);
 }
 
 async function synchronizeTravelJourneyState(userId: string, userText: string): Promise<void> {
@@ -2183,19 +2474,19 @@ async function synchronizeTravelJourneyState(userId: string, userText: string): 
       updatedAt: string;
       stage: string;
     }> = [];
-    if (hotel && hotel.state !== 'reset') {
+    if (hotel && hotel.state !== 'reset' && hotel.lifecycleStatus !== 'paused') {
       activeSessions.push({ service: 'hotel', updatedAt: hotel.updatedAt, stage: hotel.stage });
     }
-    if (restaurant && restaurant.state !== 'reset') {
+    if (restaurant && restaurant.state !== 'reset' && restaurant.lifecycleStatus !== 'paused') {
       activeSessions.push({ service: 'restaurant', updatedAt: restaurant.updatedAt, stage: restaurant.stage });
     }
-    if (excursion && excursion.state !== 'reset') {
+    if (excursion && excursion.state !== 'reset' && excursion.lifecycleStatus !== 'paused') {
       activeSessions.push({ service: 'excursion', updatedAt: excursion.updatedAt, stage: excursion.stage });
     }
-    if (logistics && logistics.state !== 'reset') {
+    if (logistics && logistics.state !== 'reset' && logistics.lifecycleStatus !== 'paused') {
       activeSessions.push({ service: 'transport', updatedAt: logistics.updatedAt, stage: logistics.stage });
     }
-    if (itinerary && itinerary.state !== 'completed') {
+    if (itinerary && itinerary.state !== 'completed' && itinerary.lifecycleStatus !== 'paused') {
       activeSessions.push({ service: 'itinerary', updatedAt: itinerary.updatedAt, stage: itinerary.state });
     }
 
@@ -2215,7 +2506,7 @@ async function synchronizeTravelJourneyState(userId: string, userText: string): 
           bookingStageActive: isBookingStage,
         });
 
-    await getTravelJourneyStateService().set(userId, mode, activeService);
+    await getTravelJourneyStateService().set(userId, mode, mode === 'chat' ? undefined : activeService);
   } catch {
     // Journey-state bookkeeping is auxiliary; never block a customer reply on it.
     console.warn('[TravelJourneyState] Could not update conversation mode');
@@ -2242,7 +2533,7 @@ function isBroadExploreRequest(message: string): boolean {
 }
 
 function isExplorationRequest(message: string): boolean {
-  return /\b(?:what can i do|what should i do|things to do|things can i do|what can i see|what should i see|activities|excursions|ideas|recommendations|suggestions|explore)\b/i.test(message);
+  return /\b(?:what can (?:i|we) do|what should (?:i|we) do|things to do|things can (?:i|we) do|what can (?:i|we) see|what should (?:i|we) see|what(?:'s| is) (?:on|happening)|anything to do|anything happening|activities|excursions|experiences|local sights|sightseeing|ideas|recommendations|suggestions|explore)\b/i.test(message);
 }
 
 function inferJourneyService(message: string): JourneyService | undefined {
@@ -2255,6 +2546,52 @@ function inferJourneyService(message: string): JourneyService | undefined {
 }
 
 async function resumeConversation(userId: string): Promise<string | null> {
+  type ResumeCandidate = {
+    flow: string;
+    session: { lifecycleStatus?: 'active' | 'paused'; updatedAt: string; state: string; stage: string; location?: string };
+    resume: () => Promise<void>;
+  };
+  const asCandidate = <T extends { lifecycleStatus?: 'active' | 'paused'; updatedAt: string; state: string; criteria: object; stage?: string }>(
+    flow: string,
+    session: T,
+    resume: () => Promise<void>
+  ): ResumeCandidate => {
+    const location = (session.criteria as Record<string, unknown>).location;
+    return { flow, session: { lifecycleStatus: session.lifecycleStatus, updatedAt: session.updatedAt,
+      state: session.state, stage: session.stage ?? session.state,
+      location: typeof location === 'string' ? location : undefined }, resume };
+  };
+  const [hotel, restaurant, excursion, logistics, itinerary] = await Promise.all([
+    getHotelSearchSessionService().getAuthoritative(userId),
+    getRestaurantSearchSessionService().getAuthoritative(userId),
+    getExcursionSearchSessionService().getAuthoritative(userId),
+    getLogisticsSearchSessionService().getAuthoritative(userId),
+    getItinerarySessionService().getAuthoritative(userId),
+  ]);
+  const candidates: ResumeCandidate[] = [
+    hotel && hotel.state !== 'reset' ? asCandidate('hotel', hotel, () => getHotelSearchSessionService().resume(userId)) : null,
+    restaurant && restaurant.state !== 'reset' ? asCandidate('restaurant', restaurant, () => getRestaurantSearchSessionService().resume(userId)) : null,
+    excursion && excursion.state !== 'reset' ? asCandidate('excursion', excursion, () => getExcursionSearchSessionService().resume(userId)) : null,
+    logistics && logistics.state !== 'reset' ? asCandidate('transport', logistics, () => getLogisticsSearchSessionService().resume(userId)) : null,
+    itinerary && itinerary.state !== 'completed' ? asCandidate('itinerary', itinerary, () => getItinerarySessionService().resume(userId)) : null,
+  ].filter((candidate): candidate is ResumeCandidate => candidate !== null);
+  let selected = candidates.find((candidate) => candidate.session.lifecycleStatus !== 'paused');
+  if (!selected) {
+    selected = candidates
+      .filter((candidate) => candidate.session.lifecycleStatus === 'paused')
+      .sort((left, right) => Date.parse(right.session.updatedAt) - Date.parse(left.session.updatedAt))[0];
+    if (selected) await selected.resume();
+  }
+
+  if (selected && selected.flow !== 'hotel') {
+    const location = selected.session.location ? ` for ${selected.session.location}` : '';
+    const stage = selected.session.stage ?? selected.session.state;
+    const next = stage === 'searching' ? 'I am still checking the options and will send them here.'
+      : stage === 'results' || stage === 'showing_results' ? 'Say “show results” to see the saved options.'
+        : 'Your saved details are ready to continue.';
+    return `I’ve resumed your ${selected.flow} request${location}. ${next}`;
+  }
+
   const hotelSession = await getHotelSearchSessionService().get(userId);
 
   if (!hotelSession) {
@@ -2381,13 +2718,15 @@ async function searchHotelsAndNotify(
 ): Promise<void> {
   try {
     const hotelSearchResult = await searchHotels(userId, criteria, correlationId);
+    await saveHotelSearchResults(userId, criteria, hotelSearchResult, 0);
+    const shouldContinue = () => isCurrentHotelDelivery(userId, hotelSearchResult);
 
     if (hotelSearchResult.browseResponse?.results.length) {
       const firstPage = hotelSearchResult.browseResponse.results.slice(0, 3);
       const delivered = await getWhatsAppOutboundService().sendWhatsAppMessages(
         userId,
         buildHotelResultCardReply(criteria, firstPage, hotelSearchResult.reply),
-        { voice: options.voicePreferred, from: outboundFrom }
+        { voice: options.voicePreferred, from: outboundFrom, shouldContinue }
       );
       await saveHotelSearchResults(
         userId,
@@ -2401,9 +2740,10 @@ async function searchHotelsAndNotify(
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       hotelSearchResult.reply,
-      { voice: options.voicePreferred, from: outboundFrom }
+      { voice: options.voicePreferred, from: outboundFrom, shouldContinue }
     );
   } catch (error) {
+    if (error instanceof PersistenceError) return;
     const safeFailure = handleTravelFailure('hotel', correlationId, error);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
@@ -2413,16 +2753,19 @@ async function searchHotelsAndNotify(
   }
 }
 
-function searchHotels(
+async function searchHotels(
   userId: string,
   criteria: HotelSearchCriteria,
   correlationId: string
 ): Promise<HotelSearchFlowResult> {
-  return getHotelSearchFlowService().handleBrowseSearch(criteria, {
+  const snapshot = await getHotelSearchSessionService().get(userId);
+  const result = await getHotelSearchFlowService().handleBrowseSearch(criteria, {
     correlationId,
     sessionId: userId,
     userLanguage: 'en',
   });
+  if (snapshot?.id) searchSnapshots.set(result, { id: snapshot.id, revision: snapshot.revision ?? 0 });
+  return result;
 }
 
 async function planItinerary(
@@ -2442,6 +2785,7 @@ async function searchRestaurantsAndNotify(
 ): Promise<void> {
   try {
     const restaurantSearchResult = await searchRestaurants(userId, criteria, correlationId);
+    await saveRestaurantSearchResults(userId, criteria, restaurantSearchResult, 0);
 
     if (restaurantSearchResult.browseResponse?.results.length) {
       const firstPage = restaurantSearchResult.browseResponse.results.slice(0, 3);
@@ -2465,6 +2809,7 @@ async function searchRestaurantsAndNotify(
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
+    if (error instanceof PersistenceError) return;
     const safeFailure = handleTravelFailure('restaurant', correlationId, error);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
@@ -2474,16 +2819,19 @@ async function searchRestaurantsAndNotify(
   }
 }
 
-function searchRestaurants(
+async function searchRestaurants(
   userId: string,
   criteria: RestaurantSearchCriteria,
   correlationId: string
 ): Promise<RestaurantSearchFlowResult> {
-  return getRestaurantSearchFlowService().handleBrowseSearch(criteria, {
+  const snapshot = await getRestaurantSearchSessionService().get(userId);
+  const result = await getRestaurantSearchFlowService().handleBrowseSearch(criteria, {
     correlationId,
     sessionId: userId,
     userLanguage: 'en',
   });
+  if (snapshot?.id) searchSnapshots.set(result, { id: snapshot.id, revision: snapshot.revision ?? 0 });
+  return result;
 }
 
 async function startRestaurantDiscovery(
@@ -2578,6 +2926,7 @@ async function searchExcursionsAndNotify(
 ): Promise<void> {
   try {
     const excursionSearchResult = await searchExcursions(userId, criteria, correlationId);
+    await saveExcursionSearchResults(userId, criteria, excursionSearchResult, 0);
 
     if (excursionSearchResult.browseResponse?.results.length) {
       const firstPage = excursionSearchResult.browseResponse.results.slice(0, 3);
@@ -2621,8 +2970,10 @@ async function searchExcursionsAndNotify(
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
+    if (error instanceof PersistenceError) return;
     const safeFailure = handleTravelFailure('excursion', correlationId, error);
-    await getExcursionSearchSessionService().saveResults(userId, criteria, [], 0);
+    const active = await getExcursionSearchSessionService().get(userId);
+    if (active?.stage === 'searching' && JSON.stringify(active.criteria) === JSON.stringify(criteria)) await getExcursionSearchSessionService().saveResults(userId, criteria, [], 0, { id: active.id, revision: active.revision ?? 0 });
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
       safeFailure.reply,
@@ -2631,16 +2982,19 @@ async function searchExcursionsAndNotify(
   }
 }
 
-function searchExcursions(
+async function searchExcursions(
   userId: string,
   criteria: ExcursionSearchCriteria,
   correlationId: string
 ): Promise<ExcursionSearchFlowResult> {
-  return getExcursionSearchFlowService().handleBrowseSearch(criteria, {
+  const snapshot = await getExcursionSearchSessionService().get(userId);
+  const result = await getExcursionSearchFlowService().handleBrowseSearch(criteria, {
     correlationId,
     sessionId: userId,
     userLanguage: 'en',
   });
+  if (snapshot?.id) searchSnapshots.set(result, { id: snapshot.id, revision: snapshot.revision ?? 0 });
+  return result;
 }
 
 async function startExcursionDiscovery(
@@ -2689,6 +3043,7 @@ async function searchLogisticsAndNotify(
 ): Promise<void> {
   try {
     const logisticsSearchResult = await searchLogistics(userId, criteria, correlationId);
+    await saveLogisticsSearchResults(userId, criteria, logisticsSearchResult, 0);
 
     if (logisticsSearchResult.options?.length) {
       const firstPage = logisticsSearchResult.options.slice(0, 3);
@@ -2712,6 +3067,7 @@ async function searchLogisticsAndNotify(
       { voice: options.voicePreferred, from: outboundFrom }
     );
   } catch (error) {
+    if (error instanceof PersistenceError) return;
     const safeFailure = handleTravelFailure('transport', correlationId, error);
     await getWhatsAppOutboundService().sendWhatsAppReply(
       userId,
@@ -2721,16 +3077,19 @@ async function searchLogisticsAndNotify(
   }
 }
 
-function searchLogistics(
+async function searchLogistics(
   userId: string,
   criteria: LogisticsSearchCriteria,
   correlationId: string
 ): Promise<LogisticsSearchFlowResult> {
-  return getLogisticsSearchFlowService().handleProviderSearch(criteria, {
+  const snapshot = await getLogisticsSearchSessionService().get(userId);
+  const result = await getLogisticsSearchFlowService().handleProviderSearch(criteria, {
     correlationId,
     sessionId: userId,
     userLanguage: 'en',
   });
+  if (snapshot?.id) searchSnapshots.set(result, { id: snapshot.id, revision: snapshot.revision ?? 0 });
+  return result;
 }
 
 async function saveHotelSearchResults(
@@ -2739,62 +3098,80 @@ async function saveHotelSearchResults(
   hotelSearchResult: HotelSearchFlowResult,
   nextOffset: number
 ): Promise<void> {
-  if (hotelSearchResult.browseResponse?.results.length) {
-    await getHotelSearchSessionService().saveResults(
+  const expected = searchSnapshots.get(hotelSearchResult);
+  await getHotelSearchSessionService().saveResults(
       userId,
       criteria,
-      hotelSearchResult.browseResponse.results,
-      nextOffset
+      hotelSearchResult.browseResponse?.results ?? [],
+      nextOffset,
+      ...(expected ? [expected] as const : [])
     );
-  }
+  if (expected) searchSnapshots.set(hotelSearchResult, { ...expected, revision: expected.revision + 1 });
 }
 
+async function isCurrentHotelDelivery(
+  userId: string,
+  hotelSearchResult: HotelSearchFlowResult
+): Promise<boolean> {
+  const expected = searchSnapshots.get(hotelSearchResult);
+  if (!expected) return false;
+  const current = await getHotelSearchSessionService().get(userId);
+  return Boolean(
+    current &&
+    current.id === expected.id &&
+    (current.revision ?? 0) === expected.revision &&
+    current.stage === 'results' &&
+    !current.outboundPausedAt
+  );
+}
 async function saveRestaurantSearchResults(
   userId: string,
   criteria: RestaurantSearchCriteria,
   restaurantSearchResult: RestaurantSearchFlowResult,
   nextOffset: number
 ): Promise<void> {
-  if (restaurantSearchResult.browseResponse?.results.length) {
-    await getRestaurantSearchSessionService().saveResults(
+  const expected = searchSnapshots.get(restaurantSearchResult);
+  await getRestaurantSearchSessionService().saveResults(
       userId,
       criteria,
-      restaurantSearchResult.browseResponse.results,
-      nextOffset
+      restaurantSearchResult.browseResponse?.results ?? [],
+      nextOffset,
+      ...(expected ? [expected] as const : [])
     );
-  }
+  if (expected) searchSnapshots.set(restaurantSearchResult, { ...expected, revision: expected.revision + 1 });
 }
-
 async function saveExcursionSearchResults(
   userId: string,
   criteria: ExcursionSearchCriteria,
   excursionSearchResult: ExcursionSearchFlowResult,
   nextOffset: number
 ): Promise<void> {
+  const expected = searchSnapshots.get(excursionSearchResult);
   await getExcursionSearchSessionService().saveResults(
     userId,
     criteria,
     excursionSearchResult.browseResponse?.results ?? [],
-    nextOffset
+    nextOffset,
+    ...(expected ? [expected] as const : [])
   );
+  if (expected) searchSnapshots.set(excursionSearchResult, { ...expected, revision: expected.revision + 1 });
 }
-
 async function saveLogisticsSearchResults(
   userId: string,
   criteria: LogisticsSearchCriteria,
   logisticsSearchResult: LogisticsSearchFlowResult,
   nextOffset: number
 ): Promise<void> {
-  if (logisticsSearchResult.options?.length) {
-    await getLogisticsSearchSessionService().saveResults(
+  const expected = searchSnapshots.get(logisticsSearchResult);
+  await getLogisticsSearchSessionService().saveResults(
       userId,
       criteria,
-      logisticsSearchResult.options,
-      nextOffset
+      logisticsSearchResult.options ?? [],
+      nextOffset,
+      ...(expected ? [expected] as const : [])
     );
-  }
+  if (expected) searchSnapshots.set(logisticsSearchResult, { ...expected, revision: expected.revision + 1 });
 }
-
 async function savePendingProfileGateRequest(
   inboundMessage: InboundMessage,
   correlationId: string
@@ -2902,6 +3279,11 @@ function isResetCue(message: string): boolean {
   return /^(restart|reset|start over|start again|new search|new request|clear|cancel)$/i.test(
     message.trim()
   );
+}
+
+function isStopConversationCue(message: string): boolean {
+  const normalized = message.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').trim();
+  return /^(stop|end|stop now|end this|stop search|stop searching|stop results|cancel results)$/.test(normalized);
 }
 
 function isNaturalResetCue(message: string): boolean {
@@ -3084,9 +3466,9 @@ function isItineraryRequestMessage(message: string): boolean {
 
 function isExcursionRequestMessage(message: string): boolean {
   const normalized = message.toLowerCase();
-  return /\b(things to do|activities|excursions?|tour|tour guide|day trip|experience|adventure|historic places|history|temples?|forts?|museum|culture|culture tour|nature|wildlife|national park|safari|elephants?|leopards?|bird watching|whale watching|dolphins?|beach|surfing|snorkell?ing|scuba diving|diving|kayaking|rafting|hiking|trekking|mountain|waterfall|camping|cycling|shopping|markets?|gem shopping|tea factory|tea plantation|train ride|ella train|photography|sunrise|sunset|wellness|spa|yoga|meditation|nightlife|festival|concert|event|family activities|kids activities|romantic experiences|private tour|group tour|best things|visit historic|go surfing|wife loves wildlife|looking for adventure)\b/i.test(
-    normalized
-  );
+  return /\b(things to do|activities|excursions?|tour|tour guide|day trip|experiences?|adventure|historic places|history|temples?|forts?|museum|culture|culture tour|nature|wildlife|national park|safari|elephants?|leopards?|bird watching|whale watching|dolphins?|beach|surfing|snorkell?ing|scuba diving|diving|kayaking|rafting|hiking|trekking|mountain|waterfall|camping|cycling|shopping|markets?|gem shopping|tea factory|tea plantation|train ride|ella train|photography|sunrise|sunset|wellness|spa|yoga|meditation|nightlife|festival|concert|events?|family activities|kids activities|romantic experiences|private tour|group tour|best things|visit historic|go surfing|wife loves wildlife|looking for adventure|sightseeing|local sights?|what(?:'s| is) (?:on|happening))\b/i.test(normalized) ||
+    /\bwhat (?:can|could|should) (?:i|we) (?:do|see|visit)(?:\s+(?:in|around|near|at)\b|\s+(?:here|nearby)\b)/i.test(normalized) ||
+    /\b(?:anything|something) (?:to do|to see|happening)(?:\s+(?:in|around|near|at)\b|\s+(?:here|nearby)\b)/i.test(normalized);
 }
 
 function isLogisticsRequestMessage(message: string): boolean {
@@ -3179,9 +3561,24 @@ function mapOrchestrationPlanToLegacyDecision(
           : 'clarify';
 
   return {
+    contractVersion: plan.interpretation ? '2.0' : undefined,
+    responseText: plan.interpretation?.responseText,
     intent: intentByFlow[plan.decision.targetFlow] ?? 'general_inquiry',
+    intentConfidence: plan.interpretation?.confidence ?? plan.decision.confidence,
+    ambiguity: plan.interpretation ? {
+      isAmbiguous: Boolean(plan.interpretation.clarificationRequired),
+      alternatives: [],
+    } : undefined,
+    clarificationRequired: plan.interpretation?.clarificationRequired,
+    clarificationQuestion: plan.interpretation?.question,
     parameters: { ...plan.decision.entities },
+    fieldUpdates: plan.interpretation ? { ...plan.interpretation.entities } : undefined,
     missingFields: [...plan.decision.missingFields],
+    taskTransition: plan.interpretation?.taskTransition,
+    recommendedSchema: plan.interpretation?.recommendedSchema,
+    uiRecommendation: plan.interpretation?.uiRecommendation,
+    proposedAction: plan.interpretation?.proposedAction,
+    unresolvedQuestions: plan.interpretation?.unresolvedQuestions,
     suggestedAction,
     confidence: plan.decision.confidence,
     reasoning: plan.decision.reason,
@@ -3376,55 +3773,23 @@ function buildLogisticsPreferencePrompt(criteria: LogisticsSearchCriteria): stri
 }
 
 function hasCompleteHotelCriteria(criteria: HotelSearchCriteria): boolean {
-  return Boolean(
-    criteria.location &&
-      criteria.checkinDate &&
-      criteria.checkoutDate &&
-      criteria.guests &&
-      criteria.rooms
-  );
+  return canonicalMissingFields('hotel', { ...criteria }, workflow('hotel')!.requestRequired).length === 0;
 }
 
 function hasCompleteRestaurantCriteria(criteria: RestaurantSearchCriteria): boolean {
-  return Boolean(
-    criteria.location &&
-      criteria.diningDate &&
-      criteria.diningTime &&
-      criteria.guests &&
-      criteria.priceRange
-  );
+  return canonicalMissingFields('restaurant', { ...criteria }, workflow('restaurant')!.requestRequired).length === 0;
 }
 
 function hasCompleteItineraryCriteria(criteria: ItineraryCriteria): boolean {
-  return Boolean(
-    criteria.arrivalDate?.trim() &&
-      criteria.arrivalTime?.trim() &&
-      criteria.departureDate?.trim() &&
-      criteria.departureTime?.trim() &&
-      criteria.adults &&
-      criteria.budget &&
-      criteria.travelStyle
-  );
+  return canonicalMissingFields('itinerary', { ...criteria }, workflow('itinerary')!.requestRequired).length === 0;
 }
 
 function hasCompleteExcursionCriteria(criteria: ExcursionSearchCriteria): boolean {
-  return Boolean(
-    criteria.destination &&
-      criteria.preferredDate &&
-      criteria.preferredTime &&
-      criteria.guests &&
-      criteria.budget
-  );
+  return canonicalMissingFields('excursion', { ...criteria }, workflow('excursion')!.requestRequired).length === 0;
 }
 
 function hasCompleteLogisticsCriteria(criteria: LogisticsSearchCriteria): boolean {
-  return Boolean(
-    criteria.pickupLocation?.trim() &&
-      criteria.destination?.trim() &&
-      criteria.pickupDate?.trim() &&
-      criteria.pickupTime?.trim() &&
-      criteria.passengers
-  );
+  return canonicalMissingFields('logistics', { ...criteria }, workflow('logistics')!.requestRequired).length === 0;
 }
 
 function buildHotelDetailsReply(
@@ -3809,9 +4174,9 @@ export async function buildWebhookReply(
     return enrichedReply;
   }
 
-  const text = typeof enrichedReply === 'string'
+  const text = (typeof enrichedReply === 'string'
     ? enrichedReply
-    : enrichedReply.map((message) => message.body).join('\n\n');
+    : enrichedReply.map((message) => message.body).join('\n\n')).replaceAll(CONCIERGE_BUBBLE_SEPARATOR, '\n\n');
 
   try {
     const audio = await getTextToSpeechService().synthesize(text);
@@ -3835,6 +4200,7 @@ export async function buildWebhookReply(
 interface TwilioMessage {
   body: string;
   mediaUrl?: string;
+  socialLinks?: SocialProfileLink[];
 }
 
 type TwilioReply = string | TwilioMessage[];
@@ -3843,12 +4209,12 @@ interface WhatsAppOutboundService {
   sendWhatsAppReply(
     to: string,
     body: string,
-    options?: { voice?: boolean; from?: string }
+    options?: { voice?: boolean; from?: string; shouldContinue?: () => boolean | Promise<boolean> }
   ): Promise<boolean>;
   sendWhatsAppMessages(
     to: string,
     messages: WhatsAppOutboundMessage[],
-    options?: { voice?: boolean; from?: string }
+    options?: { voice?: boolean; from?: string; shouldContinue?: () => boolean | Promise<boolean> }
   ): Promise<boolean>;
   isConfigured(): boolean;
 }
@@ -4000,6 +4366,7 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
       : '💰 Price signal: confirm live rate',
     hotel.address ? `📍 Location: ${hotel.address}` : undefined,
     `✨ Why Yana picked it: ${buildHotelRecommendationReason(hotel)}`,
+    ...buildSocialProfileLines(hotel.socialLinks),
     `✅ Request this stay: reply *book ${displayNumber}*`,
     `ℹ️ More info: reply *details ${displayNumber}*`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
@@ -4007,6 +4374,7 @@ function buildHotelResultCard(displayNumber: number, hotel: HotelBrowseResult): 
   return {
     body: lines.join('\n'),
     mediaUrl: isPublicHttpsUrl(hotel.thumbnailUrl) ? hotel.thumbnailUrl : undefined,
+    socialLinks: hotel.socialLinks,
   };
 }
 
@@ -4032,6 +4400,7 @@ function buildRestaurantResultCard(
     restaurant.cuisine ? `🍜 Cuisine: ${restaurant.cuisine}` : undefined,
     restaurant.address ? `📍 Location: ${restaurant.address}` : undefined,
     `✨ Why Yana picked it: ${buildRestaurantRecommendationReason(restaurant)}`,
+    ...buildSocialProfileLines(restaurant.socialLinks),
     mapsLink ? `🗺️ View on Google Maps: ${mapsLink}` : undefined,
     'ℹ️ Discovery suggestion only — YANA cannot check table availability or make a reservation yet.',
     `ℹ️ More info: reply *details ${displayNumber}*`,
@@ -4040,6 +4409,7 @@ function buildRestaurantResultCard(
   return {
     body: lines.join('\n'),
     mediaUrl: isPublicHttpsUrl(restaurant.thumbnailUrl) ? restaurant.thumbnailUrl : undefined,
+    socialLinks: restaurant.socialLinks,
   };
 }
 
@@ -4062,6 +4432,7 @@ function buildExcursionResultCard(
     experience.shortDescription,
     experience.address ? `📍 Location: ${experience.address}` : undefined,
     `✨ Why Yana picked it: ${buildExcursionRecommendationReason(experience)}`,
+    ...buildSocialProfileLines(experience.socialLinks),
     mapsLink ? `🗺️ View on Google Maps: ${mapsLink}` : undefined,
     'ℹ️ Discovery suggestion only — live availability and provider booking are not connected yet.',
     `ℹ️ More info: reply *details ${displayNumber}*`,
@@ -4070,7 +4441,14 @@ function buildExcursionResultCard(
   return {
     body: lines.join('\n'),
     mediaUrl: isPublicHttpsUrl(experience.thumbnailUrl) ? experience.thumbnailUrl : undefined,
+    socialLinks: experience.socialLinks,
   };
+}
+
+function buildSocialProfileLines(links?: SocialProfileLink[]): string[] {
+  return (links ?? []).map(
+    (link) => `${socialPlatformIcon(link.platform)} ${socialPlatformLabel(link.platform)}: ${link.url}`
+  );
 }
 
 function buildLogisticsResultCard(

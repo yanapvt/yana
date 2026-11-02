@@ -7,6 +7,23 @@ describe('InboundIdempotencyService durable fallback', () => {
     const decisions = await Promise.all([new InboundIdempotencyService(unavailableRedis(), durable).claim('twilio', 'same', 'a', 'repeatable_external_effect'), new InboundIdempotencyService(unavailableRedis(), durable).claim('twilio', 'same', 'b', 'repeatable_external_effect')]);
     expect(decisions.sort()).toEqual(['duplicate', 'new']);
   });
+  it('allows only one concurrent delivery to reach a repeatable external effect', async () => {
+    const claims = new Set<string>();
+    const durable = { claim: vi.fn(async ({ messageIdHash }: any) => {
+      if (claims.has(messageIdHash)) return false;
+      claims.add(messageIdHash);
+      return true;
+    }) };
+    const effect = vi.fn(async () => undefined);
+    const deliveries = await Promise.all(Array.from({ length: 8 }, async (_, index) => {
+      const result = await new InboundIdempotencyService(unavailableRedis(), durable)
+        .claim('meta', 'same-provider-event', `corr-${index}`, 'repeatable_external_effect');
+      if (result === 'new') await effect();
+      return result;
+    }));
+    expect(deliveries.filter((result) => result === 'new')).toHaveLength(1);
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
   it('retains the claim after an application restart', async () => {
     const claims = new Set<string>(); const durable = { claim: async ({ messageIdHash }: any) => { const fresh = !claims.has(messageIdHash); claims.add(messageIdHash); return fresh; } };
     expect(await new InboundIdempotencyService(unavailableRedis(), durable).claim('twilio', 'restart', 'a', 'repeatable_external_effect')).toBe('new');

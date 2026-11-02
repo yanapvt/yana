@@ -16,7 +16,7 @@ export interface BasicProfileForm {
   preferredLanguage: string;
   nationality: string;
   countryOfResidence: string;
-  city: string;
+  city?: string;
   dateOfBirth: string;
   preferredCurrency: string;
   travelStyle: string;
@@ -134,6 +134,7 @@ export interface LogisticsBookingForm {
 }
 
 export interface StoredProfile {
+  revision?: number;
   userId: string;
   form: BasicProfileForm;
   createdAt: Date;

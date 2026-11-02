@@ -1,4 +1,5 @@
 import type { RestaurantSearchCriteria } from './restaurantRequestMapper.js';
+import { socialProfileFromWebsiteUri, type SocialProfileLink } from '../utils/socialProfileLinks.js';
 
 export interface RestaurantBrowseResult {
   id?: string;
@@ -10,6 +11,7 @@ export interface RestaurantBrowseResult {
   cuisine?: string;
   googleMapsUri?: string;
   thumbnailUrl?: string;
+  socialLinks?: SocialProfileLink[];
 }
 
 export interface RestaurantBrowseResponse {
@@ -32,6 +34,7 @@ interface GooglePlacesSearchTextResponse {
     userRatingCount?: number;
     priceLevel?: string;
     googleMapsUri?: string;
+    websiteUri?: string;
     photos?: Array<{
       name?: string;
     }>;
@@ -75,6 +78,7 @@ export class GooglePlacesRestaurantBrowsingService {
           'places.userRatingCount',
           'places.priceLevel',
           'places.googleMapsUri',
+          'places.websiteUri',
           'places.photos',
           'places.types',
         ].join(','),
@@ -106,6 +110,7 @@ export class GooglePlacesRestaurantBrowsingService {
         priceRange: formatPriceLevel(place.priceLevel),
         cuisine: inferCuisineLabel(place.types, criteria),
         googleMapsUri: place.googleMapsUri,
+        socialLinks: compactSocialLinks(place.websiteUri),
         thumbnailUrl: this.buildPhotoUrl(place.photos?.[0]?.name),
       })),
     };
@@ -138,6 +143,11 @@ export class GooglePlacesRestaurantBrowsingService {
 
     return `${publicBaseUrl.replace(/\/$/, '')}/media/google-place-photo?name=${encodeURIComponent(photoName)}`;
   }
+}
+
+function compactSocialLinks(websiteUri?: string): SocialProfileLink[] | undefined {
+  const social = socialProfileFromWebsiteUri(websiteUri);
+  return social ? [social] : undefined;
 }
 
 function inferIncludedType(criteria: RestaurantSearchCriteria): string {

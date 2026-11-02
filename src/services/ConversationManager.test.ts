@@ -227,7 +227,9 @@ describe('ConversationManager', () => {
     expect(result.text).toContain('Sri Lanka');
     expect(result.text).toContain('trip');
     expectNoInternalTerms(result.text);
-    expect(prompts[0]).toContain('ConversationManager must not choose the next action');
+    expect(JSON.parse(prompts[0]).decision).toMatchObject({
+      action: 'ASK_MISSING_FIELDS', source: 'DecisionEngine',
+    });
     expect(prompts[0]).toContain('ASK_MISSING_FIELDS');
   });
 

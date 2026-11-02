@@ -5,6 +5,8 @@
  */
 
 import { pool } from '../connection.js';
+import crypto from 'node:crypto';
+import { sanitizeConversationText } from '../../utils/contextPrivacy.js';
 
 // ============================================================================
 // Types
@@ -41,6 +43,51 @@ export interface MessageTranslation {
 // ============================================================================
 
 export class MessageRepository {
+  async findRecentByTraveller(traveller: string, limit = 12): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+    const result = await pool.query(
+      `SELECT m.role, m.content, m.metadata FROM messages m JOIN users u ON u.user_id=m.user_id
+       WHERE u.phone_number=$1 AND m.role IN ('user','assistant')
+       ORDER BY m.created_at DESC, m.message_id DESC LIMIT $2`,
+      [traveller.replace(/^whatsapp:/, ''), Math.min(12, Math.max(1, limit))]
+    );
+    return result.rows.reverse().map((row) => ({ role: row.role,
+      content: sanitizeConversationText(`${row.role === 'assistant' && row.metadata?.delivery !== 'submitted' ? '[Generated reply; delivery not verified] ' : ''}${String(row.content?.text ?? '')}`) }));
+  }
+
+  /** Role-aware idempotency under the traveller row lock; generated replies are not delivery receipts. */
+  async appendConversationTurn(input: {
+    traveller: string; peer: string; requestId: string; role: 'user' | 'assistant'; text: string;
+  }): Promise<'durable' | 'absent'> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const phone = input.traveller.replace(/^whatsapp:/, '');
+      const users = await client.query('SELECT user_id FROM users WHERE phone_number=$1 FOR UPDATE', [phone]);
+      const userId = users.rows[0]?.user_id;
+      if (!userId) { await client.query('COMMIT'); return 'absent'; }
+      const hash = crypto.createHash('sha256').update(input.requestId).digest('hex').slice(0, 32);
+      const correlation = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
+      const existing = await client.query('SELECT message_id FROM messages WHERE user_id=$1 AND correlation_id=$2 AND role=$3', [userId, correlation, input.role]);
+      if (!existing.rows.length) {
+        const sessions = await client.query('SELECT session_id FROM sessions WHERE user_id=$1 ORDER BY last_activity_at DESC LIMIT 1', [userId]);
+        const sessionId = sessions.rows[0]?.session_id ?? (await client.query(
+          'INSERT INTO sessions(user_id,phone_number) VALUES($1,$2) RETURNING session_id', [userId, phone]
+        )).rows[0].session_id;
+        await client.query(
+          `INSERT INTO messages(session_id,user_id,correlation_id,from_number,to_number,message_type,role,content,metadata)
+           VALUES($1,$2,$3,$4,$5,'text',$6,$7,$8)`,
+          [sessionId, userId, correlation, phone, input.peer.replace(/^whatsapp:/, '').slice(0, 20), input.role,
+            JSON.stringify({ text: sanitizeConversationText(input.text, 2000) }), JSON.stringify({ delivery: input.role === 'assistant' ? 'generated' : 'received' })]
+        );
+        await client.query('UPDATE sessions SET last_activity_at=NOW() WHERE session_id=$1', [sessionId]);
+      }
+      await client.query('COMMIT');
+      return 'durable';
+    } catch {
+      await client.query('ROLLBACK');
+      throw new Error('Conversation persistence unavailable');
+    } finally { client.release(); }
+  }
   /**
    * Create a new message
    * Idempotent: Uses correlation_id to prevent duplicate message creation
@@ -58,8 +105,8 @@ export class MessageRepository {
   }): Promise<Message> {
     // Check if message with correlation_id already exists (idempotency)
     const existing = await pool.query<Message>(
-      'SELECT * FROM messages WHERE correlation_id = $1 AND session_id = $2',
-      [data.correlationId, data.sessionId]
+      'SELECT * FROM messages WHERE correlation_id = $1 AND session_id = $2 AND role = $3',
+      [data.correlationId, data.sessionId, data.role]
     );
 
     if (existing.rows.length > 0) {

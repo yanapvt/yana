@@ -2,8 +2,10 @@ import crypto from 'node:crypto';
 import { getStateStore, type StateStore } from './StateStore.js';
 import type { GeneratedItinerary } from './ItineraryPlannerService.js';
 import type { ItineraryCriteria } from './itineraryRequestMapper.js';
+import { getItinerarySessionService, type ItinerarySessionService } from './itinerarySessionService.js';
 
 export interface ItineraryWorkspace {
+  tripId?: string;
   shareToken: string;
   userId: string;
   itinerary: GeneratedItinerary;
@@ -28,7 +30,7 @@ export interface ItineraryWorkspaceVersion {
 const WORKSPACE_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 export class ItineraryWorkspaceService {
-  constructor(private readonly store: StateStore = getStateStore()) {}
+  constructor(private readonly store: StateStore = getStateStore(), private readonly sessions: ItinerarySessionService = getItinerarySessionService()) {}
 
   async createWorkspace(
     userId: string,
@@ -58,6 +60,11 @@ export class ItineraryWorkspaceService {
       updatedAt: now,
     };
 
+    const session = await this.sessions.attachWorkspace(userId, workspace.shareToken);
+    workspace.currentVersion = session.revision ?? 0;
+    workspace.tripId = session.id;
+    workspace.itinerary = session.itinerary!;
+    workspace.versions[0].version = workspace.currentVersion;
     await this.save(workspace);
     await this.store.setJson(this.userKey(userId), workspace.shareToken, WORKSPACE_TTL_SECONDS);
     return workspace;
@@ -76,11 +83,13 @@ export class ItineraryWorkspaceService {
     }
 
     const now = new Date().toISOString();
-    const nextVersion = existing.currentVersion + 1;
+    const session = await this.sessions.attachWorkspace(userId, existing.shareToken);
+    const nextVersion = session.revision ?? 0;
     const workspace: ItineraryWorkspace = {
       ...existing,
-      itinerary,
-      criteria,
+      itinerary: session.itinerary!,
+      criteria: session.criteria,
+      tripId: session.id,
       selectedDay: Math.min(existing.selectedDay, itinerary.days.length || 1),
       pendingChanges: [],
       currentVersion: nextVersion,
@@ -102,7 +111,19 @@ export class ItineraryWorkspaceService {
   }
 
   async getWorkspace(shareToken: string): Promise<ItineraryWorkspace | null> {
-    return this.store.getJson<ItineraryWorkspace>(this.workspaceKey(shareToken));
+    const session = await this.sessions.getByWorkspaceToken(shareToken);
+    if (!session?.itinerary) return null;
+    const cached = await this.store.getJson<ItineraryWorkspace>(this.workspaceKey(shareToken));
+    const now = new Date().toISOString();
+    const workspace: ItineraryWorkspace = {
+      shareToken, userId: session.whatsappUserId, tripId: session.id, itinerary: session.itinerary,
+      criteria: session.criteria, selectedDay: Math.min(cached?.selectedDay ?? 1, session.itinerary.days.length || 1),
+      expandedDays: cached?.expandedDays ?? [1], pendingChanges: [], currentVersion: session.revision ?? 0,
+      versions: cached?.versions ?? [], lastSave: session.updatedAt, createdAt: session.createdAt, updatedAt: now,
+    };
+    await this.save(workspace);
+    await this.store.setJson(this.userKey(workspace.userId), shareToken, WORKSPACE_TTL_SECONDS);
+    return workspace;
   }
 
   async clearUserWorkspace(userId: string): Promise<void> {

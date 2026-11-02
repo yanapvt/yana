@@ -3,7 +3,8 @@
  * Configures the Express server with middleware and routes
  */
 
-import express, { Express } from 'express';
+import express, { Express, type ErrorRequestHandler } from 'express';
+import { PersistenceError } from './storage/Persistence.js';
 import { fileURLToPath } from 'node:url';
 import webhookRoutes from './routes/twilioWhatsAppWebhook.js';
 import openWaWebhookRoutes from './routes/openWaWebhook.js';
@@ -87,6 +88,12 @@ export function createApp(): Express {
   app.use((req, res) => {
     res.status(404).json({ error: 'Not found' });
   });
+
+  const safeErrorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+    res.status(error instanceof PersistenceError && error.status === 'conflict' ? 409 : 503)
+      .json({ error: error instanceof PersistenceError ? error.message : 'This request could not be completed safely. Please try again.' });
+  };
+  app.use(safeErrorHandler);
 
   return app;
 }

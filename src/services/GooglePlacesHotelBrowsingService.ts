@@ -1,4 +1,5 @@
 import type { HotelSearchCriteria } from './HotelIntakeService.js';
+import { socialProfileFromWebsiteUri, type SocialProfileLink } from '../utils/socialProfileLinks.js';
 
 export interface HotelBrowseResult {
   id?: string;
@@ -10,6 +11,7 @@ export interface HotelBrowseResult {
   priceRange?: string;
   googleMapsUri?: string;
   thumbnailUrl?: string;
+  socialLinks?: SocialProfileLink[];
   roomName?: string;
   mealPlan?: string;
   refundable?: boolean;
@@ -41,6 +43,7 @@ interface GooglePlacesSearchTextResponse {
     userRatingCount?: number;
     priceLevel?: string;
     googleMapsUri?: string;
+    websiteUri?: string;
     photos?: Array<{
       name?: string;
     }>;
@@ -87,6 +90,7 @@ export class GooglePlacesHotelBrowsingService {
           'places.userRatingCount',
           'places.priceLevel',
           'places.googleMapsUri',
+          'places.websiteUri',
           'places.photos',
         ].join(','),
       },
@@ -115,6 +119,7 @@ export class GooglePlacesHotelBrowsingService {
         reviewCount: place.userRatingCount,
         priceRange: formatPriceLevel(place.priceLevel),
         googleMapsUri: place.googleMapsUri,
+        socialLinks: compactSocialLinks(place.websiteUri),
         thumbnailUrl: this.buildPhotoUrl(place.photos?.[0]?.name),
       })),
     };
@@ -182,6 +187,11 @@ export class GooglePlacesHotelBrowsingService {
 
     return `${publicBaseUrl.replace(/\/$/, '')}/media/google-place-photo?name=${encodeURIComponent(photoName)}`;
   }
+}
+
+function compactSocialLinks(websiteUri?: string): SocialProfileLink[] | undefined {
+  const social = socialProfileFromWebsiteUri(websiteUri);
+  return social ? [social] : undefined;
 }
 
 function formatPriceLevel(priceLevel?: string): string | undefined {

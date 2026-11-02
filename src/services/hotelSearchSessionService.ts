@@ -1,3 +1,5 @@
+import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
+import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
 import type { BasicProfileForm } from '../types/forms.js';
 import type { HotelBrowseResult } from './GooglePlacesHotelBrowsingService.js';
@@ -42,6 +44,9 @@ export interface SelectedHotel {
 }
 
 export interface HotelSearchSession {
+  lifecycleStatus?: 'active' | 'paused';
+  revision?: number;
+  resultsRetrievedAt?: string;
   id: string;
   userId: string;
   whatsappUserId: string;
@@ -69,6 +74,8 @@ export interface HotelSearchSession {
   lastYanaMessageAt?: string;
   reminderScheduledAt?: string;
   reminderDueAt?: string;
+  /** Invalidates an in-flight outbound result batch without discarding saved results. */
+  outboundPausedAt?: string;
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
@@ -98,7 +105,8 @@ export class HotelSearchSessionService {
   async saveHotelFormSent(
     userId: string,
     originalMessage: string,
-    profileContext?: Partial<BasicProfileForm>
+    profileContext?: Partial<BasicProfileForm>,
+    initialCriteria: HotelSearchCriteria = {}
   ): Promise<void> {
     const now = new Date();
     const existing = await this.get(userId);
@@ -107,11 +115,12 @@ export class HotelSearchSessionService {
       originalMessage,
       profileContext: profileContext ?? existing?.profileContext,
       state: 'hotel_form_sent',
+      lifecycleStatus: 'active',
       stage: 'awaiting_preferences',
       lastUserMessageAt: now.toISOString(),
       lastYanaMessageAt: now.toISOString(),
-      normalizedCriteria: existing?.normalizedCriteria ?? {},
-      criteria: existing?.criteria ?? {},
+      normalizedCriteria: { ...(existing?.normalizedCriteria ?? {}), ...initialCriteria },
+      criteria: { ...(existing?.criteria ?? {}), ...initialCriteria },
     });
   }
 
@@ -131,10 +140,10 @@ export class HotelSearchSessionService {
     userId: string,
     criteria: HotelSearchCriteria,
     options: SaveAwaitingPreferencesOptions = {}
-  ): Promise<void> {
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const existing = await this.get(userId);
     const now = new Date();
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       profileContext: options.profileContext ?? existing?.profileContext,
       originalMessage: options.originalMessage ?? existing?.originalMessage,
@@ -143,6 +152,7 @@ export class HotelSearchSessionService {
       criteria,
       additionalPreferences: undefined,
       state: 'awaiting_extra_preferences',
+      lifecycleStatus: 'active',
       stage: 'awaiting_preferences',
       resultBatches: [],
       latestDisplayedBatchIndex: -1,
@@ -163,12 +173,14 @@ export class HotelSearchSessionService {
       criteria,
       additionalPreferences: criteria.additionalPreferences,
       state: 'searching_hotels',
+      lifecycleStatus: 'active',
       stage: 'searching',
       resultBatches: [],
       latestDisplayedBatchIndex: -1,
       nextCount: existing?.nextCount ?? 0,
       results: [],
       nextOffset: 0,
+      outboundPausedAt: undefined,
       lastUserMessageAt: now.toISOString(),
       lastYanaMessageAt: now.toISOString(),
     });
@@ -178,27 +190,32 @@ export class HotelSearchSessionService {
     userId: string,
     criteria: HotelSearchCriteria,
     results: HotelBrowseResult[],
-    nextOffset: number
-  ): Promise<void> {
+    nextOffset: number,
+    expected?: { id: string; revision: number }
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const existing = await this.get(userId);
+    if (expected && (!existing || existing.id !== expected.id || (existing.revision ?? 0) !== expected.revision)) throw new PersistenceError('conflict');
     const now = new Date();
     const limitedResults = results.slice(0, MAX_BATCHES * BATCH_SIZE);
     const resultBatches = chunk(limitedResults, BATCH_SIZE);
     const latestDisplayedBatchIndex =
       nextOffset <= 0 ? -1 : Math.min(resultBatches.length - 1, Math.ceil(nextOffset / BATCH_SIZE) - 1);
 
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       normalizedCriteria: criteria,
       criteria,
+      resultsRetrievedAt: new Date().toISOString(),
       additionalPreferences: criteria.additionalPreferences,
       state: latestDisplayedBatchIndex >= 0 ? 'awaiting_hotel_selection' : 'showing_results',
+      lifecycleStatus: 'active',
       stage: 'results',
       resultBatches,
       latestDisplayedBatchIndex,
       nextCount: Math.max(0, latestDisplayedBatchIndex),
       results: limitedResults,
       nextOffset,
+      outboundPausedAt: undefined,
       selectedHotel: existing?.selectedHotel,
       lastYanaMessageAt: now.toISOString(),
     });
@@ -218,9 +235,35 @@ export class HotelSearchSessionService {
       latestDisplayedBatchIndex: batchIndex,
       nextCount: Math.max(0, batchIndex),
       nextOffset,
+      outboundPausedAt: undefined,
       lastYanaMessageAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  async pauseOutbound(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session) return;
+    const now = new Date().toISOString();
+    await this.save({
+      ...session,
+      outboundPausedAt: now,
+      lifecycleStatus: 'paused',
+      lastUserMessageAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async pause(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session || session.lifecycleStatus === 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'paused', updatedAt: new Date().toISOString() });
+  }
+
+  async resume(userId: string): Promise<void> {
+    const session = await this.getAuthoritative(userId);
+    if (!session || session.lifecycleStatus !== 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'active', updatedAt: new Date().toISOString() });
   }
 
   async selectHotel(userId: string, displayNumber: number): Promise<SelectedHotel | null> {
@@ -318,6 +361,25 @@ export class HotelSearchSessionService {
     await this.save({ ...preserved, updatedAt: new Date().toISOString() });
   }
 
+  async getAuthoritative(userId: string): Promise<HotelSearchSession | null> {
+    try {
+      const session = await this.repository.findLatestActiveByUserId(userId);
+      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
+    }
+    catch { throw new PersistenceError(); }
+  }
+
+  async applyCriteriaPatch(userId: string, expectedRevision: number, fields: Record<string, unknown>): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const current = await this.repository.findLatestActiveByUserId(userId);
+    if (!current || (current.revision ?? 0) !== expectedRevision) throw new PersistenceError('conflict');
+    const patch = validateCriteria('hotel', fields);
+    const criteria = { ...current.criteria, ...patch };
+    validateCriteria('hotel', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('hotel', key))));
+    if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
+    await this.save({ ...current, criteria, normalizedCriteria: criteria, results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1, state: 'awaiting_extra_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
+    return { status: 'durable' };
+  }
+
   async get(userId: string): Promise<HotelSearchSession | null> {
     const redisSession = await this.store.getJson<HotelSearchSession>(this.getKey(userId));
     if (redisSession) {
@@ -341,23 +403,28 @@ export class HotelSearchSessionService {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('hotel_session', 'durable_clear', 'memory_only');
+      throw new PersistenceError();
     }
   }
 
-  private async save(session: HotelSearchSession): Promise<void> {
+  private async save(session: HotelSearchSession): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const expectedRevision = session.revision ?? 0;
     const normalized = this.withReminderSchedule(normalizeSession(session));
-    await this.clearLegacyHotelIntakeState(normalized.whatsappUserId);
-    await this.store.setJson(
-      this.getKey(normalized.whatsappUserId),
-      normalized,
-      HOTEL_SEARCH_SESSION_TTL_SECONDS
-    );
+    normalized.revision = expectedRevision + 1;
     try {
-      await this.repository.upsert(normalized);
+      await this.repository.upsert(normalized, expectedRevision);
     } catch (error) {
-      logInfrastructureFallback('hotel_session', 'durable_save', 'memory_only');
+      if (error instanceof PersistenceError) {
+        if (error.status === 'conflict') await this.store.deleteKey(this.getKey(session.whatsappUserId)).catch(() => false);
+        throw error;
+      }
+      throw new PersistenceError();
     }
+    await this.clearLegacyHotelIntakeState(normalized.whatsappUserId);
+    try { await this.store.setJson(this.getKey(normalized.whatsappUserId), normalized, HOTEL_SEARCH_SESSION_TTL_SECONDS); }
+    catch { return { status: 'degraded', reason: 'Saved durably; active cache unavailable' }; }
     this.scheduleReminder(normalized);
+    return { status: this.store.isConnected?.() === false ? 'degraded' : 'durable', reason: this.store.isConnected?.() === false ? 'Saved durably; active cache uses memory fallback' : undefined };
   }
 
   private async findDurableSession(userId: string): Promise<HotelSearchSession | null> {
@@ -365,7 +432,7 @@ export class HotelSearchSessionService {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('hotel_session', 'durable_lookup', 'none');
-      return null;
+      throw new PersistenceError();
     }
   }
 
@@ -376,6 +443,9 @@ export class HotelSearchSessionService {
   ): HotelSearchSession {
     return {
       id: existing?.id ?? crypto.randomUUID(),
+      lifecycleStatus: existing?.lifecycleStatus ?? 'active',
+      revision: existing?.revision ?? 0,
+      resultsRetrievedAt: existing?.resultsRetrievedAt,
       userId,
       whatsappUserId: userId,
       profileId: existing?.profileId,
@@ -402,6 +472,7 @@ export class HotelSearchSessionService {
       lastYanaMessageAt: existing?.lastYanaMessageAt,
       reminderScheduledAt: existing?.reminderScheduledAt,
       reminderDueAt: existing?.reminderDueAt,
+      outboundPausedAt: existing?.outboundPausedAt,
       expiresAt:
         existing?.expiresAt ?? new Date(now.getTime() + HOTEL_SEARCH_SESSION_LIFETIME_MS).toISOString(),
       createdAt: existing?.createdAt ?? now.toISOString(),
@@ -435,6 +506,8 @@ export class HotelSearchSessionService {
   }
 
   private scheduleReminder(session: HotelSearchSession): void {
+    // The concierge reminder queue owns follow-up when the new layer is active.
+    if (env.features.conciergeEnabled) return;
     if (!isIncompleteState(session.state) || !session.reminderDueAt) {
       const timer = reminderTimers.get(session.whatsappUserId);
       if (timer) {

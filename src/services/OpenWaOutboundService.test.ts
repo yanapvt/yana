@@ -57,6 +57,20 @@ describe('OpenWaOutboundService', () => {
     expect(String((fetcher.mock.calls[1]?.[1] as RequestInit)?.body)).toContain('book 1');
   });
 
+  it('keeps a platform-labelled social profile in the complete OpenWA text card', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    const service = new OpenWaOutboundService(config, fetcher, console, async () => undefined);
+
+    await service.sendWhatsAppMessages('whatsapp:+15550000000', [{
+      body: '🍽️ *1. Social Cafe*\n📷 Instagram: https://www.instagram.com/socialcafe/',
+      mediaUrl: 'https://images.example/cafe.jpg',
+      socialLinks: [{ platform: 'instagram', url: 'https://www.instagram.com/socialcafe/' }],
+    }]);
+
+    const textPayload = JSON.parse(String((fetcher.mock.calls[1]?.[1] as RequestInit).body));
+    expect(textPayload.text).toContain('📷 Instagram: https://www.instagram.com/socialcafe/');
+  });
+
   it('falls back to the complete text card when an image send is rejected', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response('{}', { status: 422 }))
@@ -71,6 +85,24 @@ describe('OpenWaOutboundService', () => {
     expect(fetcher.mock.calls[1]?.[0]).toBe(
       'http://openwa.local/api/sessions/test-session/messages/send-text'
     );
+  });
+
+  it('stops a sequential result batch before sending the next card when it is invalidated', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    const shouldContinue = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+    const service = new OpenWaOutboundService(config, fetcher, console, async () => undefined);
+
+    expect(await service.sendWhatsAppMessages('whatsapp:+15550000000', [
+      { body: 'Hotel result introduction' },
+      { body: 'Hotel 1' },
+      { body: 'Hotel 2' },
+    ], { shouldContinue })).toBe(true);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String((fetcher.mock.calls[0]?.[1] as RequestInit).body)).toContain('Hotel result introduction');
+    expect(JSON.stringify(fetcher.mock.calls)).not.toContain('Hotel 1');
   });
 
   it('sends synthesized speech as audio after a voice-note reply', async () => {

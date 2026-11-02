@@ -1,6 +1,12 @@
 import crypto from 'crypto';
 import type { FormType, ServiceRequestForm, StoredServiceRequest } from '../types/forms.js';
 import { pool } from '../db/connection.js';
+import { PersistenceError } from './Persistence.js';
+function requestId(key?: string): string {
+  if (!key) return crypto.randomUUID();
+  const hash = crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
+}
 
 type ServiceFormType = Exclude<FormType, 'profile'>;
 const SERVICE_REQUESTS_KEY = 'yanaServiceRequests';
@@ -9,7 +15,8 @@ export interface ServiceRequestRepository {
   create<T extends ServiceRequestForm>(
     userId: string,
     type: ServiceFormType,
-    form: T
+    form: T,
+    idempotencyKey?: string
   ): Promise<StoredServiceRequest<T>>;
   findByUserId(userId: string, type?: ServiceFormType): Promise<StoredServiceRequest[]>;
 }
@@ -20,10 +27,17 @@ export class InMemoryServiceRequestRepository implements ServiceRequestRepositor
   create<T extends ServiceRequestForm>(
     userId: string,
     type: ServiceFormType,
-    form: T
+    form: T,
+    idempotencyKey?: string
   ): Promise<StoredServiceRequest<T>> {
+    const id = requestId(idempotencyKey);
+    const existing = this.requests.find((request) => request.id === id && request.userId === userId && request.type === type);
+    if (existing) {
+      if (JSON.stringify(existing.form) !== JSON.stringify(form)) throw new PersistenceError('conflict');
+      return Promise.resolve(structuredClone(existing) as StoredServiceRequest<T>);
+    }
     const request: StoredServiceRequest<T> = {
-      id: crypto.randomUUID(),
+      id,
       userId,
       type,
       form,
@@ -63,13 +77,14 @@ export class PostgresServiceRequestRepository implements ServiceRequestRepositor
   async create<T extends ServiceRequestForm>(
     userId: string,
     type: ServiceFormType,
-    form: T
+    form: T,
+    idempotencyKey?: string
   ): Promise<StoredServiceRequest<T>> {
     const phoneNumber = normalizePhoneNumber(userId);
     const phoneHash = crypto.createHash('sha256').update(phoneNumber).digest('hex');
     const createdAt = new Date();
     const request: PersistedServiceRequest = {
-      id: crypto.randomUUID(),
+      id: requestId(idempotencyKey),
       userId,
       type,
       form,
@@ -116,6 +131,12 @@ export class PostgresServiceRequestRepository implements ServiceRequestRepositor
       );
       const notificationPreferences = readPreferences(preferencesResult.rows[0]);
       const serviceRequests = readPersistedRequests(notificationPreferences);
+      const existing = serviceRequests.find((entry) => entry.id === request.id && entry.userId === userId && entry.type === type);
+      if (existing) {
+        if (JSON.stringify(existing.form) !== JSON.stringify(form)) throw new PersistenceError('conflict');
+        await client.query('COMMIT');
+        return { ...existing, form: existing.form as T, createdAt: new Date(existing.createdAt) };
+      }
 
       await client.query(
         `UPDATE user_preferences

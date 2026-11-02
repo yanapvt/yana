@@ -35,4 +35,66 @@ describe('LLMDecisionInterpreter validation', () => {
     expect(result.entities).toEqual({});
     expect(result.confidence).toBeLessThan(0.5);
   });
+
+  it('maps the versioned conversational contract without granting arbitrary actions', () => {
+    const result = validateAndMapDecision({
+      contractVersion: '2.0',
+      responseText: 'Would you like a restaurant, an activity, or somewhere to stay?',
+      intent: 'general_inquiry',
+      intentConfidence: 0.88,
+      ambiguity: { isAmbiguous: false, alternatives: [] },
+      clarificationRequired: false,
+      parameters: {},
+      fieldUpdates: {},
+      missingFields: [],
+      taskTransition: 'none',
+      recommendedSchema: 'general_inquiry',
+      uiRecommendation: { mode: 'chat_reply', schemaId: 'general_inquiry' },
+      proposedAction: { name: 'none', arguments: {} },
+      unresolvedQuestions: [],
+      suggestedAction: 'clarify',
+      confidence: 0.88,
+    });
+
+    expect(result).toMatchObject({
+      role: 'question_or_faq',
+      intent: 'general_inquiry',
+      responseText: 'Would you like a restaurant, an activity, or somewhere to stay?',
+      recommendedSchema: 'general_inquiry',
+      proposedAction: { name: 'none', arguments: {} },
+    });
+  });
+
+  it('requires a concrete question for an ambiguous proposal', () => {
+    expect(() => validateAndMapDecision({
+      intent: 'general_inquiry', parameters: {}, missingFields: [],
+      ambiguity: { isAmbiguous: true, alternatives: ['search_restaurants', 'search_excursions'] },
+      clarificationRequired: true, suggestedAction: 'clarify', confidence: 0.6,
+    })).toThrow();
+  });
+
+  it('rejects unregistered schema and executable action names', () => {
+    expect(() => validateAndMapDecision({
+      intent: 'search_hotels', parameters: {}, missingFields: [],
+      recommendedSchema: 'charge_credit_card',
+      proposedAction: { name: 'delete_database' as never, arguments: {} },
+      suggestedAction: 'execute_tool', confidence: 0.99,
+    })).toThrow();
+  });
+
+  it('rejects arbitrary tool arguments even when the proposal action is allowlisted', () => {
+    expect(() => validateAndMapDecision({
+      intent: 'search_hotels', parameters: {}, missingFields: [],
+      proposedAction: { name: 'search', arguments: { tool: 'charge_card' } as never },
+      suggestedAction: 'execute_tool', confidence: 0.99,
+    })).toThrow();
+  });
+
+  it('rejects conflicting candidate field updates', () => {
+    expect(() => validateAndMapDecision({
+      intent: 'search_restaurants', parameters: { location: 'Galle' },
+      fieldUpdates: { location: 'Kandy' }, missingFields: [],
+      suggestedAction: 'execute_tool', confidence: 0.95,
+    })).toThrow();
+  });
 });

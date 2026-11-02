@@ -1,14 +1,17 @@
 import { env } from '../config/environment.js';
 import { getTextToSpeechService } from './TextToSpeechService.js';
+import type { SocialProfileLink } from '../utils/socialProfileLinks.js';
 
 interface SendWhatsAppOptions {
   voice?: boolean;
   from?: string;
+  shouldContinue?: () => boolean | Promise<boolean>;
 }
 
 export interface WhatsAppOutboundMessage {
   body: string;
   mediaUrl?: string;
+  socialLinks?: SocialProfileLink[];
 }
 
 const TWILIO_WHATSAPP_BODY_LIMIT = 1500;
@@ -34,8 +37,10 @@ export class TwilioOutboundService {
 
     let sentAny = false;
     for (const message of messages) {
+      if (options.shouldContinue && !(await options.shouldContinue())) break;
       const bodyParts = splitWhatsAppText(message.body);
       for (const [index, body] of bodyParts.entries()) {
+        if (options.shouldContinue && !(await options.shouldContinue())) break;
         const sent = await this.sendWhatsAppMessage(
           to,
           body,
@@ -187,6 +192,9 @@ function toWhatsAppAddress(value: string): string {
 }
 
 export function splitWhatsAppText(body: string, limit = TWILIO_WHATSAPP_BODY_LIMIT): string[] {
+  if (body.includes('\u001e')) {
+    return body.split('\u001e').filter((part) => part.trim()).flatMap((part) => splitWhatsAppText(part, limit));
+  }
   if (body.length <= limit) return [body];
 
   const chunks: string[] = [];

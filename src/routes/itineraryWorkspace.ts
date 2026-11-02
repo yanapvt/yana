@@ -1,5 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
+import { ItineraryEditService, resolveItineraryEdit } from '../services/ItineraryEditService.js';
+import { getItinerarySessionService } from '../services/itinerarySessionService.js';
+import { getFormTokenService } from '../services/formTokenService.js';
+import { validateSemanticUI, renderWebsiteDecision } from '../orchestration/SemanticUI.js';
+import { PersistenceError } from '../storage/Persistence.js';
 import type {
   DailyItineraryPlan,
   GeneratedItinerary,
@@ -8,27 +13,54 @@ import type {
 
 const router = Router();
 
-router.get('/itinerary/:shareToken', async (req: Request, res: Response) => {
+router.get('/itinerary/:shareToken', async (req: Request, res: Response, next) => { try {
   const workspace = await getItineraryWorkspaceService().getWorkspace(req.params.shareToken);
   if (!workspace) {
     res.status(404).type('html').send(renderUnavailablePage());
     return;
   }
 
+  const formToken = getFormTokenService().createToken(workspace.userId, 'itinerary');
+  const csrf = getFormTokenService().createCsrfToken(formToken, 'itinerary')!;
+  renderWebsiteDecision({ version: '1.0', mode: 'itinerary_editor', workflow: 'itinerary', schemaId: 'plan_itinerary', schemaVersion: '1.0',
+    values: {}, missingFields: [], actions: ['edit_itinerary'], correlationId: workspace.tripId!, expectedRevision: workspace.currentVersion, text: '' });
   res
     .status(200)
     .type('html')
     .setHeader('Cache-Control', 'no-store')
-    .send(renderWorkspacePage(workspace.shareToken, workspace.itinerary, workspace));
+    .send(renderWorkspacePage(workspace.shareToken, workspace.itinerary, workspace, formToken, csrf));
+  } catch (error) { next(error); }
 });
 
-router.post('/itinerary/:shareToken/state', async (req: Request, res: Response) => {
+router.post(['/itinerary/:shareToken/state', '/itinerary/:shareToken/edit'], async (req: Request, res: Response) => { try {
   const selectedDay = Number(req.body?.selectedDay);
   const pendingChange = typeof req.body?.pendingChange === 'string' ? req.body.pendingChange : '';
   const workspace = await getItineraryWorkspaceService().getWorkspace(req.params.shareToken);
   if (!workspace) {
     res.status(404).json({ error: 'Workspace unavailable' });
     return;
+  }
+
+  const tokens = getFormTokenService();
+  const token = String(req.body?._formToken ?? '');
+  if (tokens.resolveToken(token, 'itinerary')?.userId !== workspace.userId ||
+      !tokens.verifyAndConsumeCsrfToken(token, 'itinerary', String(req.body?._csrf ?? ''))) {
+    res.status(403).json({ error: 'Reload this page before submitting a change.' }); return;
+  }
+  validateSemanticUI({ version: '1.0', mode: 'itinerary_editor', workflow: 'itinerary', schemaId: 'plan_itinerary', schemaVersion: '1.0',
+    values: {}, missingFields: [], actions: ['edit_itinerary'], correlationId: workspace.tripId!, expectedRevision: req.body.expectedRevision, text: '' }, workspace.currentVersion);
+  if (pendingChange || req.body.command) {
+    const session = await getItinerarySessionService().getAuthoritative(workspace.userId);
+    const command = req.body.command ?? (session && resolveItineraryEdit(pendingChange,
+      { ...session, currentDay: Number.isInteger(selectedDay) && selectedDay >= 1 && selectedDay <= workspace.itinerary.days.length ? selectedDay : workspace.selectedDay }));
+    if (!command) { res.status(400).json({ error: 'Specify the day, morning/afternoon/evening/hotel/transport, and replacement text.' }); return; }
+    if (command.tripId !== workspace.tripId || command.expectedRevision !== workspace.currentVersion) throw new PersistenceError('conflict');
+    const changed = await new ItineraryEditService().apply(workspace.userId, command);
+    const updated = await getItineraryWorkspaceService().createOrUpdateWorkspace(workspace.userId, changed.itinerary!, changed.criteria, 'Edited from website');
+    res.json({ ok: true, currentVersion: updated.currentVersion, selectedDay: updated.selectedDay, pendingChanges: [], lastSave: updated.lastSave }); return;
+  }
+  if (!Number.isInteger(selectedDay) || selectedDay < 1 || selectedDay > workspace.itinerary.days.length) {
+    res.status(400).json({ error: 'Choose an existing itinerary day.' }); return;
   }
 
   const updated = await getItineraryWorkspaceService().updateWorkspaceState(req.params.shareToken, {
@@ -45,12 +77,18 @@ router.post('/itinerary/:shareToken/state', async (req: Request, res: Response) 
     currentVersion: updated?.currentVersion,
     lastSave: updated?.lastSave,
   });
+  } catch (error) {
+    const conflict = error instanceof PersistenceError && error.status === 'conflict' || error instanceof Error && error.message === 'Stale UI revision';
+    res.status(conflict ? 409 : error instanceof PersistenceError ? 503 : 400).json({ error: conflict ? 'This plan has changed. Reload it before editing.' : error instanceof PersistenceError ? error.message : 'The edit was not saved. Check the day and replacement text, then reload and try again.' });
+  }
 });
 
 function renderWorkspacePage(
   shareToken: string,
   itinerary: GeneratedItinerary,
-  workspace: { selectedDay: number; currentVersion: number; lastSave: string }
+  workspace: { selectedDay: number; currentVersion: number; lastSave: string },
+  formToken: string,
+  csrf: string
 ): string {
   const displayItinerary = normalizeItineraryForDisplay(itinerary);
   const selectedDay = displayItinerary.days[workspace.selectedDay - 1] ?? displayItinerary.days[0];
@@ -187,14 +225,18 @@ function renderWorkspacePage(
     const hasGoogleMapsEmbed = ${JSON.stringify(Boolean(googleMapsEmbedUrl))};
 
     async function saveChange(change) {
+      const target = /hotel/i.test(change) ? 'hotel' : /transport/i.test(change) ? 'transport' : /restaurant|nightlife/i.test(change) ? 'evening' : 'afternoon';
+      const requested = prompt('What would you like to put in this part of the plan?', 'change day ${workspace.selectedDay} ' + target + ' to ');
+      if (!requested) return;
       document.body.dataset.updating = 'true';
-      await fetch('/itinerary/' + encodeURIComponent(token) + '/state', {
+      const response = await fetch('/itinerary/' + encodeURIComponent(token) + '/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingChange: change })
+        body: JSON.stringify({ pendingChange: requested, selectedDay: ${workspace.selectedDay}, expectedRevision: ${workspace.currentVersion}, _formToken: ${JSON.stringify(formToken)}, _csrf: ${JSON.stringify(csrf)} })
       });
       document.body.dataset.updating = 'false';
-      alert('Saved. Continue in WhatsApp and tell Yana: ' + change);
+      if (!response.ok) { const result = await response.json(); alert(result.error || 'The edit was not saved.'); return; }
+      location.reload();
     }
 
     function loadGoogleMapsRoute() {

@@ -5,6 +5,7 @@
 import { env, isDevelopment } from './config/environment.js';
 import { createApp } from './app.js';
 import { getHumanHandoffRuntime } from './services/handoff/HumanHandoffRuntime.js';
+import { getUnfinishedWorkflowReminderService } from './services/UnfinishedWorkflowReminderService.js';
 
 console.log('YANA / OGO Platform starting...');
 console.log(`Environment: ${env.nodeEnv}`);
@@ -23,10 +24,17 @@ const server = app.listen(PORT, () => {
 
 const humanHandoffRuntime = getHumanHandoffRuntime();
 humanHandoffRuntime.start();
+const reminderTimer = env.features.proactiveMessagingEnabled && env.whatsapp.provider === 'openwa'
+  ? setInterval(() => {
+      getUnfinishedWorkflowReminderService().processOne().catch(() => undefined);
+    }, 60_000)
+  : null;
+reminderTimer?.unref();
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     humanHandoffRuntime.stop();
+    if (reminderTimer) clearInterval(reminderTimer);
     server.close();
   });
 }

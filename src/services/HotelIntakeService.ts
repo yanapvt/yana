@@ -1,5 +1,7 @@
 import { getStateStore } from './StateStore.js';
 import { getLLMService } from './LLMService.js';
+import { validateCriteria } from '../orchestration/WorkflowDefinitions.js';
+import { sanitizeConversationText } from '../utils/contextPrivacy.js';
 
 type HotelField =
   | 'location'
@@ -63,6 +65,7 @@ interface LLMHotelCriteriaExtraction {
 }
 
 export interface HotelIntakeContext {
+  modelContext?: import('./LLMService.js').ContextPackage;
   whatsappNumber: string;
   profileName?: string;
   country?: string;
@@ -97,6 +100,10 @@ const FIELD_PROMPTS: Record<HotelField, string> = {
 export class HotelIntakeService {
   constructor(private readonly referenceDate: Date = new Date()) {}
 
+  async hasActiveSession(whatsappNumber: string): Promise<boolean> {
+    return Boolean(await getStateStore().getJson<HotelIntakeState>(this.getHotelStateKey(whatsappNumber)));
+  }
+
   async handleMessage(
     message: string,
     context: HotelIntakeContext
@@ -107,7 +114,7 @@ export class HotelIntakeService {
       return { handled: false };
     }
 
-    const extracted = await this.extractCriteria(message, state.pendingField);
+    const extracted = await this.extractCriteria(message, state.pendingField, context.modelContext);
     state.criteria = {
       ...state.criteria,
       ...extracted,
@@ -204,7 +211,8 @@ export class HotelIntakeService {
 
   private async extractCriteria(
     message: string,
-    pendingField?: HotelField
+    pendingField?: HotelField,
+    modelContext?: import('./LLMService.js').ContextPackage
   ): Promise<Partial<HotelSearchCriteria>> {
     const criteria: Partial<HotelSearchCriteria> = {};
 
@@ -254,7 +262,7 @@ export class HotelIntakeService {
       this.hasField(criteria, pendingField) ||
       Object.keys(criteria).length > 0;
     const llmCriteria = llmCanHelp
-      ? await this.extractCriteriaWithLLM(message, criteria)
+      ? await this.extractCriteriaWithLLM(message, criteria, modelContext)
       : {};
 
     return {
@@ -426,27 +434,21 @@ export class HotelIntakeService {
 
   private async extractCriteriaWithLLM(
     message: string,
-    deterministicCriteria: Partial<HotelSearchCriteria>
+    deterministicCriteria: Partial<HotelSearchCriteria>,
+    modelContext?: import('./LLMService.js').ContextPackage
   ): Promise<Partial<HotelSearchCriteria>> {
-    if (!this.shouldUseLLMExtraction()) {
+    if (!this.shouldUseLLMExtraction() || modelContext?.historyStatus === 'unavailable') {
       return {};
     }
 
     try {
-      const response = await getLLMService().generateUIContent(
-        [
-          'Extract only hotel search criteria from this user message.',
-          'Return JSON only. Do not add prose.',
-          'Use keys: location, checkinDate, checkoutDate, guests, boardBasis, budgetPerNight.',
-          'Use YYYY-MM-DD dates. Resolve relative dates using this base date:',
-          this.formatDate(this.referenceDate),
-          'Use boardBasis only if explicit: room_only, bnb, half_board, full_board, all_inclusive.',
-          'Use budgetPerNight as {"amount": number, "currency": "USD"} when present.',
-          `Already extracted: ${JSON.stringify(deterministicCriteria)}`,
-          `Message: ${message}`,
-        ].join('\n')
-      );
-      const parsed = JSON.parse(this.extractJson(response)) as LLMHotelCriteriaExtraction;
+      const response = await getLLMService().extractHotelCriteria({
+        userMessage: sanitizeConversationText(message, 4000),
+        referenceDate: this.formatDate(this.referenceDate),
+        alreadyExtracted: { ...deterministicCriteria },
+        context: modelContext,
+      });
+      const parsed = validateCriteria('hotel', JSON.parse(response)) as LLMHotelCriteriaExtraction;
       return this.sanitizeLLMExtraction(parsed);
     } catch (error) {
       console.warn('[HotelIntakeService] LLM criteria extraction failed, using deterministic extraction:', error);

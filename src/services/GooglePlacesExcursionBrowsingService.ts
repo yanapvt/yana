@@ -1,4 +1,5 @@
 import type { ExcursionSearchCriteria } from './excursionRequestMapper.js';
+import { socialProfileFromWebsiteUri, type SocialProfileLink } from '../utils/socialProfileLinks.js';
 
 export interface ExcursionBrowseResult {
   id?: string;
@@ -11,6 +12,7 @@ export interface ExcursionBrowseResult {
   shortDescription?: string;
   googleMapsUri?: string;
   thumbnailUrl?: string;
+  socialLinks?: SocialProfileLink[];
 }
 
 export interface ExcursionBrowseResponse {
@@ -31,6 +33,7 @@ interface GooglePlacesSearchTextResponse {
     userRatingCount?: number;
     priceLevel?: string;
     googleMapsUri?: string;
+    websiteUri?: string;
     photos?: Array<{ name?: string }>;
     types?: string[];
     editorialSummary?: { text?: string };
@@ -80,6 +83,7 @@ export class GooglePlacesExcursionBrowsingService {
         priceRange: formatPriceLevel(place.priceLevel) ?? criteria.budget,
         shortDescription: place.editorialSummary?.text,
         googleMapsUri: place.googleMapsUri,
+        socialLinks: compactSocialLinks(place.websiteUri),
         thumbnailUrl: buildPhotoUrl(place.photos?.[0]?.name),
       })),
     };
@@ -103,6 +107,7 @@ export class GooglePlacesExcursionBrowsingService {
           'places.userRatingCount',
           'places.priceLevel',
           'places.googleMapsUri',
+          'places.websiteUri',
           'places.photos',
           'places.types',
           'places.editorialSummary',
@@ -125,6 +130,11 @@ export class GooglePlacesExcursionBrowsingService {
     const data = (await response.json()) as GooglePlacesSearchTextResponse;
     return data.places ?? [];
   }
+}
+
+function compactSocialLinks(websiteUri?: string): SocialProfileLink[] | undefined {
+  const social = socialProfileFromWebsiteUri(websiteUri);
+  return social ? [social] : undefined;
 }
 
 function buildTextQuery(criteria: ExcursionSearchCriteria): string {

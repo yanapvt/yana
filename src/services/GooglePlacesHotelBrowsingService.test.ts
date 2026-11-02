@@ -19,6 +19,7 @@ describe('GooglePlacesHotelBrowsingService', () => {
             userRatingCount: 800,
             priceLevel: 'PRICE_LEVEL_EXPENSIVE',
             googleMapsUri: 'https://maps.google.com/?cid=1',
+            websiteUri: 'https://www.instagram.com/colombocourthotel/',
             photos: [{ name: 'places/place-1/photos/photo-1' }],
           },
         ],
@@ -57,9 +58,13 @@ describe('GooglePlacesHotelBrowsingService', () => {
       googlePlaceId: 'google-place-1',
       name: 'Colombo Court Hotel',
       googleMapsUri: 'https://maps.google.com/?cid=1',
+      socialLinks: [{ platform: 'instagram', url: 'https://www.instagram.com/colombocourthotel/' }],
       priceRange: '$$$',
       thumbnailUrl:
         'http://localhost:3000/media/google-place-photo?name=places%2Fplace-1%2Fphotos%2Fphoto-1',
+    });
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({
+      'X-Goog-FieldMask': expect.stringContaining('places.websiteUri'),
     });
   });
 

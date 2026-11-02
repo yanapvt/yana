@@ -5,6 +5,7 @@ import { splitWhatsAppText, type WhatsAppOutboundMessage } from './twilioOutboun
 interface SendMetaOptions {
   voice?: boolean;
   from?: string;
+  shouldContinue?: () => boolean | Promise<boolean>;
 }
 
 export interface MetaRestaurantFlowInput {
@@ -79,6 +80,8 @@ export class MetaWhatsAppOutboundService {
       return false;
     }
 
+    if (options.shouldContinue && !(await options.shouldContinue())) return false;
+
     const carouselSent = await this.trySendCarouselMessage(to, messages);
     if (carouselSent) {
       if (options.voice) {
@@ -91,6 +94,7 @@ export class MetaWhatsAppOutboundService {
 
     let sentAny = false;
     for (const message of messages) {
+      if (options.shouldContinue && !(await options.shouldContinue())) break;
       const sent =
         message.mediaUrl && isPublicHttpsUrl(message.mediaUrl)
           ? await this.sendImageWithTextFallback(to, message.mediaUrl, message.body)
@@ -205,22 +209,7 @@ export class MetaWhatsAppOutboundService {
                   text: buildCarouselCardBody(message.body),
                 },
                 action: {
-                  buttons: [
-                    {
-                      type: 'quick_reply',
-                      quick_reply: {
-                        id: `book ${displayNumber}`,
-                        title: isQuoteRequest ? 'Request Quote' : 'Book Now',
-                      },
-                    },
-                    {
-                      type: 'quick_reply',
-                      quick_reply: {
-                        id: `details ${displayNumber}`,
-                        title: 'Details',
-                      },
-                    },
-                  ],
+                  buttons: buildCarouselButtons(message, displayNumber, isQuoteRequest),
                 },
               };
             }),
@@ -293,6 +282,48 @@ export class MetaWhatsAppOutboundService {
   private graphBaseUrl(): string {
     return `https://graph.facebook.com/${env.meta.apiVersion}`;
   }
+}
+
+function buildCarouselButtons(
+  message: WhatsAppOutboundMessage,
+  displayNumber: number,
+  isQuoteRequest: boolean
+): Array<Record<string, unknown>> {
+  const social = message.socialLinks?.find((link) => isPublicHttpsUrl(link.url));
+  const isDiscoveryOnly = /discovery suggestion only/i.test(message.body);
+  const primary = social && isDiscoveryOnly
+    ? {
+        type: 'quick_reply',
+        quick_reply: { id: `details ${displayNumber}`, title: 'Details' },
+      }
+    : {
+        type: 'quick_reply',
+        quick_reply: {
+          id: `book ${displayNumber}`,
+          title: isQuoteRequest ? 'Request Quote' : 'Book Now',
+        },
+      };
+
+  if (social) {
+    return [
+      primary,
+      {
+        type: 'url',
+        url: {
+          link: social.url,
+          title: social.platform === 'instagram' ? '📷 Instagram' : '🔵 Facebook',
+        },
+      },
+    ];
+  }
+
+  return [
+    primary,
+    {
+      type: 'quick_reply',
+      quick_reply: { id: `details ${displayNumber}`, title: 'Details' },
+    },
+  ];
 }
 
 function toMetaRecipient(value: string): string {

@@ -19,6 +19,9 @@ Migrations are numbered sequentially and should be applied in order:
 11. **011_create_notifications.sql** - Proactive notifications
 12. **012_create_audit_logs.sql** - Audit logs and decision logs
 13. **013_create_tts_assets.sql** - Text-to-speech assets
+24. **024_create_traveller_memories.sql** - Typed profile, trip, and task context with provenance and confirmation status
+25. **025_traveller_location_memory.sql** - Current location and destination memory keys
+26. **026_concierge_followups.sql** - Idempotent confirmed-service feedback queue and concierge follow-up index
 
 ## Key Indexes
 

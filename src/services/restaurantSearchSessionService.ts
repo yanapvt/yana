@@ -1,3 +1,5 @@
+import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
+import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
 import type { BasicProfileForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
@@ -15,6 +17,7 @@ export type RestaurantSearchState =
   | 'profile_required'
   | 'restaurant_form_sent'
   | 'restaurant_form_completed'
+  | 'confirming_location'
   | 'awaiting_preferences'
   | 'searching_restaurants'
   | 'showing_results'
@@ -38,12 +41,16 @@ export interface SelectedRestaurant {
 }
 
 export interface RestaurantSearchSession {
+  lifecycleStatus?: 'active' | 'paused';
+  revision?: number;
+  resultsRetrievedAt?: string;
   id: string;
   userId: string;
   whatsappUserId: string;
   profileContext?: Partial<BasicProfileForm>;
   originalMessage?: string;
   restaurantFormResponseId?: string;
+  pendingLocationConfirmation?: string;
   normalizedCriteria: RestaurantSearchCriteria;
   criteria: RestaurantSearchCriteria;
   additionalPreferences?: string;
@@ -75,6 +82,25 @@ export class RestaurantSearchSessionService {
       new PostgresRestaurantSearchSessionRepository()
   ) {}
 
+  async saveLocationConfirmation(userId: string, location: string, originalMessage: string): Promise<void> {
+    const now = new Date();
+    const existing = await this.get(userId);
+    await this.save({
+      ...this.baseSession(userId, now, existing),
+      originalMessage,
+      restaurantFormResponseId: undefined,
+      pendingLocationConfirmation: location,
+      normalizedCriteria: {},
+      criteria: {},
+      additionalPreferences: undefined,
+      state: 'confirming_location',
+      lifecycleStatus: 'active',
+      stage: 'awaiting_preferences',
+      results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1,
+      selectedRestaurant: undefined,
+    });
+  }
+
   async saveRestaurantFormSent(
     userId: string,
     originalMessage: string,
@@ -87,6 +113,7 @@ export class RestaurantSearchSessionService {
       originalMessage,
       profileContext: profileContext ?? existing?.profileContext,
       state: 'restaurant_form_sent',
+      lifecycleStatus: 'active',
       stage: 'awaiting_preferences',
     });
   }
@@ -95,19 +122,21 @@ export class RestaurantSearchSessionService {
     userId: string,
     criteria: RestaurantSearchCriteria,
     options: SaveRestaurantAwaitingPreferencesOptions = {}
-  ): Promise<void> {
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const existing = await this.get(userId);
     const now = new Date();
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       profileContext: options.profileContext ?? existing?.profileContext,
       originalMessage: options.originalMessage ?? existing?.originalMessage,
       restaurantFormResponseId:
         options.restaurantFormResponseId ?? existing?.restaurantFormResponseId,
+      pendingLocationConfirmation: undefined,
       normalizedCriteria: criteria,
       criteria,
       additionalPreferences: undefined,
       state: 'awaiting_preferences',
+      lifecycleStatus: 'active',
       stage: 'awaiting_preferences',
       resultBatches: [],
       latestDisplayedBatchIndex: -1,
@@ -126,6 +155,7 @@ export class RestaurantSearchSessionService {
       criteria,
       additionalPreferences: criteria.additionalPreferences,
       state: 'searching_restaurants',
+      lifecycleStatus: 'active',
       stage: 'searching',
       resultBatches: [],
       latestDisplayedBatchIndex: -1,
@@ -138,9 +168,11 @@ export class RestaurantSearchSessionService {
     userId: string,
     criteria: RestaurantSearchCriteria,
     results: RestaurantBrowseResult[],
-    nextOffset: number
-  ): Promise<void> {
+    nextOffset: number,
+    expected?: { id: string; revision: number }
+  ): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
     const existing = await this.get(userId);
+    if (expected && (!existing || existing.id !== expected.id || (existing.revision ?? 0) !== expected.revision)) throw new PersistenceError('conflict');
     const now = new Date();
     const limitedResults = defaultSearchFlowEngine.limitResults(results);
     const resultBatches = defaultSearchFlowEngine.batchResults(limitedResults);
@@ -149,12 +181,14 @@ export class RestaurantSearchSessionService {
       limitedResults.length
     );
 
-    await this.save({
+    return this.save({
       ...this.baseSession(userId, now, existing),
       normalizedCriteria: criteria,
       criteria,
+      resultsRetrievedAt: new Date().toISOString(),
       additionalPreferences: criteria.additionalPreferences,
       state: latestDisplayedBatchIndex >= 0 ? 'awaiting_selection' : 'showing_results',
+      lifecycleStatus: 'active',
       stage: 'results',
       resultBatches,
       latestDisplayedBatchIndex,
@@ -202,6 +236,37 @@ export class RestaurantSearchSessionService {
     return selectedRestaurant;
   }
 
+  async pause(userId: string): Promise<void> {
+    const session = await this.get(userId);
+    if (!session || session.lifecycleStatus === 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'paused', updatedAt: new Date().toISOString() });
+  }
+
+  async resume(userId: string): Promise<void> {
+    const session = await this.getAuthoritative(userId);
+    if (!session || session.lifecycleStatus !== 'paused') return;
+    await this.save({ ...session, lifecycleStatus: 'active', updatedAt: new Date().toISOString() });
+  }
+
+  async getAuthoritative(userId: string): Promise<RestaurantSearchSession | null> {
+    try {
+      const session = await this.repository.findLatestActiveByUserId(userId);
+      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
+    }
+    catch { throw new PersistenceError(); }
+  }
+
+  async applyCriteriaPatch(userId: string, expectedRevision: number, fields: Record<string, unknown>): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const current = await this.repository.findLatestActiveByUserId(userId);
+    if (!current || (current.revision ?? 0) !== expectedRevision) throw new PersistenceError('conflict');
+    const patch = validateCriteria('restaurant', fields);
+    const criteria = { ...current.criteria, ...patch };
+    validateCriteria('restaurant', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('restaurant', key))));
+    if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
+    await this.save({ ...current, criteria, normalizedCriteria: criteria, results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1, state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
+    return { status: 'durable' };
+  }
+
   async get(userId: string): Promise<RestaurantSearchSession | null> {
     const redisSession = await this.store.getJson<RestaurantSearchSession>(this.getKey(userId));
     if (redisSession) {
@@ -224,21 +289,26 @@ export class RestaurantSearchSessionService {
       await this.repository.clearActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('restaurant_session', 'durable_clear', 'memory_only');
+      throw new PersistenceError();
     }
   }
 
-  private async save(session: RestaurantSearchSession): Promise<void> {
+  private async save(session: RestaurantSearchSession): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
+    const expectedRevision = session.revision ?? 0;
     const normalized = normalizeSession(session);
-    await this.store.setJson(
-      this.getKey(normalized.whatsappUserId),
-      normalized,
-      RESTAURANT_SEARCH_SESSION_TTL_SECONDS
-    );
+    normalized.revision = expectedRevision + 1;
     try {
-      await this.repository.upsert(normalized);
+      await this.repository.upsert(normalized, expectedRevision);
     } catch (error) {
-      logInfrastructureFallback('restaurant_session', 'durable_save', 'memory_only');
+      if (error instanceof PersistenceError) {
+        if (error.status === 'conflict') await this.store.deleteKey(this.getKey(session.whatsappUserId)).catch(() => false);
+        throw error;
+      }
+      throw new PersistenceError();
     }
+    try { await this.store.setJson(this.getKey(normalized.whatsappUserId), normalized, RESTAURANT_SEARCH_SESSION_TTL_SECONDS); }
+    catch { return { status: 'degraded', reason: 'Saved durably; active cache unavailable' }; }
+    return { status: this.store.isConnected?.() === false ? 'degraded' : 'durable', reason: this.store.isConnected?.() === false ? 'Saved durably; active cache uses memory fallback' : undefined };
   }
 
   private async findDurableSession(userId: string): Promise<RestaurantSearchSession | null> {
@@ -246,7 +316,7 @@ export class RestaurantSearchSessionService {
       return await this.repository.findLatestActiveByUserId(userId);
     } catch (error) {
       logInfrastructureFallback('restaurant_session', 'durable_lookup', 'none');
-      return null;
+      throw new PersistenceError();
     }
   }
 
@@ -257,11 +327,15 @@ export class RestaurantSearchSessionService {
   ): RestaurantSearchSession {
     return {
       id: existing?.id ?? crypto.randomUUID(),
+      lifecycleStatus: existing?.lifecycleStatus ?? 'active',
+      revision: existing?.revision ?? 0,
+      resultsRetrievedAt: existing?.resultsRetrievedAt,
       userId,
       whatsappUserId: userId,
       profileContext: existing?.profileContext,
       originalMessage: existing?.originalMessage,
       restaurantFormResponseId: existing?.restaurantFormResponseId,
+      pendingLocationConfirmation: existing?.pendingLocationConfirmation,
       normalizedCriteria: existing?.normalizedCriteria ?? {},
       criteria: existing?.criteria ?? {},
       additionalPreferences: existing?.additionalPreferences,

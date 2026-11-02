@@ -148,11 +148,14 @@ describe('LLMService', () => {
       const requestBody = JSON.parse(String(request.body)) as {
         messages: Array<{ content: string }>;
       };
-      const prompt = requestBody.messages[1]?.content ?? '';
+      const prompt = requestBody.messages[0]?.content ?? '';
       expect(prompt).toContain('one place on a specific day');
       expect(prompt).toContain('not plan_itinerary');
       expect(prompt).toContain('Explore/discovery is not a booking request');
       expect(prompt).toContain('full trip, multi-day route, or day-by-day itinerary');
+      expect(JSON.parse(requestBody.messages[1].content).userMessage).toBe(
+        'I am coming to Colombo tomorrow, what can I do?'
+      );
     });
 
     it('should validate confidence is between 0 and 1', async () => {

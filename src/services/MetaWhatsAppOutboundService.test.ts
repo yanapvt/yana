@@ -138,6 +138,36 @@ describe('MetaWhatsAppOutboundService', () => {
     expect(firstCard.body.text).not.toMatch(/rating|book now/i);
   });
 
+  it('uses a labelled social URL button on a carousel card when Google supplied a social profile', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    vi.stubGlobal('fetch', fetchMock);
+    const { MetaWhatsAppOutboundService } = await import('./MetaWhatsAppOutboundService.js');
+
+    await new MetaWhatsAppOutboundService().sendWhatsAppMessages('whatsapp:+94777269221', [
+      { body: 'I found these restaurant matches.' },
+      {
+        body: '🍽️ *1. Social Cafe*\nℹ️ Discovery suggestion only — contact the restaurant directly.\nℹ️ More info: reply *details 1*',
+        mediaUrl: 'https://images.example/cafe-one.jpg',
+        socialLinks: [{ platform: 'instagram', url: 'https://www.instagram.com/socialcafe/' }],
+      },
+      {
+        body: '🍽️ *2. Other Cafe*\nℹ️ Discovery suggestion only — contact the restaurant directly.\nℹ️ More info: reply *details 2*',
+        mediaUrl: 'https://images.example/cafe-two.jpg',
+        socialLinks: [{ platform: 'facebook', url: 'https://www.facebook.com/othercafe/' }],
+      },
+    ]);
+
+    const payload = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(payload.interactive.action.cards[0].action.buttons).toEqual([
+      { type: 'quick_reply', quick_reply: { id: 'details 1', title: 'Details' } },
+      { type: 'url', url: { link: 'https://www.instagram.com/socialcafe/', title: '📷 Instagram' } },
+    ]);
+    expect(payload.interactive.action.cards[1].action.buttons[1]).toEqual({
+      type: 'url',
+      url: { link: 'https://www.facebook.com/othercafe/', title: '🔵 Facebook' },
+    });
+  });
+
   it('sends the published restaurant preference flow with bounded prefill data', async () => {
     process.env.META_WHATSAPP_RESTAURANT_FLOW_ID = 'published-flow-123';
     vi.resetModules();

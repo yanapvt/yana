@@ -1,5 +1,7 @@
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import 'dotenv/config';
+import { fileURLToPath } from 'node:url';
 
 const checkOnly = process.argv.includes('--check-only');
 const database = process.env.POSTGRES_INTEGRATION_DB?.trim();
@@ -12,13 +14,15 @@ const prerequisites = {
 };
 const ready = Object.values(prerequisites).every(Boolean);
 console.log(JSON.stringify({ event: 'integration_test_prerequisites', ready, prerequisites }));
-if (!ready || checkOnly) process.exit(0);
+if (checkOnly) process.exit(0);
+if (!ready) process.exit(1);
 
-const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const child = spawn(command, ['exec', '--', 'vitest', '--run', '--config', 'vitest.integration.config.ts'], {
+const vitest = fileURLToPath(new URL('../node_modules/vitest/vitest.mjs', import.meta.url));
+const child = spawn(process.execPath, [vitest, 'run', '--config', 'vitest.integration.config.ts'], {
   stdio: 'inherit',
   env: { ...process.env, POSTGRES_DB: database!, REDIS_DB: redisDb! },
 });
+child.on('error', () => { console.error('Integration test runner could not start.'); process.exitCode = 1; });
 child.on('exit', (code) => process.exit(code ?? 1));
 
 function reachable(host: string, port: number): Promise<boolean> {

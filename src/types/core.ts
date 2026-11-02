@@ -232,9 +232,28 @@ export interface SchemaFieldConditional {
 // ============================================================================
 
 export interface LLMDecisionOutput {
+  contractVersion?: '2.0';
+  responseText?: string;
   intent: string;
+  intentConfidence?: number;
+  ambiguity?: { isAmbiguous: boolean; alternatives: string[]; reason?: string };
+  clarificationRequired?: boolean;
+  clarificationQuestion?: string;
   parameters: Record<string, unknown>;
+  fieldUpdates?: Record<string, unknown>;
+  memoryCandidates?: import('../orchestration/TravellerMemory.js').MemoryCandidate[];
   missingFields: string[];
+  taskTransition?: 'continue' | 'pause' | 'resume' | 'switch' | 'none';
+  recommendedSchema?: string;
+  uiRecommendation?: {
+    mode: 'chat_reply' | 'clarification' | 'clarification_form' | 'results_list' | 'itinerary_editor' | 'confirmation';
+    schemaId?: string;
+  };
+  proposedAction?: {
+    name: 'none' | 'search' | 'open_form' | 'handoff';
+    arguments: Record<string, unknown>;
+  };
+  unresolvedQuestions?: string[];
   suggestedAction: 'ask_missing' | 'execute_tool' | 'clarify' | 'handoff';
   confidence: number;
   reasoning?: string;

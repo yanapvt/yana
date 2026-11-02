@@ -1,6 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { InboundMessage } from '../types/core.js';
 import { LLMServiceError } from '../services/LLMService.js';
+import { FixtureSessionRepository, FixtureStateStore } from '../tests/fixtures/sessionStorage.js';
+import { ContextBuilder } from '../orchestration/ContextBuilder.js';
+import { ConversationControlPlane, initConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
+vi.mock('../services/WorkflowLockService.js', () => ({ withWorkflowLock: async (_user: string, operation: () => Promise<unknown>) => operation() }));
+vi.mock('../db/repositories/MessageRepository.js', () => ({ MessageRepository: class {
+  async findRecentByTraveller() { return []; }
+  async appendConversationTurn() { return 'durable'; }
+} }));
 
 const handleMessageMock = vi.fn();
 const handleCompletedIntakeMock = vi.fn();
@@ -31,13 +39,19 @@ const issueRecheckReceiptMock = vi.fn();
 const clearHandoffConsentPendingMock = vi.fn();
 const requestHotelHandoffMock = vi.fn();
 const clearHotelSearchSessionMock = vi.fn();
+const pauseHotelOutboundMock = vi.fn();
+const pauseHotelSearchSessionMock = vi.fn();
+const resumeHotelSearchSessionMock = vi.fn();
 const getRestaurantSearchSessionMock = vi.fn();
 const saveRestaurantFormSentMock = vi.fn();
 const saveRestaurantAwaitingPreferencesMock = vi.fn();
+const saveRestaurantLocationConfirmationMock = vi.fn();
 const saveRestaurantSearchingMock = vi.fn();
 const saveRestaurantResultsMock = vi.fn();
 const selectRestaurantMock = vi.fn();
 const clearRestaurantSearchSessionMock = vi.fn();
+const pauseRestaurantSearchSessionMock = vi.fn();
+const resumeRestaurantSearchSessionMock = vi.fn();
 const handleRestaurantBrowseSearchMock = vi.fn();
 const buildRestaurantBrowseResultsPageReplyMock = vi.fn();
 const getExcursionSearchSessionMock = vi.fn();
@@ -48,6 +62,8 @@ const saveExcursionResultsMock = vi.fn();
 const selectExperienceMock = vi.fn();
 const saveProviderPendingMock = vi.fn();
 const clearExcursionSearchSessionMock = vi.fn();
+const pauseExcursionSearchSessionMock = vi.fn();
+const resumeExcursionSearchSessionMock = vi.fn();
 const handleExcursionBrowseSearchMock = vi.fn();
 const buildExcursionBrowseResultsPageReplyMock = vi.fn();
 const getLogisticsSearchSessionMock = vi.fn();
@@ -58,9 +74,14 @@ const saveLogisticsResultsMock = vi.fn();
 const selectTransportOptionMock = vi.fn();
 const saveLogisticsProviderPendingMock = vi.fn();
 const clearLogisticsSearchSessionMock = vi.fn();
+const pauseLogisticsSearchSessionMock = vi.fn();
+const resumeLogisticsSearchSessionMock = vi.fn();
 const handleLogisticsProviderSearchMock = vi.fn();
 const buildLogisticsOptionsPageReplyMock = vi.fn();
 const getItinerarySessionMock = vi.fn();
+const getAuthoritativeItineraryMock = vi.fn();
+const commitItineraryEditMock = vi.fn();
+let workspaceServiceOverride: any;
 const saveItineraryFormSentMock = vi.fn();
 const saveItineraryAwaitingPreferencesMock = vi.fn();
 const saveItineraryPlanningMock = vi.fn();
@@ -68,6 +89,8 @@ const saveItineraryMock = vi.fn();
 const saveItineraryEditingMock = vi.fn();
 const setItineraryCurrentDayMock = vi.fn();
 const clearItinerarySessionMock = vi.fn();
+const pauseItinerarySessionMock = vi.fn();
+const resumeItinerarySessionMock = vi.fn();
 const clearItineraryWorkspaceMock = vi.fn();
 const planItineraryMock = vi.fn();
 const sendWhatsAppTextMock = vi.fn();
@@ -119,12 +142,13 @@ vi.mock('../services/HotelSearchFlowService.js', () => ({
 
 vi.mock('../services/hotelSearchSessionService.js', () => ({
   getHotelSearchSessionService: () => ({
+    getAuthoritative: getHotelSearchSessionMock,
     get: getHotelSearchSessionMock,
     saveProfileRequired: saveProfileRequiredMock,
     saveHotelFormSent: saveHotelFormSentMock,
     saveAwaitingPreferences: saveAwaitingPreferencesMock,
     saveSearching: saveSearchingMock,
-    saveResults: saveResultsMock,
+    saveResults: (userId: string, criteria: unknown, results: unknown, offset: number, _expected?: unknown) => saveResultsMock(userId, criteria, results, offset),
     selectHotel: selectHotelMock,
     markHandoffConsentPending: markHandoffConsentPendingMock,
     markSourcingConsentPending: markSourcingConsentPendingMock,
@@ -132,6 +156,9 @@ vi.mock('../services/hotelSearchSessionService.js', () => ({
     clearSourcingConsentPending: clearSourcingConsentPendingMock,
     saveRecheckReceipt: saveRecheckReceiptMock,
     clearHandoffConsentPending: clearHandoffConsentPendingMock,
+    pauseOutbound: pauseHotelOutboundMock,
+    pause: pauseHotelSearchSessionMock,
+    resume: resumeHotelSearchSessionMock,
     clear: clearHotelSearchSessionMock,
   }),
 }));
@@ -145,13 +172,17 @@ vi.mock('../services/handoff/HotelRecheckReceiptService.js', () => ({
 
 vi.mock('../services/restaurantSearchSessionService.js', () => ({
   getRestaurantSearchSessionService: () => ({
+    getAuthoritative: getRestaurantSearchSessionMock,
     get: getRestaurantSearchSessionMock,
     saveRestaurantFormSent: saveRestaurantFormSentMock,
     saveAwaitingPreferences: saveRestaurantAwaitingPreferencesMock,
+    saveLocationConfirmation: saveRestaurantLocationConfirmationMock,
     saveSearching: saveRestaurantSearchingMock,
-    saveResults: saveRestaurantResultsMock,
+    saveResults: (userId: string, criteria: unknown, results: unknown, offset: number, _expected?: unknown) => saveRestaurantResultsMock(userId, criteria, results, offset),
     selectRestaurant: selectRestaurantMock,
     clear: clearRestaurantSearchSessionMock,
+    pause: pauseRestaurantSearchSessionMock,
+    resume: resumeRestaurantSearchSessionMock,
   }),
 }));
 
@@ -164,14 +195,17 @@ vi.mock('../services/RestaurantSearchFlowService.js', () => ({
 
 vi.mock('../services/excursionSearchSessionService.js', () => ({
   getExcursionSearchSessionService: () => ({
+    getAuthoritative: getExcursionSearchSessionMock,
     get: getExcursionSearchSessionMock,
     saveExcursionFormSent: saveExcursionFormSentMock,
     saveAwaitingPreferences: saveExcursionAwaitingPreferencesMock,
     saveSearching: saveExcursionSearchingMock,
-    saveResults: saveExcursionResultsMock,
+    saveResults: (userId: string, criteria: unknown, results: unknown, offset: number, _expected?: unknown) => saveExcursionResultsMock(userId, criteria, results, offset),
     selectExperience: selectExperienceMock,
     saveProviderPending: saveProviderPendingMock,
     clear: clearExcursionSearchSessionMock,
+    pause: pauseExcursionSearchSessionMock,
+    resume: resumeExcursionSearchSessionMock,
   }),
 }));
 
@@ -184,14 +218,17 @@ vi.mock('../services/ExcursionSearchFlowService.js', () => ({
 
 vi.mock('../services/logisticsSearchSessionService.js', () => ({
   getLogisticsSearchSessionService: () => ({
+    getAuthoritative: getLogisticsSearchSessionMock,
     get: getLogisticsSearchSessionMock,
     saveTransportFormSent: saveTransportFormSentMock,
     saveAwaitingPreferences: saveLogisticsAwaitingPreferencesMock,
     saveSearching: saveLogisticsSearchingMock,
-    saveResults: saveLogisticsResultsMock,
+    saveResults: (userId: string, criteria: unknown, results: unknown, offset: number, _expected?: unknown) => saveLogisticsResultsMock(userId, criteria, results, offset),
     selectOption: selectTransportOptionMock,
     saveProviderPending: saveLogisticsProviderPendingMock,
     clear: clearLogisticsSearchSessionMock,
+    pause: pauseLogisticsSearchSessionMock,
+    resume: resumeLogisticsSearchSessionMock,
   }),
 }));
 
@@ -204,6 +241,8 @@ vi.mock('../services/LogisticsSearchFlowService.js', () => ({
 
 vi.mock('../services/itinerarySessionService.js', () => ({
   getItinerarySessionService: () => ({
+    getAuthoritative: getAuthoritativeItineraryMock,
+    commitEdit: commitItineraryEditMock,
     get: getItinerarySessionMock,
     saveFormSent: saveItineraryFormSentMock,
     saveAwaitingPreferences: saveItineraryAwaitingPreferencesMock,
@@ -212,11 +251,13 @@ vi.mock('../services/itinerarySessionService.js', () => ({
     saveEditing: saveItineraryEditingMock,
     setCurrentDay: setItineraryCurrentDayMock,
     clear: clearItinerarySessionMock,
+    pause: pauseItinerarySessionMock,
+    resume: resumeItinerarySessionMock,
   }),
 }));
 
 vi.mock('../services/ItineraryWorkspaceService.js', () => ({
-  getItineraryWorkspaceService: () => ({
+  getItineraryWorkspaceService: () => workspaceServiceOverride ?? ({
     createOrUpdateWorkspace: vi.fn().mockResolvedValue({ shareToken: 'test-workspace-token' }),
     clearUserWorkspace: clearItineraryWorkspaceMock,
   }),
@@ -311,6 +352,8 @@ import { processInboundMessage, processNormalizedInboundMessage, processWebhookP
 
 describe('webhook hotel search flow', () => {
   beforeEach(() => {
+    workspaceServiceOverride = undefined;
+    getAuthoritativeItineraryMock.mockImplementation((id: string) => getItinerarySessionMock(id));
     vi.clearAllMocks();
     getNameStateMock.mockResolvedValue(null);
     handleNameReplyMock.mockResolvedValue(null);
@@ -341,6 +384,7 @@ describe('webhook hotel search flow', () => {
     saveHotelFormSentMock.mockResolvedValue(undefined);
     saveRestaurantFormSentMock.mockResolvedValue(undefined);
     saveRestaurantAwaitingPreferencesMock.mockResolvedValue(undefined);
+    saveRestaurantLocationConfirmationMock.mockResolvedValue(undefined);
     saveExcursionFormSentMock.mockResolvedValue(undefined);
     saveExcursionAwaitingPreferencesMock.mockResolvedValue(undefined);
     saveTransportFormSentMock.mockResolvedValue(undefined);
@@ -374,10 +418,21 @@ describe('webhook hotel search flow', () => {
     saveProviderPendingMock.mockResolvedValue(undefined);
     saveLogisticsProviderPendingMock.mockResolvedValue(undefined);
     clearHotelSearchSessionMock.mockResolvedValue(undefined);
+    pauseHotelOutboundMock.mockResolvedValue(undefined);
+    pauseHotelSearchSessionMock.mockResolvedValue(undefined);
+    resumeHotelSearchSessionMock.mockResolvedValue(undefined);
     clearRestaurantSearchSessionMock.mockResolvedValue(undefined);
+    pauseRestaurantSearchSessionMock.mockResolvedValue(undefined);
+    resumeRestaurantSearchSessionMock.mockResolvedValue(undefined);
     clearExcursionSearchSessionMock.mockResolvedValue(undefined);
+    pauseExcursionSearchSessionMock.mockResolvedValue(undefined);
+    resumeExcursionSearchSessionMock.mockResolvedValue(undefined);
     clearLogisticsSearchSessionMock.mockResolvedValue(undefined);
+    pauseLogisticsSearchSessionMock.mockResolvedValue(undefined);
+    resumeLogisticsSearchSessionMock.mockResolvedValue(undefined);
     clearItinerarySessionMock.mockResolvedValue(undefined);
+    pauseItinerarySessionMock.mockResolvedValue(undefined);
+    resumeItinerarySessionMock.mockResolvedValue(undefined);
     clearItineraryWorkspaceMock.mockResolvedValue(undefined);
     planItineraryMock.mockResolvedValue(buildGeneratedItinerary());
     sendWhatsAppTextMock.mockResolvedValue(true);
@@ -406,7 +461,8 @@ describe('webhook hotel search flow', () => {
       suggestedAction: 'clarify',
       confidence: 0.3,
     });
-    generateUIContentMock.mockImplementation(async (prompt: string) => {
+    generateUIContentMock.mockImplementation(async (prompt: string | Record<string, unknown>) => {
+      if (typeof prompt === 'object') return String(prompt.fallbackText ?? 'I can help with your travel plans.');
       const fallback = prompt.match(/Deterministic fallback style reference: ([\s\S]*)$/);
       return fallback?.[1]?.trim() || 'I can help with your trip. What would you like to organize first?';
     });
@@ -477,7 +533,7 @@ describe('webhook hotel search flow', () => {
       expect.objectContaining({ whatsappNumber: 'whatsapp:+15550009999' })
     );
     expect(handleCompletedIntakeMock).not.toHaveBeenCalled();
-    expect(llmDecideMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).toHaveBeenCalledTimes(1);
   });
 
   it.each(['ask_missing', 'execute_tool'] as const)(
@@ -523,10 +579,9 @@ describe('webhook hotel search flow', () => {
     expect(handleCompletedIntakeMock).not.toHaveBeenCalled();
   });
 
-  it('greets a first text sender by their WhatsApp name and asks what to call them', async () => {
+  it('greets a first text sender using their WhatsApp contact name without asking again', async () => {
     profileGateCheckMock.mockResolvedValue({ complete: false });
     getProfileMock.mockResolvedValue(null);
-    askAboutNameMock.mockResolvedValue('Jeremy');
 
     const result = await processWebhookPayload({
       MessageSid: 'SMfirst-text',
@@ -536,16 +591,16 @@ describe('webhook hotel search flow', () => {
       ProfileName: 'Jeremy McShane',
     }, 'corr-first-text');
 
-    expect(result.reply).toMatch(/^Hi Jeremy! /);
+    expect(result.reply).toMatch(/^Hi Jeremy McShane, welcome to YANA/);
     expect(result.reply).toContain('please complete this quick profile');
-    expect(result.reply).toContain('Would you like me to call you Jeremy, or would you prefer another name?');
+    expect(result.reply).not.toContain('Would you like me to call you');
+    expect(rememberExistingNameMock).toHaveBeenCalledWith('whatsapp:+15550009999', 'Jeremy McShane');
   });
 
   it('looks up the WhatsApp name for a first OpenWA text without a name in its webhook', async () => {
     profileGateCheckMock.mockResolvedValue({ complete: false });
     getProfileMock.mockResolvedValue(null);
     getWhatsAppDisplayNameMock.mockResolvedValue('Amina Khan');
-    askAboutNameMock.mockResolvedValue('Amina');
 
     const inboundMessage: InboundMessage = {
       ...buildTextMessage('Find a hotel'),
@@ -554,24 +609,26 @@ describe('webhook hotel search flow', () => {
     const result = await processNormalizedInboundMessage(inboundMessage, 'corr-openwa-first-text');
 
     expect(getWhatsAppDisplayNameMock).toHaveBeenCalledWith(inboundMessage.from);
-    expect(result.reply).toMatch(/^Hi Amina! /);
-    expect(result.reply).toContain('Would you like me to call you Amina, or would you prefer another name?');
+    expect(result.reply).toMatch(/^Hi Amina Khan, welcome to YANA/);
+    expect(result.reply).not.toContain('Would you like me to call you');
   });
 
-  it('uses a confirmed name choice without routing it as a new travel request', async () => {
-    getNameStateMock.mockResolvedValue({ suggestedName: 'Jeremy', awaitingReply: true });
-    handleNameReplyMock.mockResolvedValue('Of course, Jay. What can I help you with?');
+  it('uses the first name saved by the profile instead of the WhatsApp contact name', async () => {
+    getProfileMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999',
+      form: { preferredName: 'Jay', fullName: 'Jay Fernando' },
+    });
 
     const result = await processWebhookPayload({
       MessageSid: 'SMname-reply',
       From: 'whatsapp:+15550009999',
       To: 'whatsapp:+15550000000',
-      Body: 'Call me Jay',
+      Body: 'Hello',
       ProfileName: 'Jeremy McShane',
     }, 'corr-name-reply');
 
-    expect(result.reply).toBe('Of course, Jay. What can I help you with?');
-    expect(profileGateCheckMock).not.toHaveBeenCalled();
+    expect(rememberExistingNameMock).toHaveBeenCalledWith('whatsapp:+15550009999', 'Jay');
+    expect(result.reply).not.toContain('Jeremy McShane');
   });
 
   it('resends the hotel form link when the user lost it during an open hotel form', async () => {
@@ -597,7 +654,7 @@ describe('webhook hotel search flow', () => {
       'i dont have it re send it please',
       expect.objectContaining({ preferredName: 'Sam' })
     );
-    expect(llmDecideMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).toHaveBeenCalledTimes(1);
   });
 
   it('sends a fresh hotel form link instead of a dead-end already-sent message', async () => {
@@ -636,7 +693,7 @@ describe('webhook hotel search flow', () => {
       'i want to find a hotel in colombo tomorrow',
       expect.objectContaining({ preferredName: 'Sam' })
     );
-    expect(llmDecideMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -752,7 +809,7 @@ describe('webhook hotel search flow', () => {
       expect.objectContaining({ originalMessage })
     );
     expect(saveRestaurantSearchingMock).not.toHaveBeenCalled();
-    expect(llmDecideMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).toHaveBeenCalledTimes(1);
   });
 
   it('uses the active restaurant schema even when a restored legacy session has no original message', async () => {
@@ -779,7 +836,7 @@ describe('webhook hotel search flow', () => {
       expect.any(Object)
     );
     expect(saveRestaurantSearchingMock).not.toHaveBeenCalled();
-    expect(llmDecideMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).toHaveBeenCalledTimes(1);
   });
 
   it('recognizes a misspelled one-day itinerary request before the LLM can invent an untracked follow-up', async () => {
@@ -796,7 +853,7 @@ describe('webhook hotel search flow', () => {
       'give an intenry for a day in colombo',
       expect.objectContaining({ preferredName: 'Sam' })
     );
-    expect(llmDecideMock).not.toHaveBeenCalled();
+    expect(llmDecideMock).toHaveBeenCalledTimes(1);
   });
 
   it('collects dining preferences after the tourist gives an area', async () => {
@@ -858,7 +915,7 @@ describe('webhook hotel search flow', () => {
     expect(handleRestaurantBrowseSearchMock).not.toHaveBeenCalled();
   });
 
-  it('lets a fresh restaurant exploration override an old itinerary session', async () => {
+  it('pauses an itinerary while a fresh restaurant exploration becomes active', async () => {
     getItinerarySessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       criteria: {
@@ -886,12 +943,12 @@ describe('webhook hotel search flow', () => {
     );
 
     expect(reply).toContain('Which town or area should I search?');
-    expect(clearItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(clearItinerarySessionMock).not.toHaveBeenCalled();
     expect(saveRestaurantFormSentMock).not.toHaveBeenCalled();
     expect(saveItineraryEditingMock).not.toHaveBeenCalled();
   });
 
-  it('switches from hotel results to restaurant discovery without keeping the hotel session active', async () => {
+  it('switches from hotel results to restaurant discovery while preserving the hotel task', async () => {
     getHotelSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       stage: 'results',
@@ -917,7 +974,7 @@ describe('webhook hotel search flow', () => {
     );
 
     expect(reply).toContain('/forms/restaurant/');
-    expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(clearHotelSearchSessionMock).not.toHaveBeenCalled();
     expect(saveRestaurantAwaitingPreferencesMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
       expect.objectContaining({ location: 'Galle' }),
@@ -926,7 +983,58 @@ describe('webhook hotel search flow', () => {
     expect(saveRestaurantSearchingMock).not.toHaveBeenCalled();
   });
 
-  it('switches from hotel results to excursion discovery without keeping the hotel session active', async () => {
+  it('keeps a confirmed hotel area through the dining handoff instead of restoring an older city', async () => {
+    const hotel = {
+      userId: 'whatsapp:+15550009999', id: 'hotel-hikkaduwa', stage: 'booking_provider_pending',
+      state: 'booking_provider_pending', lifecycleStatus: 'active',
+      pendingSourcingConsent: true, criteria: { location: 'Hikkaduwa' },
+      updatedAt: '2026-10-29T08:00:00.000Z',
+    };
+    let restaurant: any = null;
+    getHotelSearchSessionMock.mockImplementation(async () => hotel);
+    pauseHotelSearchSessionMock.mockImplementation(async () => { hotel.lifecycleStatus = 'paused'; });
+    getRestaurantSearchSessionMock.mockImplementation(async () => restaurant);
+    saveRestaurantLocationConfirmationMock.mockImplementation(async (_userId: string, location: string, originalMessage: string) => {
+      restaurant = { id: 'restaurant-hikkaduwa', userId: 'whatsapp:+15550009999',
+        state: 'confirming_location', stage: 'awaiting_preferences', lifecycleStatus: 'active',
+        pendingLocationConfirmation: location, originalMessage, criteria: {},
+        updatedAt: '2026-10-29T08:01:00.000Z' };
+    });
+    saveRestaurantAwaitingPreferencesMock.mockImplementation(async (_userId: string, criteria: Record<string, unknown>) => {
+      restaurant = { ...restaurant, state: 'awaiting_preferences', stage: 'awaiting_preferences',
+        pendingLocationConfirmation: undefined, criteria,
+        updatedAt: '2026-10-29T08:02:00.000Z' };
+    });
+    llmDecideMock.mockResolvedValue({ intent: 'search_restaurants', parameters: {}, missingFields: ['location'],
+      suggestedAction: 'ask_missing', taskTransition: 'switch', confidence: 0.95 });
+
+    const first = await processInboundMessage(buildTextMessage('What can I do for dinner there?'), 'corr-dining-there');
+    expect(first).toContain('Hikkaduwa');
+    expect(saveRestaurantLocationConfirmationMock).toHaveBeenCalledWith(
+      'whatsapp:+15550009999', 'Hikkaduwa', expect.any(String)
+    );
+
+    const confirmed = await processInboundMessage(buildTextMessage('Yes Hikkaduwa'), 'corr-dining-confirm');
+    expect(confirmed).toContain('/forms/restaurant/');
+    expect(restaurant.criteria.location).toBe('Hikkaduwa');
+    expect(restaurant.pendingLocationConfirmation).toBeUndefined();
+
+    const followup = await processInboundMessage(buildTextMessage('Yes'), 'corr-dining-followup');
+    expect(followup).toContain('Hikkaduwa');
+    expect(followup).not.toContain('Colombo');
+    expect(followup).not.toContain('sourcing request for this stay');
+
+    await saveRestaurantLocationConfirmationMock('whatsapp:+15550009999', 'Hikkaduwa', 'Dinner there');
+    const changed = await processInboundMessage(buildTextMessage('Colombo instead'), 'corr-dining-change');
+    expect(changed).toContain('/forms/restaurant/');
+    expect(restaurant.criteria.location).toBe('Colombo');
+
+    await saveRestaurantLocationConfirmationMock('whatsapp:+15550009999', 'Hikkaduwa', 'Dinner there');
+    await processInboundMessage(buildTextMessage('Yes'), 'corr-dining-simple-yes');
+    expect(restaurant.criteria.location).toBe('Hikkaduwa');
+  });
+
+  it('switches from hotel results to excursion discovery while preserving the hotel task', async () => {
     getHotelSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       stage: 'results',
@@ -940,26 +1048,28 @@ describe('webhook hotel search flow', () => {
     });
     llmDecideMock.mockResolvedValue({
       intent: 'search_excursions',
-      parameters: { destination: 'Galle' },
+      responseText: 'Absolutely — let’s switch from stays to experiences in Hikkaduwa.',
+      parameters: { destination: 'Hikkaduwa' },
       missingFields: [],
       suggestedAction: 'execute_tool',
       confidence: 0.9,
     });
 
     const reply = await processInboundMessage(
-      buildTextMessage('Find excursions in Galle'),
+      buildTextMessage('What activity can I do in Hikkaduwa?'),
       'corr-hotel-to-excursion'
     );
 
+    expect(reply).toContain('switch from stays to experiences');
     expect(reply).toContain('suggestions shortly');
-    expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(clearHotelSearchSessionMock).not.toHaveBeenCalled();
     expect(saveExcursionSearchingMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
-      expect.objectContaining({ destination: 'Galle' })
+      expect.objectContaining({ destination: 'Hikkaduwa' })
     );
   });
 
-  it('lets a fresh hotel request override an old itinerary session and opens the hotel form', async () => {
+  it('pauses an itinerary when a fresh hotel request opens the hotel form', async () => {
     process.env.FORM_PUBLIC_BASE_URL = 'https://forms.yana.example';
     getItinerarySessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
@@ -988,13 +1098,13 @@ describe('webhook hotel search flow', () => {
     expect(reply).toContain('start a fresh hotel search');
     expect(reply).toContain('quick hotel request form');
     expect(reply).toContain('https://forms.yana.example/forms/hotel/');
-    expect(clearItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(clearItinerarySessionMock).not.toHaveBeenCalled();
     expect(saveHotelFormSentMock).toHaveBeenCalled();
     expect(handleMessageMock).not.toHaveBeenCalled();
     expect(saveItineraryEditingMock).not.toHaveBeenCalled();
   });
 
-  it('switches a bare hotels question away from an unfinished itinerary', async () => {
+  it('switches a bare hotels question while preserving the unfinished itinerary', async () => {
     getItinerarySessionMock.mockResolvedValue(buildItinerarySession({
       state: 'awaiting_preferences',
       criteria: { arrivalDate: '2026-07-12', departureDate: '2026-07-19', adults: 2 },
@@ -1006,7 +1116,7 @@ describe('webhook hotel search flow', () => {
     );
 
     expect(reply).toContain('quick hotel request form');
-    expect(clearItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(clearItinerarySessionMock).not.toHaveBeenCalled();
     expect(saveHotelFormSentMock).toHaveBeenCalled();
     expect(planItineraryMock).not.toHaveBeenCalled();
   });
@@ -1039,7 +1149,7 @@ describe('webhook hotel search flow', () => {
     await processInboundMessage(buildTextMessage('reset'), 'corr-reset-before-hotel');
     const reply = await processInboundMessage(buildTextMessage('hotel'), 'corr-hotel-after-reset');
 
-    expect(clearItineraryWorkspaceMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(clearItineraryWorkspaceMock).not.toHaveBeenCalled();
     expect(reply).toContain('quick hotel request form');
     expect(planItineraryMock).not.toHaveBeenCalled();
     expect(saveHotelFormSentMock).toHaveBeenCalled();
@@ -1056,8 +1166,8 @@ describe('webhook hotel search flow', () => {
       'corr-itinerary-hotel-edit'
     );
 
-    expect(reply).toContain('prepared your itinerary');
-    expect(saveItineraryEditingMock).toHaveBeenCalled();
+    expect(reply).toContain('Which day and part');
+    expect(saveItineraryEditingMock).not.toHaveBeenCalled();
     expect(saveHotelFormSentMock).not.toHaveBeenCalled();
   });
 
@@ -1150,6 +1260,7 @@ describe('webhook hotel search flow', () => {
 
     await vi.waitFor(() => {
       expect(handleRestaurantBrowseSearchMock).toHaveBeenCalled();
+      expect(sendWhatsAppMessagesMock).toHaveBeenCalled();
     });
     expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
@@ -1374,8 +1485,9 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-restaurant-reset');
 
-    expect(reply).toContain('cleared the active request');
-    expect(clearRestaurantSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(reply).toContain('paused your saved requests');
+    expect(clearRestaurantSearchSessionMock).not.toHaveBeenCalled();
+    expect(pauseRestaurantSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
   });
 
   it('transcribes a restaurant voice note and starts restaurant flow', async () => {
@@ -1415,11 +1527,17 @@ describe('webhook hotel search flow', () => {
     "I'd like to go surfing.",
     'I want a safari.',
     'What are the best things to do in Kandy?',
+    'What can I do in Kandy?',
+    'What should we see around Galle?',
+    "What's happening around here?",
+    'Is there anything to do nearby?',
+    'I am looking for experiences in Colombo.',
+    'Show me local sights in Negombo.',
   ])('asks for the area before showing excursion discovery suggestions: %s', async (message) => {
     handleMessageMock.mockResolvedValue({ handled: false });
     const reply = await processInboundMessage(buildTextMessage(message), 'corr-excursion-intent');
 
-    if (/\bin Kandy\b/i.test(message)) {
+    if (/\b(?:in Kandy|around Galle|in Colombo|in Negombo)\b/i.test(message)) {
       expect(reply).toContain('suggestions shortly');
     } else {
       expect(reply).toContain('Which town or area are you interested in?');
@@ -1459,6 +1577,7 @@ describe('webhook hotel search flow', () => {
       expect.objectContaining({ destination: 'Colombo' })
     );
     expect(saveExcursionFormSentMock).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(handleExcursionBrowseSearchMock).toHaveBeenCalled());
     expect(handleExcursionBrowseSearchMock).toHaveBeenCalledWith(
       expect.objectContaining({ destination: 'Colombo' }),
       expect.objectContaining({ sessionId: 'whatsapp:+15550009999' })
@@ -1546,6 +1665,7 @@ describe('webhook hotel search flow', () => {
 
     await vi.waitFor(() => {
       expect(handleExcursionBrowseSearchMock).toHaveBeenCalled();
+      expect(sendWhatsAppMessagesMock).toHaveBeenCalled();
     });
     expect(sendWhatsAppMessagesMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
@@ -1633,8 +1753,9 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-excursion-reset');
 
-    expect(reply).toContain('cleared the active request');
-    expect(clearExcursionSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(reply).toContain('paused your saved requests');
+    expect(clearExcursionSearchSessionMock).not.toHaveBeenCalled();
+    expect(pauseExcursionSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
   });
 
   it('transcribes an excursion voice note and starts excursion flow', async () => {
@@ -1808,7 +1929,7 @@ describe('webhook hotel search flow', () => {
     expect(setItineraryCurrentDayMock).toHaveBeenCalledWith('whatsapp:+15550009999', 2);
   });
 
-  it('regenerates itinerary incrementally for edit requests', async () => {
+  it('clarifies an edit without a target day instead of reporting an ineffective regeneration', async () => {
     getItinerarySessionMock.mockResolvedValue(buildItinerarySession({
       state: 'showing_itinerary',
       itinerary: buildGeneratedItinerary(),
@@ -1817,11 +1938,34 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('more beach time'), 'corr-itinerary-edit');
 
+    expect(reply).toContain('Which day and part');
+    expect(planItineraryMock).not.toHaveBeenCalled();
+    expect(saveItineraryEditingMock).not.toHaveBeenCalled();
+  });
+
+  it('applies a WhatsApp edit through the real edit/session services and exposes it in the recovered website workspace', async () => {
+    const actualSessions = await vi.importActual<typeof import('../services/itinerarySessionService.js')>('../services/itinerarySessionService.js');
+    const actualWorkspace = await vi.importActual<typeof import('../services/ItineraryWorkspaceService.js')>('../services/ItineraryWorkspaceService.js');
+    const store = new FixtureStateStore();
+    const repository = new FixtureSessionRepository<any>();
+    const sessions = new actualSessions.ItinerarySessionService(store as any, repository);
+    const user = 'whatsapp:+15550009999';
+    const criteria = { arrivalDate: '2026-11-01', departureDate: '2026-11-04', adults: 2 };
+    await sessions.saveItinerary(user, criteria, buildGeneratedItinerary());
+    workspaceServiceOverride = new actualWorkspace.ItineraryWorkspaceService(store as any, sessions);
+    const workspace = await workspaceServiceOverride.createWorkspace(user, buildGeneratedItinerary(), criteria);
+    getItinerarySessionMock.mockImplementation((id: string) => sessions.get(id));
+    getAuthoritativeItineraryMock.mockImplementation((id: string) => sessions.getAuthoritative(id));
+    commitItineraryEditMock.mockImplementation((...args: Parameters<typeof sessions.commitEdit>) => sessions.commitEdit(...args));
+    const reply = await processInboundMessage(buildTextMessage('change day 2 afternoon to a quiet beach visit'), 'fixture-edit-command');
     expect(reply).toContain('prepared your itinerary');
-    expect(planItineraryMock).toHaveBeenCalledWith(
-      expect.objectContaining({ additionalPreferences: 'avoid long drives; more beach time' })
-    );
-    expect(saveItineraryEditingMock).toHaveBeenCalled();
+    expect(planItineraryMock).not.toHaveBeenCalled();
+    expect((await sessions.getAuthoritative(user))?.itinerary?.days[1].afternoon).toBe('a quiet beach visit');
+    store.clear();
+    const restarted = new actualSessions.ItinerarySessionService(new FixtureStateStore() as any, repository);
+    const recovered = await new actualWorkspace.ItineraryWorkspaceService(new FixtureStateStore() as any, restarted).getWorkspace(workspace.shareToken);
+    expect(recovered?.itinerary.days[1].afternoon).toBe('a quiet beach visit');
+    expect(saveHotelFormSentMock).not.toHaveBeenCalled();
   });
 
   it('clears itinerary state on reset', async () => {
@@ -1832,8 +1976,10 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-itinerary-reset');
 
-    expect(reply).toContain('cleared the active request');
-    expect(clearItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(reply).toContain('paused your saved requests');
+    expect(clearItinerarySessionMock).not.toHaveBeenCalled();
+    expect(clearItineraryWorkspaceMock).not.toHaveBeenCalled();
+    expect(pauseItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
   });
 
   it('transcribes an itinerary voice note and starts itinerary flow', async () => {
@@ -2015,7 +2161,7 @@ describe('webhook hotel search flow', () => {
           expect.objectContaining({ body: expect.stringContaining('I found these hotel matches') }),
           expect.objectContaining({ body: expect.stringContaining('Why Yana picked it:') }),
         ]),
-        { voice: undefined, from: 'whatsapp:+15550000000' }
+        expect.objectContaining({ voice: undefined, from: 'whatsapp:+15550000000' })
       );
       expect(JSON.stringify(sendWhatsAppMessagesMock.mock.calls)).not.toContain('maps.google.com');
       expect(JSON.stringify(sendWhatsAppMessagesMock.mock.calls)).not.toContain('/places/smart/');
@@ -2383,10 +2529,10 @@ describe('webhook hotel search flow', () => {
       expect.objectContaining({
         userMessage: 'actually lets do Kandy instead',
         sessionState: expect.objectContaining({
-          currentIntent: 'hotel_search',
+          currentIntent: 'hotel',
           activeSchema: 'search_hotels',
         }),
-      })
+      }), expect.stringContaining('Your AI Navigation Agent')
     );
     expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
     expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
@@ -2458,9 +2604,10 @@ describe('webhook hotel search flow', () => {
     expectNoInternalPresentationTerms(reply);
   });
 
-  it('uses the ConversationManager capabilities template for general inquiry', async () => {
+  it('uses the primary interpretation response for a general inquiry', async () => {
     handleMessageMock.mockResolvedValue({ handled: false });
     llmDecideMock.mockResolvedValue({
+      responseText: 'I can help with things to do or excursions, a hotel, restaurants, transport, or local recommendations.',
       intent: 'general_inquiry',
       parameters: {},
       missingFields: [],
@@ -2480,9 +2627,10 @@ describe('webhook hotel search flow', () => {
     expect(reply).not.toContain('execute_tool');
   });
 
-  it('uses the ConversationManager low-confidence fallback template', async () => {
+  it('uses the safe clarification fallback when the primary model is uncertain', async () => {
     handleMessageMock.mockResolvedValue({ handled: false });
     llmDecideMock.mockResolvedValue({
+      responseText: 'Are you looking for things to do or excursions, a hotel, restaurants, transport, a full trip plan, or local recommendations?',
       intent: 'unclear',
       parameters: {},
       missingFields: [],
@@ -2507,7 +2655,7 @@ describe('webhook hotel search flow', () => {
         'plan_itinerary',
         'general_inquiry',
       ]),
-    }));
+    }), expect.stringContaining('Your AI Navigation Agent'));
     expectNoInternalPresentationTerms(reply);
     expect(reply).not.toContain('unclear');
   });
@@ -2526,6 +2674,57 @@ describe('webhook hotel search flow', () => {
     expect(reply).toContain('local recommendations');
     expect(reply).not.toContain('Colombo');
     expect(reply).not.toContain('could not complete');
+  });
+
+  it.each(['hotel', 'general'])('delivers the core prompt from the %s webhook LLM path to HTTP', async (flow) => {
+    initConversationControlPlane(new ConversationControlPlane({ contextBuilder: new ContextBuilder({
+      findRecentByTraveller: async () => [{ role: 'user', content: 'I prefer vegetarian food and quiet places.' }],
+    }) }));
+    getProfileMock.mockResolvedValue({ userId: 'whatsapp:+15550009999', form: { preferredName: 'Sam', preferredLanguage: 'French', dietaryRestrictions: 'Vegetarian' } });
+    const actual = await vi.importActual<typeof import('../services/LLMService.js')>('../services/LLMService.js');
+    const service = new actual.LLMService({ provider: 'groq', apiKey: 'fixture-key', model: 'fixture-model' });
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    handleMessageMock.mockResolvedValue({ handled: false });
+    if (flow === 'hotel') {
+      getHotelSearchSessionMock.mockResolvedValue({
+        userId: 'whatsapp:+15550009999', stage: 'results', criteria: { location: 'Colombo' },
+        results: [{ name: 'Old Colombo Hotel' }], nextOffset: 3, updatedAt: '2026-10-21T00:00:00Z',
+      });
+    }
+    const message = flow === 'hotel' ? 'actually lets do Kandy instead' : 'Could you help me decide?';
+    vi.stubGlobal('fetch', vi.fn(async (_url, options: RequestInit) => {
+      requests.push(JSON.parse(String(options.body)));
+      return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({
+        responseText: flow === 'general' ? 'I can help with your travel plans.' : '',
+        intent: flow === 'hotel' ? 'search_hotels' : 'general_inquiry',
+        parameters: flow === 'hotel' ? { location: 'Kandy' } : {},
+        missingFields: [], suggestedAction: flow === 'hotel' ? 'ask_missing' : 'clarify', confidence: 0.9,
+      }) } }] }) };
+    }));
+    llmDecideMock.mockImplementation((...args: Parameters<typeof service.decide>) => service.decide(...args));
+    try {
+      const response = await processInboundMessage(buildTextMessage(message), `fixture-prompt-${flow}`);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].messages.map((entry) => entry.role)).toEqual(['system', 'user']);
+      expect(requests[0].messages[0].content).toContain('Your AI Navigation Agent');
+      expect(requests[0].messages[0].content).toContain('PURPOSE: decision');
+      expect(requests[0].messages[0].content).not.toContain(message);
+      const data = JSON.parse(requests[0].messages[1].content);
+      expect(data.userMessage).toBe(message);
+      expect(data.userProfile.preferredLanguage).toBe('French');
+      expect(data.conversationHistory[0].content).toContain('vegetarian');
+      if (flow === 'hotel') {
+        expect(data.sessionState.collectedFields.location).toBe('Colombo');
+        expect(response).toContain('/forms/hotel/');
+      } else {
+        expect(response).toContain('travel plans');
+        expect(generateUIContentMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      llmDecideMock.mockReset();
+      initConversationControlPlane();
+    }
   });
 
   it('uses the ConversationManager trip-planning template in the webhook path', async () => {
@@ -2790,6 +2989,42 @@ describe('webhook hotel search flow', () => {
     expect(handleMessageMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'Stop',
+    'End',
+    "Thanks I'll decide later",
+    'Leave these with me and I will come back to them tomorrow',
+    'This is enough for tonight; I want to look at the options another day',
+  ])(
+    'pauses hotel result delivery for %s without replaying the saved page',
+    async (message) => {
+      getHotelSearchSessionMock.mockResolvedValue({
+        id: 'hotel-session-1', revision: 4,
+        userId: 'whatsapp:+15550009999', whatsappUserId: 'whatsapp:+15550009999',
+        stage: 'results', state: 'awaiting_hotel_selection',
+        criteria: { location: 'Waskaduwa' }, results: [{ name: 'Hotel 1' }],
+        latestDisplayedBatchIndex: 0, nextOffset: 1,
+        updatedAt: '2026-10-26T20:40:00.000Z',
+      });
+      llmDecideMock.mockResolvedValueOnce({
+        contractVersion: '2.0', responseText: 'No problem — I will pause these options for now.',
+        intent: 'general_inquiry', intentConfidence: 0.96,
+        ambiguity: { isAmbiguous: false, alternatives: [] }, clarificationRequired: false,
+        parameters: {}, fieldUpdates: {}, memoryCandidates: [], missingFields: [],
+        taskTransition: 'pause', proposedAction: { name: 'none', arguments: {} },
+        unresolvedQuestions: [], suggestedAction: 'clarify', confidence: 0.96,
+      });
+
+      const reply = await processInboundMessage(buildTextMessage(message), `corr-pause-${message}`);
+
+      expect(reply).toContain('pause these options');
+      expect(llmDecideMock).toHaveBeenCalled();
+      expect(pauseHotelOutboundMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+      expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
+      expect(sendWhatsAppMessagesMock).not.toHaveBeenCalled();
+    }
+  );
+
   it('treats natural waiting messages as status checks for ready hotel results', async () => {
     const results = [
       { name: 'Hotel 1' },
@@ -2909,12 +3144,42 @@ describe('webhook hotel search flow', () => {
     expect(buildBrowseResultsPageReplyMock).not.toHaveBeenCalled();
   });
 
-  it('clears active request state when the user asks to restart', async () => {
+  it('pauses active request state without deleting its durable session when the user restarts', async () => {
     const reply = await processInboundMessage(buildTextMessage('restart'), 'corr-webhook-11');
 
-    expect(reply).toContain('cleared the active request');
-    expect(clearHotelSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(reply).toContain('paused your saved requests');
+    expect(clearHotelSearchSessionMock).not.toHaveBeenCalled();
     expect(reply).toContain('I am Yana');
+  });
+
+  it('keeps a saved hotel sourcing request and selected property when reset pauses the journey', async () => {
+    getHotelSearchSessionMock.mockResolvedValue({
+      userId: 'whatsapp:+15550009999', lifecycleStatus: 'active',
+      stage: 'booking_provider_pending', state: 'booking_provider_pending',
+      sourcingRequestId: 'saved-sourcing-request',
+      selectedHotel: { selectedHotelSnapshot: { name: 'Selected Stay' } },
+      updatedAt: '2026-10-27T10:00:00.000Z',
+    });
+
+    const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-reset-keeps-sourcing-request');
+
+    expect(reply).toContain('paused your saved requests');
+    expect(pauseHotelOutboundMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(clearHotelSearchSessionMock).not.toHaveBeenCalled();
+    expect(clearItineraryWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it('explicitly resumes the most recent paused journey without borrowing another flow', async () => {
+    getItinerarySessionMock.mockResolvedValue(buildItinerarySession({
+      lifecycleStatus: 'paused', state: 'showing_itinerary', updatedAt: '2026-10-27T10:00:00.000Z',
+    }));
+
+    const reply = await processInboundMessage(buildTextMessage('resume'), 'corr-resume-paused-itinerary');
+
+    expect(resumeItinerarySessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(reply).toContain('resumed your itinerary request');
+    expect(reply).toContain('Your saved details are ready to continue.');
+    expect(llmDecideMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -3107,8 +3372,9 @@ describe('webhook hotel search flow', () => {
 
     const reply = await processInboundMessage(buildTextMessage('reset'), 'corr-logistics-reset');
 
-    expect(reply).toContain('cleared the active request');
-    expect(clearLogisticsSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
+    expect(reply).toContain('paused your saved requests');
+    expect(clearLogisticsSearchSessionMock).not.toHaveBeenCalled();
+    expect(pauseLogisticsSearchSessionMock).toHaveBeenCalledWith('whatsapp:+15550009999');
   });
 
   it('transcribes a transport voice note and starts transport flow', async () => {
