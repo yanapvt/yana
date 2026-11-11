@@ -17,7 +17,7 @@ function inbound(text: string): InboundMessage {
 }
 
 describe('ConversationControlPlane', () => {
-  it('keeps a short restaurant location answer without automatically searching', async () => {
+  it('makes the active restaurant schema authoritative for a location reply', async () => {
     const stateLoader = new ActiveConversationStateLoader({
       loadHotel: vi.fn().mockResolvedValue(null),
       loadRestaurant: vi.fn().mockResolvedValue({
@@ -56,7 +56,7 @@ describe('ConversationControlPlane', () => {
       shouldUseLLM: true,
     });
     expect(result.decision).toMatchObject({
-      action: 'continue_flow',
+      action: 'execute_search',
       targetFlow: 'restaurant',
       missingFields: [],
     });

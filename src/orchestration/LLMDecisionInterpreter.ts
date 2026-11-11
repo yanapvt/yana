@@ -123,7 +123,6 @@ function roleForDecision(
   if (targetFlow === 'none') return 'unclear';
   if (activeFlow && activeFlow !== targetFlow) return 'new_intent';
   if (activeFlow === targetFlow) {
-    if (Object.keys(decision.fieldUpdates ?? {}).length > 0) return 'change_existing_criteria';
     return decision.suggestedAction === 'ask_missing'
       ? 'answer_to_current_question'
       : 'extra_preference';

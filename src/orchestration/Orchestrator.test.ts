@@ -58,7 +58,7 @@ describe('Orchestrator', () => {
     expect(result.prompt).toContain('Do not execute tools');
     expect(llmInterpreter.interpret).toHaveBeenCalledOnce();
     expect(result.interpretation?.entities).toEqual({ guests: 2 });
-    expect(result.decision.action).toBe('continue_flow');
+    expect(result.decision.action).toBe('execute_search');
     expect(result.memoryUpdate.shouldPersist).toBe(true);
   });
 });

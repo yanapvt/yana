@@ -2,14 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { validateAndMapDecision } from './LLMDecisionInterpreter.js';
 
 describe('LLMDecisionInterpreter validation', () => {
-  it('marks a validated field correction as a change to the active workflow', () => {
-    const result = validateAndMapDecision({
-      intent: 'search_restaurants', parameters: {}, fieldUpdates: { diningDate: '2026-12-02' },
-      missingFields: [], suggestedAction: 'ask_missing', confidence: 0.95,
-    }, 'restaurant');
-    expect(result.role).toBe('change_existing_criteria');
-    expect(result.entities).toEqual({ diningDate: '2026-12-02' });
-  });
   it('keeps only fields approved for the selected workflow', () => {
     const result = validateAndMapDecision({
       intent: 'search_restaurants',

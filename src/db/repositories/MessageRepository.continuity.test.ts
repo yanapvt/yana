@@ -40,19 +40,4 @@ describe('durable conversation repository continuity', () => {
     expect(fixture.rows).toHaveLength(0);
     expect(fixture.statements).toContain('ROLLBACK');
   });
-  it('starts model history after a reset while retaining the durable audit turns', async () => {
-    const repository = new MessageRepository();
-    const input = { traveller: 'whatsapp:+94770000001', peer: '+15550000000' };
-    await repository.appendConversationTurn({ ...input, requestId: 'before', role: 'user', text: 'Restaurants in Colombo' });
-    await repository.appendConversationTurn({ ...input, requestId: 'before', role: 'assistant', text: 'Which area?' });
-    await repository.appendConversationTurn({ ...input, requestId: 'reset', role: 'user', text: 'reset', conversationBoundary: 'reset' });
-    await repository.appendConversationTurn({ ...input, requestId: 'reset', role: 'assistant', text: 'Your saved requests are paused.' });
-    await repository.appendConversationTurn({ ...input, requestId: 'after', role: 'user', text: 'What can I do in Galle?' });
-    const history = await new ContextBuilder(repository).loadHistory(input.traveller);
-    expect(fixture.rows).toHaveLength(5);
-    expect(history.conversationHistory?.map((turn) => turn.content)).toEqual([
-      expect.stringContaining('Your saved requests are paused.'),
-      'What can I do in Galle?',
-    ]);
-  });
 });

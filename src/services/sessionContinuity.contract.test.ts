@@ -27,22 +27,6 @@ describe('shared session continuity contract', () => {
     expect(await new RestaurantSearchSessionService(new InstanceStateStore() as any, durable).get(user))
       .toMatchObject({ state: 'awaiting_preferences', criteria: { location: 'Hikkaduwa' } });
   });
-  it('clears a pending dining location when a validated answer is reconciled', async () => {
-    const durable = new InMemoryRestaurantSearchSessionRepository();
-    const user = 'whatsapp:test-dining-confirmation';
-    const service = new RestaurantSearchSessionService(new InstanceStateStore() as any, durable);
-    await service.saveLocationConfirmation(user, 'Mirissa', 'Find restaurants there');
-    const pending = await service.get(user);
-    expect(pending?.pendingLocationConfirmation).toBe('Mirissa');
-
-    await service.applyCriteriaPatch(user, pending?.revision ?? 0, { location: 'Mirissa' });
-
-    const restarted = new RestaurantSearchSessionService(new InstanceStateStore() as any, durable);
-    expect(await restarted.get(user)).toMatchObject({
-      state: 'awaiting_preferences', criteria: { location: 'Mirissa' },
-      pendingLocationConfirmation: undefined,
-    });
-  });
   it('keeps a remembered location in the hotel form session across restart', async () => {
     const durable = new InMemoryHotelSearchSessionRepository();
     const user = 'whatsapp:test-location-prefill';

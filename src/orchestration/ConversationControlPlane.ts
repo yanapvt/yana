@@ -1,4 +1,4 @@
-import type { CanonicalConversationEvent, InboundMessage, StoredProfile, StoredServiceRequest } from '../types/index.js';
+import type { InboundMessage, StoredProfile, StoredServiceRequest } from '../types/index.js';
 import { ActiveConversationStateLoader } from './ActiveConversationStateLoader.js';
 import {
   Orchestrator,
@@ -10,18 +10,8 @@ import { LLMServiceError } from '../services/LLMService.js';
 import type { OrchestrationFlow, OrchestrationSessionSnapshot } from './Orchestrator.js';
 import { missingFields, validateCriteria, workflow } from './WorkflowDefinitions.js';
 import { PostgresTravellerMemoryRepository } from '../storage/travellerMemoryRepository.js';
-import { validateCanonicalConversationEvent } from './CanonicalConversationEvent.js';
-import { JourneyEventCheckpointService } from '../services/JourneyEventCheckpointService.js';
-import type { JourneyEventCheckpoint } from '../storage/JourneyEventCheckpointRepository.js';
-import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
-import { getHotelSearchSessionService } from '../services/hotelSearchSessionService.js';
-import { getRestaurantSearchSessionService } from '../services/restaurantSearchSessionService.js';
-import { getExcursionSearchSessionService } from '../services/excursionSearchSessionService.js';
-import { getLogisticsSearchSessionService } from '../services/logisticsSearchSessionService.js';
-import { getItinerarySessionService } from '../services/itinerarySessionService.js';
 
 export interface ConversationControlInput {
-  event?: CanonicalConversationEvent;
   inboundMessage: InboundMessage;
   text: string;
   correlationId: string;
@@ -31,7 +21,6 @@ export interface ConversationControlInput {
 }
 
 export interface ConversationControlPlaneDependencies {
-  checkpoints?: JourneyEventCheckpointService;
   contextBuilder?: ContextBuilder;
   stateLoader?: ActiveConversationStateLoader;
   orchestrator?: Orchestrator;
@@ -48,64 +37,14 @@ export class ConversationControlPlane {
   private readonly stateLoader: ActiveConversationStateLoader;
   private readonly orchestrator: Orchestrator;
   private readonly interpretingOrchestrator: Orchestrator;
-  private readonly checkpoints: JourneyEventCheckpointService;
 
   constructor(dependencies: ConversationControlPlaneDependencies = {}) {
-    this.checkpoints = dependencies.checkpoints ?? new JourneyEventCheckpointService();
     this.contextBuilder = dependencies.contextBuilder ?? new ContextBuilder(undefined, new PostgresTravellerMemoryRepository());
     this.stateLoader = dependencies.stateLoader ?? new ActiveConversationStateLoader();
     this.orchestrator = dependencies.orchestrator ?? new Orchestrator();
     this.interpretingOrchestrator = dependencies.interpretingOrchestrator ?? new Orchestrator({
       llmInterpreter: new LLMDecisionInterpreter(),
     });
-  }
-
-  /** Shared ingress for every channel. It validates the event and binds server
-   * workflow identity without invoking a model or executing a workflow. */
-  async acceptEvent(input: CanonicalConversationEvent): Promise<CanonicalConversationEvent> {
-    const event = validateCanonicalConversationEvent(input);
-    const { activeSession, pausedSessions } = await this.stateLoader.loadWithPaused(event.userId);
-    const matching = event.workflowId
-      ? [activeSession, ...pausedSessions].find((session) => session?.id === event.workflowId)
-      : event.channel.startsWith('whatsapp_') || event.channel === 'website_ui' && event.eventType === 'text'
-        ? activeSession : null;
-    if (event.workflowId && !matching) {
-      throw new LLMServiceError('The workflow reference is no longer available', 'STALE_WORKFLOW', false);
-    }
-    if (event.channel.startsWith('website_') && event.eventType !== 'text' && matching &&
-        event.expectedStateVersion !== matching.revision) {
-      throw new LLMServiceError('The workflow version has changed', 'STALE_WORKFLOW', false);
-    }
-    const accepted = validateCanonicalConversationEvent({
-      ...event,
-      sessionId: event.conversationId.replace(/^conversation:/, 'session:'),
-      workflowId: matching?.id ?? null,
-      expectedStateVersion: event.expectedStateVersion ?? matching?.revision ?? null,
-      stateVersion: matching?.revision ?? null,
-      contextId: matching?.id ? `task:${matching.id}` : null,
-    });
-    if (await this.checkpoints.accept(accepted) === false) {
-      throw new LLMServiceError('This interaction was already accepted', 'DUPLICATE_EVENT', false);
-    }
-    return accepted;
-  }
-
-  recoverLastAcceptedEvent(userId: string): Promise<JourneyEventCheckpoint | null> {
-    return this.checkpoints.recover(userId);
-  }
-
-  /** Pause other durable workflows without clearing their validated fields. */
-  async pauseCompetingWorkflows(
-    userId: string,
-    activeFlow: 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary'
-  ): Promise<void> {
-    await Promise.all([
-      activeFlow !== 'hotel' ? getHotelSearchSessionService().pause(userId) : Promise.resolve(),
-      activeFlow !== 'restaurant' ? getRestaurantSearchSessionService().pause(userId) : Promise.resolve(),
-      activeFlow !== 'excursion' ? getExcursionSearchSessionService().pause(userId) : Promise.resolve(),
-      activeFlow !== 'logistics' ? getLogisticsSearchSessionService().pause(userId) : Promise.resolve(),
-      activeFlow !== 'itinerary' ? getItinerarySessionService().pause(userId) : Promise.resolve(),
-    ]);
   }
 
   async plan(input: ConversationControlInput): Promise<OrchestrationResult> {
@@ -121,17 +60,8 @@ export class ConversationControlPlane {
     userId: string,
     flow: Exclude<OrchestrationFlow, 'none' | 'profile'>,
     submittedFields: Record<string, unknown>,
-    expectedWorkflow?: { id?: string; revision?: number },
-    event?: CanonicalConversationEvent
+    expectedWorkflow?: { id?: string; revision?: number }
   ): Promise<Pick<OrchestrationSessionSnapshot, 'collectedFields' | 'missingFields'>> {
-    const formEvent = event && (event.channel === 'website_form' && event.eventType === 'form_submission'
-      || event.channel === 'whatsapp_meta' && event.eventType === 'interactive'
-        && event.metadata.interactionType === 'flow_reply');
-    if (event && (event.userId !== userId || !formEvent
-      || event.workflowId !== (expectedWorkflow?.id ?? null)
-      || event.expectedStateVersion !== (expectedWorkflow?.revision ?? null))) {
-      throw new LLMServiceError('Form event identity does not match', 'INVALID_WORKFLOW_OUTPUT', false);
-    }
     const { activeSession, pausedSessions } = await this.stateLoader.loadWithPaused(userId);
     const targetSession = activeSession?.flow === flow
       ? activeSession
@@ -150,7 +80,6 @@ export class ConversationControlPlane {
     const required = workflow(flow)?.requestRequired ?? workflow(flow)?.required ?? [];
     const genuinelyMissing = missingFields(flow, collectedFields, required);
     console.log('conversation_control_form_reconciled', {
-      correlationId: event?.correlationId,
       flow,
       workflowRevision: targetSession?.revision ?? 0,
       resumedFromPaused: Boolean(targetSession && targetSession !== activeSession),
@@ -171,10 +100,6 @@ export class ConversationControlPlane {
     const memory = await this.contextBuilder.loadMemories(input.inboundMessage.from, [
       'trip:current', activeSession?.id ? `task:${activeSession.id}` : '',
     ].filter(Boolean));
-    const itineraryWorkflow = [activeSession, ...pausedSessions].find((session) => session?.flow === 'itinerary');
-    const uiWorkspace = itineraryWorkflow
-      ? await getItineraryWorkspaceService().getCurrentSelection(input.inboundMessage.from).catch(() => null)
-      : null;
     if (orchestrator === this.interpretingOrchestrator && history.historyStatus === 'unavailable') {
       throw new LLMServiceError('Conversation context is temporarily unavailable', 'CONTEXT_UNAVAILABLE', true);
     }
@@ -187,18 +112,9 @@ export class ConversationControlPlane {
       profile: input.profile,
       activeSession,
       pausedSessions,
-      uiWorkspace: uiWorkspace && uiWorkspace.workflowId === itineraryWorkflow?.id ? uiWorkspace : undefined,
       recentServiceRequests: input.recentServiceRequests,
       metadata: {
         correlationId: input.correlationId,
-        ...(input.event ? {
-          eventId: input.event.eventId,
-          channel: input.event.channel,
-          eventType: input.event.eventType,
-          sessionId: input.event.sessionId,
-          conversationId: input.event.conversationId,
-          workflowId: input.event.workflowId,
-        } : {}),
       },
     });
   }

@@ -56,13 +56,6 @@ describe('canonical interpretation and backend validation', () => {
     const decision = validateAndMapDecision({ intent: 'charge_hotel_and_confirm_payment', parameters: {}, missingFields: [], suggestedAction: 'execute_tool', confidence: 1 });
     expect(decision.intent).toBe('unclear');
   });
-  it('rejects an unverified booking or payment success claim in a model decision', () => {
-    const proposal = { intent: 'search_hotels', parameters: {}, missingFields: [],
-      suggestedAction: 'clarify' as const, confidence: 0.9 };
-    expect(() => decisionOutputSchema.parse({ ...proposal, responseText: 'Your booking is confirmed.' })).toThrow();
-    expect(() => decisionOutputSchema.parse({ ...proposal, responseText: 'I have paid for your stay.' })).toThrow();
-    expect(() => decisionOutputSchema.parse({ ...proposal, responseText: 'Availability and prices are not confirmed.' })).not.toThrow();
-  });
   it.each([
     { parameters: [] }, { missingFields: [2] }, { suggestedAction: 'charge' }, { confidence: 2 }, { bookingConfirmed: true },
   ])('rejects malformed structured outputs at the real service boundary %j', async (invalid) => {
@@ -211,20 +204,4 @@ describe('shared semantic UI validation', () => {
     expect(() => validateSemanticUI({ ...decision, ...invalid })).toThrow();
   });
   it('rejects stale workflow UI revisions', () => expect(() => validateSemanticUI(decision, 3)).toThrow('Stale'));
-  it('permits itinerary day selection only in the itinerary editor', () => {
-    expect(validateSemanticUI({ ...decision, mode: 'itinerary_editor', workflow: 'itinerary',
-      schemaId: 'plan_itinerary', values: {}, missingFields: [], actions: ['select_day'] }).actions).toEqual(['select_day']);
-    expect(() => validateSemanticUI({ ...decision, mode: 'clarification_form', actions: ['select_day'] })).toThrow();
-  });
-  it('permits a search draft editor only for an existing, revision-bound workflow', () => {
-    const editor = { ...decision, mode: 'search_editor', workflow: 'hotel', workflowId: 'hotel-1',
-      schemaId: 'search_hotels', values: { location: 'Galle', checkinDate: '2026-12-01', guests: 2 },
-      missingFields: [], actions: ['update_draft'], formId: undefined };
-    expect(renderWebsiteDecision(editor)).toMatchObject({ workflowId: 'hotel-1', expectedRevision: 2,
-      actions: ['update_draft'], initialValues: { location: 'Galle', guests: 2 } });
-    expect(() => validateSemanticUI({ ...editor, workflowId: undefined })).toThrow();
-    expect(() => validateSemanticUI({ ...editor, actions: ['search'] })).toThrow();
-    expect(() => validateSemanticUI({ ...editor, values: { location: 'Galle', providerToken: 'secret' } })).toThrow();
-    expect(() => validateSemanticUI(editor, 3)).toThrow('Stale');
-  });
 });

@@ -22,9 +22,6 @@ Migrations are numbered sequentially and should be applied in order:
 24. **024_create_traveller_memories.sql** - Typed profile, trip, and task context with provenance and confirmation status
 25. **025_traveller_location_memory.sql** - Current location and destination memory keys
 26. **026_concierge_followups.sql** - Idempotent confirmed-service feedback queue and concierge follow-up index
-27. **027_journey_event_checkpoints.sql** - Durable channel-neutral accepted-event references for journey recovery
-28. **028_journey_inbound_event_audit.sql** - Ordered, duplicate-safe audit of normalized inbound interactions
-29. **029_journey_workflow_transitions.sql** - Atomic, revisioned summaries of durable workflow transitions
 
 ## Key Indexes
 

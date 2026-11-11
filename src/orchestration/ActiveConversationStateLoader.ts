@@ -9,16 +9,14 @@ import type {
   OrchestrationFlow,
   OrchestrationSessionSnapshot,
 } from './Orchestrator.js';
-import { missingFields as computeMissing, requiredFieldsForAction, validateCriteria, workflow, WORKFLOW_SCHEMA_VERSION } from './WorkflowDefinitions.js';
+import { missingFields as computeMissing, validateCriteria, workflow, WORKFLOW_SCHEMA_VERSION } from './WorkflowDefinitions.js';
 
 interface SessionCandidate {
-  schemaVersion?: string;
   lifecycleStatus?: 'active' | 'paused';
   id?: string;
   revision?: number;
   itinerary?: OrchestrationSessionSnapshot['itinerary'];
   verifiedResults?: OrchestrationSessionSnapshot['verifiedResults'];
-  pendingDecisions?: OrchestrationSessionSnapshot['pendingDecisions'];
   resultBatches?: unknown[][];
   latestDisplayedBatchIndex?: number;
   resultsRetrievedAt?: string;
@@ -81,13 +79,14 @@ export class ActiveConversationStateLoader {
 }
 
 function snapshot(active: SessionCandidate): OrchestrationSessionSnapshot {
-    const requiredFields = requiredFieldsForAction(active.flow, 'provider_search');
+    const requiredFields = active.flow === 'hotel' && active.stage === 'awaiting_preferences'
+      ? ['location'] : workflow(active.flow)?.required ?? active.requiredFields;
     const missingFields = active.stage === 'awaiting_preferences'
       ? computeMissing(active.flow, active.fields, requiredFields)
       : [];
 
     return {
-      id: active.id, revision: active.revision, schemaVersion: active.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
+      id: active.id, revision: active.revision, schemaVersion: WORKFLOW_SCHEMA_VERSION,
       lifecycleStatus: active.lifecycleStatus ?? 'active',
       itinerary: active.itinerary, verifiedResults: active.verifiedResults ?? buildVerifiedResults(
         active.flow,
@@ -96,7 +95,6 @@ function snapshot(active: SessionCandidate): OrchestrationSessionSnapshot {
         active.latestDisplayedBatchIndex,
         active.resultsRetrievedAt
       ),
-      pendingDecisions: active.pendingDecisions,
       flow: active.flow,
       state: active.stage || active.state,
       activeSchema: workflow(active.flow)?.schema ?? active.schema,
@@ -187,7 +185,6 @@ function candidate(
   requiredFields: string[],
   updatedAt: string,
   session?: {
-    schemaVersion?: string;
     lifecycleStatus?: 'active' | 'paused';
     id?: string;
     revision?: number;
@@ -196,28 +193,18 @@ function candidate(
     results?: unknown[];
     resultBatches?: unknown[][];
     latestDisplayedBatchIndex?: number;
-    pendingLocationConfirmation?: string;
-    pendingSourcingConsent?: boolean;
-    pendingHumanHandoffConsent?: boolean;
   }
 ): SessionCandidate {
-  const verifiedResults = stage === 'results' ? buildVerifiedResults(
+  const verifiedResults = buildVerifiedResults(
     flow,
     session?.id,
     session?.resultBatches,
     session?.latestDisplayedBatchIndex,
     session?.resultsRetrievedAt
-  ) : undefined;
+  );
   return { flow, state, stage, schema, fields, requiredFields, updatedAt, id: session?.id,
-    schemaVersion: session?.schemaVersion,
     lifecycleStatus: session?.lifecycleStatus ?? 'active',
-    revision: session?.revision, itinerary: session?.itinerary, verifiedResults,
-    pendingDecisions: session && {
-      ...(typeof session.pendingLocationConfirmation === 'string' ?
-        { locationConfirmation: session.pendingLocationConfirmation.slice(0, 120) } : {}),
-      ...(session.pendingSourcingConsent ? { sourcingConsent: true } : {}),
-      ...(session.pendingHumanHandoffConsent ? { humanHandoffConsent: true } : {}),
-    } };
+    revision: session?.revision, itinerary: session?.itinerary, verifiedResults };
 }
 
 function buildVerifiedResults(

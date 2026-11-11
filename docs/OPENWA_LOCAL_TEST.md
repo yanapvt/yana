@@ -37,7 +37,7 @@ npm.cmd run dev
 ```
 
 In another terminal run `npm.cmd run openwa:smoke`. The smoke command performs only
-health, TCP, session-status (`ready` required), and migration checks. It never sends a WhatsApp message
+health, TCP, session-status, and migration checks. It never sends a WhatsApp message
 and never prints credentials, QR content, session payloads, or phone numbers.
 
 If the OpenWA session is not paired, stop here. Open the local OpenWA UI yourself and

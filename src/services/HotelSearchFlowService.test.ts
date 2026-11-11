@@ -17,21 +17,27 @@ const completeCriteria = {
 };
 
 describe('HotelSearchFlowService', () => {
-  it('browses Google Places by location without requiring booking dates', async () => {
-    const browsingService = { isConfigured: vi.fn().mockReturnValue(true),
-      searchHotels: vi.fn().mockResolvedValue({ provider: 'google_places', results: [
-        { id: 'galle-1', name: 'Galle Beach Stay', rating: 4.4 },
-      ] }) };
-    const service = new HotelSearchFlowService({ browsingService: browsingService as any,
-      sltdaRegistryConfigured: false,
+  it('browses Google Places hotels with a location and no booking dates', async () => {
+    const browsingService = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      searchHotels: vi.fn().mockResolvedValue({ provider: 'google_places', results: [] }),
+    };
+    const service = new HotelSearchFlowService({
+      browsingService: browsingService as any,
       searchSettingsProvider: { getSettings: vi.fn().mockResolvedValue({
-        sltdaFilterEnabled: false, minimumGoogleRating: null, minimumGoogleReviewCount: null,
+        sltdaFilterEnabled: false, zeroResultFallbackEnabled: true,
+        minimumGoogleRating: null, minimumGoogleReviewCount: null,
       }) },
+      providerConfigured: false,
     });
-    const result = await service.handleBrowseSearch({ location: 'Galle' }, { correlationId: 'browse-only' });
-    expect(result.status).toBe('browse_results');
-    expect(browsingService.searchHotels).toHaveBeenCalledWith({ location: 'Galle' }, { maxResults: 9 });
+
+    const result = await service.handleBrowseSearch({ location: 'Galle' }, { correlationId: 'browse-galle' });
+
+    expect(result.status).not.toBe('validation_failed');
+    expect(browsingService.searchHotels).toHaveBeenCalledWith(
+      expect.objectContaining({ location: 'Galle' }), { maxResults: 9 });
   });
+
   it('returns provider-not-connected response when provider execution is disabled', async () => {
     const toolRegistry = {
       isToolAvailable: vi.fn().mockResolvedValue(false),

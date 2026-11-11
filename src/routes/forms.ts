@@ -1,15 +1,10 @@
 import { Router, type Request, type Response } from 'express';
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { renderWebsiteDecision } from '../orchestration/SemanticUI.js';
 import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
-import { getCanonicalMessageProcessor } from '../services/CanonicalMessageProcessor.js';
-import { processCanonicalInboundMessage } from '../services/ConversationMessageService.js';
-import { createWebsiteConversationEvent } from '../orchestration/CanonicalConversationEvent.js';
-import { WORKFLOW_DEFINITIONS, validateCriteria, missingFields, requiredFieldsForAction, canonicalField } from '../orchestration/WorkflowDefinitions.js';
+import { WORKFLOW_DEFINITIONS, validateCriteria, missingFields } from '../orchestration/WorkflowDefinitions.js';
 import { PersistenceError } from '../storage/Persistence.js';
 import { withWorkflowLock } from '../services/WorkflowLockService.js';
-import { assignCorrelationId } from '../middleware/correlationId.js';
 import { getPhoneLocale, normalizeWhatsAppPhone } from '../utils/phoneLocale.js';
 import type {
   BasicProfileForm,
@@ -23,7 +18,6 @@ import type {
   RestaurantRequestForm,
   ServiceRequestForm,
 } from '../types/forms.js';
-import type { CanonicalConversationEvent, InboundMessage } from '../types/core.js';
 import { getFormTokenService } from '../services/formTokenService.js';
 import { getHotelSearchSessionService } from '../services/hotelSearchSessionService.js';
 import { getRestaurantSearchSessionService } from '../services/restaurantSearchSessionService.js';
@@ -31,13 +25,20 @@ import { getExcursionSearchSessionService } from '../services/excursionSearchSes
 import { getLogisticsSearchSessionService } from '../services/logisticsSearchSessionService.js';
 import { getItinerarySessionService } from '../services/itinerarySessionService.js';
 import {
+  getItineraryPlannerService,
   type DailyItineraryPlan,
   type GeneratedItinerary,
 } from '../services/ItineraryPlannerService.js';
 import { mapHotelRequestFormToCriteria } from '../services/hotelRequestMapper.js';
 import { mapRestaurantRequestFormToCriteria } from '../services/restaurantRequestMapper.js';
-import { mapExcursionRequestFormToCriteria } from '../services/excursionRequestMapper.js';
-import { mapLogisticsRequestFormToCriteria } from '../services/logisticsRequestMapper.js';
+import {
+  mapExcursionBookingFormToRequest,
+  mapExcursionRequestFormToCriteria,
+} from '../services/excursionRequestMapper.js';
+import {
+  mapLogisticsBookingFormToRequest,
+  mapLogisticsRequestFormToCriteria,
+} from '../services/logisticsRequestMapper.js';
 import { mapItineraryRequestFormToCriteria } from '../services/itineraryRequestMapper.js';
 import { getProfileService } from '../services/profileService.js';
 import { getTwilioOutboundService } from '../services/twilioOutboundService.js';
@@ -576,169 +577,11 @@ router.use((_req, res, next) => {
   next();
 });
 
-type SearchEditorFlow = 'hotel' | 'restaurant' | 'excursion' | 'logistics';
-const searchEditorFields: Record<SearchEditorFlow, readonly string[]> = {
-  hotel: ['location', 'checkinDate', 'checkoutDate', 'guests', 'rooms'],
-  restaurant: ['location', 'diningDate', 'diningTime', 'guests', 'cuisine'],
-  excursion: ['destination', 'preferredDate', 'preferredTime', 'guests', 'category'],
-  logistics: ['pickupLocation', 'destination', 'pickupDate', 'pickupTime', 'passengers'],
-};
-function isSearchEditorFlow(type: FormType): type is SearchEditorFlow {
-  return type in searchEditorFields;
-}
-
 for (const type of Object.keys(formDefinitions) as FormType[]) {
-  router.get(`/forms/${type}/:token/chat`, (req, res) => {
-    const tokens = getFormTokenService();
-    const owner = tokens.resolveToken(req.params.token, type);
-    if (!owner) { res.status(410).json({ error: 'This conversation link has expired.' }); return; }
-    res.json({ csrf: tokens.createCsrfToken(req.params.token, type) });
-  });
-  router.post(`/forms/${type}/:token/chat`, assignCorrelationId, (req, res, next) => {
-    void processWebsiteChat(req, res, type).catch(next);
-  });
   router.get(`/forms/${type}/:token`, (req, res, next) => { void renderForm(req, res, type).catch(next); });
-  router.post(`/forms/${type}/:token`, assignCorrelationId, (req, res, next) => {
+  router.post(`/forms/${type}/:token`, (req, res, next) => {
     void submitForm(req, res, type).catch(next);
   });
-  if (isSearchEditorFlow(type)) {
-    router.get(`/forms/${type}/:token/editor`, (req, res, next) => { void renderSearchEditor(req, res, type).catch(next); });
-    router.post(`/forms/${type}/:token/editor`, assignCorrelationId, (req, res, next) => {
-      void updateSearchDraft(req, res, type).catch((error) => {
-        if (res.headersSent) return next(error);
-        const conflict = error instanceof PersistenceError && error.status === 'conflict' ||
-          error instanceof Error && error.message === 'Stale UI revision';
-        res.status(conflict ? 409 : error instanceof z.ZodError ? 400 : 503)
-          .json({ error: conflict ? 'This search changed. Reload it before editing.'
-            : error instanceof z.ZodError ? 'Check the search details and try again.' : 'The draft was not saved.' });
-      });
-    });
-  }
-}
-
-async function processWebsiteChat(req: Request, res: Response, type: FormType): Promise<void> {
-  const tokens = getFormTokenService();
-  const owner = tokens.resolveToken(req.params.token, type);
-  if (!owner) { res.status(410).json({ error: 'This conversation link has expired.' }); return; }
-  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-  if (!text || text.length > 4000) {
-    res.status(400).json({ error: 'Enter a message of 4000 characters or fewer.' }); return;
-  }
-  const csrf = typeof req.body?._csrf === 'string' ? req.body._csrf : '';
-  if (!tokens.verifyAndConsumeCsrfToken(req.params.token, type, csrf)) {
-    res.status(403).json({ error: 'Reload this conversation before sending another message.' }); return;
-  }
-  const sourceEventId = createHash('sha256').update(`${req.params.token}\0${csrf}`).digest('hex');
-  const correlationId = req.headers['x-correlation-id'] as string;
-  const inboundMessage: InboundMessage = {
-    messageId: sourceEventId, from: owner.userId, to: 'website:chat',
-    timestamp: new Date(), type: 'text', inputType: 'text',
-    content: { type: 'text', body: text },
-  };
-  const event = createWebsiteConversationEvent({
-    sourceEventId, correlationId, userId: owner.userId, channel: 'website_ui',
-    eventType: 'text', payload: { content: inboundMessage.content },
-  });
-  const result = await processCanonicalInboundMessage(inboundMessage, event);
-  res.json({ reply: result.reply, csrf: tokens.createCsrfToken(req.params.token, type) });
-}
-
-async function renderSearchEditor(req: Request, res: Response, flow: SearchEditorFlow): Promise<void> {
-  const tokens = getFormTokenService();
-  const owner = tokens.resolveToken(req.params.token, flow);
-  if (!owner) { res.status(410).type('html').send(renderExpiredPage()); return; }
-  const session = await currentWorkflow(owner.userId, flow);
-  if (!session?.id) { res.status(404).json({ error: 'This search workflow is no longer available.' }); return; }
-  tokens.bindRevision(req.params.token, flow, session.revision ?? 0, session.id);
-  const bound = tokens.resolveToken(req.params.token, flow);
-  if (bound?.workflowId !== session.id || bound.workflowRevision !== (session.revision ?? 0)) {
-    res.status(409).json({ error: 'This search changed. Reload it from the latest link.' }); return;
-  }
-  const csrf = tokens.createCsrfToken(req.params.token, flow)!;
-  const view = searchEditorView(flow, session, req.headers['x-correlation-id'] as string | undefined ?? session.id);
-  if (req.accepts('html') && !req.headers.accept?.includes('application/json')) {
-    res.type('html').send(renderSearchEditorPage(flow, req.params.token, csrf, view)); return;
-  }
-  res.json({ ...view, csrf, formToken: req.params.token });
-}
-
-async function updateSearchDraft(req: Request, res: Response, flow: SearchEditorFlow): Promise<void> {
-  const tokens = getFormTokenService();
-  const owner = tokens.resolveToken(req.params.token, flow);
-  if (!owner) { res.status(410).json({ error: 'This editor link has expired.' }); return; }
-  await withWorkflowLock(owner.userId, async () => {
-    const bound = tokens.resolveToken(req.params.token, flow);
-    const current = await currentWorkflow(owner.userId, flow);
-    if (!bound || !current?.id || bound.workflowId !== current.id ||
-        bound.workflowRevision !== (current.revision ?? 0) ||
-        Number(req.body?.expectedRevision) !== (current.revision ?? 0)) {
-      res.status(409).json({ error: 'This search changed. Reload it before editing.' }); return;
-    }
-    if (req.body?.action !== 'update_draft' || !tokens.verifyAndConsumeCsrfToken(req.params.token, flow, String(req.body?._csrf ?? ''))) {
-      res.status(403).json({ error: 'This draft action is not authorised.' }); return;
-    }
-    const submitted = req.body?.fields && typeof req.body.fields === 'object' && !Array.isArray(req.body.fields)
-      ? req.body.fields as Record<string, unknown>
-      : Object.fromEntries(Object.entries(req.body as Record<string, unknown>).filter(([key]) =>
-        !['action', '_csrf', 'expectedRevision'].includes(key)));
-    if (!Object.keys(submitted).length || Object.keys(submitted).some((key) => !searchEditorFields[flow].includes(key))) {
-      res.status(400).json({ error: 'Choose an approved search field to update.' }); return;
-    }
-    const patch = validateCriteria(flow, Object.fromEntries(Object.entries(submitted)
-      .filter(([, value]) => value !== '')
-      .map(([key, value]) => [key,
-        ['guests', 'rooms', 'passengers'].includes(key) && typeof value === 'string' ? Number(value) : value])));
-    if (!Object.keys(patch).length) { res.status(400).json({ error: 'Choose a search detail to update.' }); return; }
-    validateCriteria(flow, { ...Object.fromEntries(Object.entries(current.criteria).filter(([key]) => canonicalField(flow, key))), ...patch });
-    const view = searchEditorView(flow, current, req.headers['x-correlation-id'] as string, patch);
-    await getCanonicalMessageProcessor().process(createWebsiteConversationEvent({
-      sourceEventId: createHash('sha256').update(JSON.stringify({ token: req.params.token, csrf: req.body._csrf,
-        workflowId: current.id, revision: current.revision ?? 0, patch })).digest('hex'),
-      correlationId: req.headers['x-correlation-id'] as string,
-      userId: owner.userId, channel: 'website_ui', eventType: 'ui_action',
-      workflowId: current.id, expectedStateVersion: current.revision ?? 0,
-      payload: { action: 'update_draft', fields: patch, schemaId: view.schemaId },
-    }), async (event) => {
-    if (event.workflowId !== current.id || event.expectedStateVersion !== (current.revision ?? 0)) throw new PersistenceError('conflict');
-    const service = flow === 'hotel' ? getHotelSearchSessionService()
-      : flow === 'restaurant' ? getRestaurantSearchSessionService()
-      : flow === 'excursion' ? getExcursionSearchSessionService() : getLogisticsSearchSessionService();
-    const outcome = await service.applyCriteriaPatch(owner.userId, current.revision ?? 0, patch);
-    if (outcome.status !== 'durable') throw new PersistenceError();
-    const updated = await currentWorkflow(owner.userId, flow);
-    if (!updated || updated.id !== current.id) throw new PersistenceError('conflict');
-    const nextToken = tokens.createToken(owner.userId, flow);
-    tokens.bindRevision(nextToken, flow, updated.revision ?? 0, updated.id);
-    const nextUrl = `/forms/${flow}/${encodeURIComponent(nextToken)}/editor`;
-    if (req.accepts('html') && !req.headers.accept?.includes('application/json')) {
-      res.redirect(303, nextUrl); return;
-    }
-    res.json({ ok: true, editorUrl: nextUrl, view: searchEditorView(flow, updated, event.correlationId) });
-    }, { alreadyLocked: true });
-  });
-}
-
-function searchEditorView(flow: SearchEditorFlow, session: { id: string; revision?: number; criteria: object }, correlationId: string,
-  patch: Record<string, unknown> = {}) {
-  const values = validateCriteria(flow, { ...session.criteria, ...patch }, false);
-  return renderWebsiteDecision({ version: '1.0', mode: 'search_editor', workflow: flow,
-    workflowId: session.id, schemaId: WORKFLOW_DEFINITIONS[flow].schema, schemaVersion: '1.0',
-    values, missingFields: missingFields(flow, values, requiredFieldsForAction(flow, 'provider_search')),
-    actions: ['update_draft'], text: 'Edit search details, then ask YANA to search when you are ready.',
-    correlationId, expectedRevision: session.revision ?? 0 });
-}
-
-function renderSearchEditorPage(flow: SearchEditorFlow, token: string, csrf: string,
-  view: ReturnType<typeof searchEditorView>): string {
-  const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (char) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
-  const fields = searchEditorFields[flow].map((field) => {
-    const type = /Date$/.test(field) ? 'date' : /Time$/.test(field) ? 'time'
-      : ['guests', 'rooms', 'passengers'].includes(field) ? 'number' : 'text';
-    const label = field.replace(/([A-Z])/g, ' $1').replace(/^./, (first) => first.toUpperCase());
-    return `<label>${escape(label)}<input name="${escape(field)}" type="${type}" value="${escape(view.values[field])}"></label>`;
-  }).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>YANA search details</title><style>body{font:16px system-ui;max-width:38rem;margin:2rem auto;padding:0 1rem}label{display:block;margin:1rem 0}input{display:block;width:100%;padding:.6rem;box-sizing:border-box}button{padding:.7rem 1.2rem}</style></head><body><h1>Edit ${escape(flow)} search details</h1><p>Changes are saved as a draft. YANA searches only when you explicitly ask.</p><form method="post" action="/forms/${flow}/${encodeURIComponent(token)}/editor"><input type="hidden" name="_csrf" value="${escape(csrf)}"><input type="hidden" name="expectedRevision" value="${view.expectedRevision}"><input type="hidden" name="action" value="update_draft">${fields}<button type="submit">Save draft</button></form></body></html>`;
 }
 
 async function currentWorkflow(userId: string, type: FormType) {
@@ -779,15 +622,16 @@ async function renderForm(req: Request, res: Response, type: FormType): Promise<
     checkOut: values.checkoutDate, adults: values.guests, budget: values.budgetPerNight && typeof values.budgetPerNight === 'object'
       ? `${(values.budgetPerNight as any).currency} ${(values.budgetPerNight as any).amount} per night` : undefined } : view.initialValues;
 
-  const formHtml = renderFormPage(
+  res
+    .type('html')
+    .send(
+      renderFormPage(
         formDefinitions[view.formId ?? type],
         `/forms/${type}/${encodeURIComponent(token)}`,
         csrfToken,
         initialValues
-      );
-  const editorLink = isSearchEditorFlow(type) && current?.id
-    ? `<p><a href="/forms/${type}/${encodeURIComponent(token)}/editor">Edit saved search details without starting a new search</a></p>` : '';
-  res.type('html').send(editorLink ? formHtml.replace('</body>', `${editorLink}</body>`) : formHtml);
+      )
+    );
 }
 
 async function submitForm(req: Request, res: Response, type: FormType): Promise<void> {
@@ -841,16 +685,6 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
     return;
   }
 
-  await getCanonicalMessageProcessor().process(createWebsiteConversationEvent({
-    sourceEventId: tokenRecord.requestId!,
-    correlationId: req.headers['x-correlation-id'] as string,
-    userId: tokenRecord.userId,
-    channel: 'website_form', eventType: 'form_submission',
-    workflowId: tokenRecord.workflowId,
-    expectedStateVersion: tokenRecord.workflowRevision,
-    payload: { formType: type, fields: parsed.data as Record<string, unknown> },
-  }), async (event) => {
-
   const profileService = getProfileService();
   let completionMessages: string[];
   if (type === 'profile') {
@@ -862,14 +696,6 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
     );
     completionMessages = [buildProfileCompletionMessage(profileForm)];
   } else {
-    if (type === 'excursion_booking') {
-      const current = await getExcursionSearchSessionService().get(tokenRecord.userId);
-      if (!current?.selectedExperience || current.stage !== 'booking_form' || current.lifecycleStatus === 'paused') throw new PersistenceError('conflict');
-    }
-    if (type === 'logistics_booking') {
-      const current = await getLogisticsSearchSessionService().get(tokenRecord.userId);
-      if (!current?.selectedOption || current.stage !== 'booking_form' || current.lifecycleStatus === 'paused') throw new PersistenceError('conflict');
-    }
     const serviceRequest = await profileService.saveServiceRequest(
       tokenRecord.userId,
       type,
@@ -883,10 +709,9 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
         'hotel',
         mapHotelRequestFormToCriteria(parsed.data as HotelRequestForm),
         tokenRecord.workflowId,
-        tokenRecord.workflowRevision,
-        event
+        tokenRecord.workflowRevision
       ) as HotelSearchCriteria;
-      await getConversationControlPlane().pauseCompetingWorkflows(tokenRecord.userId, 'hotel');
+      await clearCompetingSearchSessions(tokenRecord.userId, 'hotel');
       await getHotelSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
         criteria,
@@ -901,10 +726,9 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
         'restaurant',
         mapRestaurantRequestFormToCriteria(parsed.data as RestaurantRequestForm),
         tokenRecord.workflowId,
-        tokenRecord.workflowRevision,
-        event
+        tokenRecord.workflowRevision
       );
-      await getConversationControlPlane().pauseCompetingWorkflows(tokenRecord.userId, 'restaurant');
+      await clearCompetingSearchSessions(tokenRecord.userId, 'restaurant');
       await getRestaurantSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
         criteria,
@@ -919,12 +743,26 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
         'itinerary',
         mapItineraryRequestFormToCriteria(parsed.data as ItineraryRequestForm),
         tokenRecord.workflowId,
-        tokenRecord.workflowRevision,
-        event
+        tokenRecord.workflowRevision
       );
-      await getConversationControlPlane().pauseCompetingWorkflows(tokenRecord.userId, 'itinerary');
-      const { itinerary, workspace } = await getItineraryWorkspaceService()
-        .generateFromSubmittedForm(tokenRecord.userId, criteria, serviceRequest.id);
+      await clearCompetingSearchSessions(tokenRecord.userId, 'itinerary');
+      const sessionService = getItinerarySessionService();
+      await sessionService.saveAwaitingPreferences(
+        tokenRecord.userId,
+        criteria,
+        {
+          itineraryFormResponseId: serviceRequest.id,
+        }
+      );
+      await sessionService.savePlanning(tokenRecord.userId, criteria);
+      const itinerary = await getItineraryPlannerService().plan(criteria);
+      await sessionService.saveItinerary(tokenRecord.userId, criteria, itinerary);
+      const workspace = await getItineraryWorkspaceService().createOrUpdateWorkspace(
+        tokenRecord.userId,
+        itinerary,
+        criteria,
+        'Generated after trip form submission'
+      );
       completionMessages = [
         buildItineraryCompletionMessage(criteria),
         buildItineraryReply(itinerary, buildItineraryWorkspaceLink(workspace.shareToken)),
@@ -935,10 +773,9 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
         'excursion',
         mapExcursionRequestFormToCriteria(parsed.data as ExcursionRequestForm),
         tokenRecord.workflowId,
-        tokenRecord.workflowRevision,
-        event
+        tokenRecord.workflowRevision
       );
-      await getConversationControlPlane().pauseCompetingWorkflows(tokenRecord.userId, 'excursion');
+      await clearCompetingSearchSessions(tokenRecord.userId, 'excursion');
       await getExcursionSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
         criteria,
@@ -948,8 +785,20 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
       );
       completionMessages = [buildExcursionCompletionMessage(criteria)];
     } else if (type === 'excursion_booking') {
-      await getExcursionSearchSessionService().submitBookingForm(
-        tokenRecord.userId, parsed.data as ExcursionBookingForm);
+      const session = await getExcursionSearchSessionService().get(tokenRecord.userId);
+      const selectedExperience = session?.selectedExperience?.selectedExperienceSnapshot;
+      if (selectedExperience) {
+        const bookingRequest = mapExcursionBookingFormToRequest(
+          tokenRecord.userId,
+          selectedExperience,
+          session?.criteria.guests,
+          parsed.data as ExcursionBookingForm
+        );
+        await getExcursionSearchSessionService().saveProviderPending(
+          tokenRecord.userId,
+          bookingRequest
+        );
+      }
       completionMessages = [buildExcursionBookingCompletionMessage()];
     } else if (type === 'logistics') {
       const criteria = await reconcileFormCriteria(
@@ -957,10 +806,9 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
         'logistics',
         mapLogisticsRequestFormToCriteria(parsed.data as LogisticsRequestForm),
         tokenRecord.workflowId,
-        tokenRecord.workflowRevision,
-        event
+        tokenRecord.workflowRevision
       );
-      await getConversationControlPlane().pauseCompetingWorkflows(tokenRecord.userId, 'logistics');
+      await clearCompetingSearchSessions(tokenRecord.userId, 'logistics');
       await getLogisticsSearchSessionService().saveAwaitingPreferences(
         tokenRecord.userId,
         criteria,
@@ -970,8 +818,19 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
       );
       completionMessages = [buildLogisticsCompletionMessage(criteria)];
     } else if (type === 'logistics_booking') {
-      await getLogisticsSearchSessionService().submitBookingForm(
-        tokenRecord.userId, parsed.data as LogisticsBookingForm);
+      const session = await getLogisticsSearchSessionService().get(tokenRecord.userId);
+      const selectedOption = session?.selectedOption?.selectedOptionSnapshot;
+      if (selectedOption) {
+        const bookingRequest = mapLogisticsBookingFormToRequest(
+          selectedOption,
+          session.criteria,
+          parsed.data as LogisticsBookingForm
+        );
+        await getLogisticsSearchSessionService().saveProviderPending(
+          tokenRecord.userId,
+          bookingRequest
+        );
+      }
       completionMessages = [buildLogisticsBookingCompletionMessage()];
     } else {
       completionMessages = [buildServiceCompletionMessage(type)];
@@ -989,7 +848,6 @@ async function submitFormCore(req: Request, res: Response, type: FormType): Prom
         outboundSent,
       })
     );
-  }, { alreadyLocked: true });
 }
 
 async function reconcileFormCriteria<T extends object>(
@@ -997,15 +855,13 @@ async function reconcileFormCriteria<T extends object>(
   flow: 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary',
   criteria: T,
   workflowId?: string,
-  workflowRevision?: number,
-  event?: CanonicalConversationEvent
+  workflowRevision?: number
 ): Promise<T> {
   const reconciled = await getConversationControlPlane().reconcileFormSubmission(
     userId,
     flow,
     criteria as Record<string, unknown>,
-    { id: workflowId, revision: workflowRevision },
-    event
+    { id: workflowId, revision: workflowRevision }
   );
   return reconciled.collectedFields as T;
 }
@@ -1048,6 +904,19 @@ function getFormCompletionOutboundService(): { sendWhatsAppText(to: string, body
   }
 
   return getTwilioOutboundService();
+}
+
+async function clearCompetingSearchSessions(
+  userId: string,
+  activeType: 'hotel' | 'restaurant' | 'excursion' | 'logistics' | 'itinerary'
+): Promise<void> {
+  await Promise.all([
+    activeType !== 'hotel' ? getHotelSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'restaurant' ? getRestaurantSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'excursion' ? getExcursionSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'logistics' ? getLogisticsSearchSessionService().pause(userId) : Promise.resolve(),
+    activeType !== 'itinerary' ? getItinerarySessionService().pause(userId) : Promise.resolve(),
+  ]);
 }
 
 function buildProfileCompletionMessage(form: BasicProfileForm): string {

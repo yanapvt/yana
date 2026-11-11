@@ -1,13 +1,12 @@
-import { validateCriteria, canonicalField, WORKFLOW_SCHEMA_VERSION } from '../orchestration/WorkflowDefinitions.js';
+import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
 import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
-import type { BasicProfileForm, ExcursionBookingForm } from '../types/forms.js';
+import type { BasicProfileForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
 import type { ExcursionBrowseResult } from './GooglePlacesExcursionBrowsingService.js';
-import { mapExcursionBookingFormToRequest, type ExcursionBookingRequest, type ExcursionSearchCriteria } from './excursionRequestMapper.js';
+import type { ExcursionBookingRequest, ExcursionSearchCriteria } from './excursionRequestMapper.js';
 import { logInfrastructureFallback } from './InfrastructureLog.js';
 import { defaultSearchFlowEngine } from './SearchFlowEngine.js';
-import { excursionBookingFormSchema } from '../validation/formSchemas.js';
 import {
   PostgresExcursionSearchSessionRepository,
   type ExcursionSearchSessionRepository,
@@ -42,7 +41,6 @@ export interface SelectedExperience {
 }
 
 export interface ExcursionSearchSession {
-  schemaVersion?: string;
   lifecycleStatus?: 'active' | 'paused';
   revision?: number;
   resultsRetrievedAt?: string;
@@ -227,21 +225,10 @@ export class ExcursionSearchSessionService {
     });
   }
 
-  async submitBookingForm(userId: string, form: ExcursionBookingForm): Promise<void> {
-    const validatedForm = excursionBookingFormSchema.parse(form);
-    const session = await this.get(userId);
-    if (!session?.selectedExperience || session.stage !== 'booking_form' || session.lifecycleStatus === 'paused') {
-      throw new PersistenceError('conflict');
-    }
-    const bookingRequest = mapExcursionBookingFormToRequest(userId,
-      session.selectedExperience.selectedExperienceSnapshot, session.criteria.guests, validatedForm);
-    await this.save({ ...session, bookingRequest,
-      state: 'provider_pending', stage: 'provider_pending', updatedAt: new Date().toISOString() });
-  }
-
   async getAuthoritative(userId: string): Promise<ExcursionSearchSession | null> {
     try {
-      return await this.repository.findLatestActiveByUserId(userId);
+      const session = await this.repository.findLatestActiveByUserId(userId);
+      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
     }
     catch { throw new PersistenceError(); }
   }
@@ -253,31 +240,19 @@ export class ExcursionSearchSessionService {
     const criteria = { ...current.criteria, ...patch };
     validateCriteria('excursion', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('excursion', key))));
     if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
-    await this.save({ ...current, criteria, normalizedCriteria: criteria, state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
+    await this.save({ ...current, criteria, normalizedCriteria: criteria, results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1, state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
     return { status: 'durable' };
   }
 
   async get(userId: string): Promise<ExcursionSearchSession | null> {
     const redisSession = await this.store.getJson<ExcursionSearchSession>(this.getKey(userId));
-    if (redisSession) {
-      const cached = normalizeSession(redisSession);
-      const durable = await this.findDurableSession(userId).catch(() => undefined);
-      if (durable === undefined) return cached;
-      if (durable === null) {
-        await this.store.deleteKey(this.getKey(userId)).catch(() => false);
-        return null;
-      }
-      if (durable.id === cached.id && (durable.revision ?? 0) === (cached.revision ?? 0)) return cached;
-      const refreshed = normalizeSession(durable);
-      await this.store.setJson(this.getKey(userId), refreshed, EXCURSION_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
-      return refreshed;
-    }
+    if (redisSession) return normalizeSession(redisSession);
 
     const durableSession = await this.findDurableSession(userId);
     if (!durableSession) return null;
 
     const normalized = normalizeSession(durableSession);
-    await this.store.setJson(this.getKey(userId), normalized, EXCURSION_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
+    await this.store.setJson(this.getKey(userId), normalized, EXCURSION_SEARCH_SESSION_TTL_SECONDS);
     return normalized;
   }
 
@@ -320,7 +295,6 @@ export class ExcursionSearchSessionService {
 
   private baseSession(userId: string, now: Date, existing?: ExcursionSearchSession | null): ExcursionSearchSession {
     return {
-      schemaVersion: existing?.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
       id: existing?.id ?? crypto.randomUUID(),
       lifecycleStatus: existing?.lifecycleStatus ?? 'active',
       revision: existing?.revision ?? 0,
@@ -376,7 +350,6 @@ function normalizeSession(session: ExcursionSearchSession): ExcursionSearchSessi
 
   return {
     ...session,
-    schemaVersion: session.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
     userId: session.userId ?? session.whatsappUserId,
     whatsappUserId: session.whatsappUserId ?? session.userId,
     normalizedCriteria: criteria,

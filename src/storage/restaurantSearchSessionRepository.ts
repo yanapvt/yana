@@ -1,6 +1,5 @@
 import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
-import { appendWorkflowTransition } from './WorkflowTransitionAudit.js';
 import type { RestaurantSearchSession } from '../services/restaurantSearchSessionService.js';
 
 const RESTAURANT_SESSIONS_KEY = 'yanaRestaurantSearchSessions';
@@ -106,7 +105,6 @@ export class PostgresRestaurantSearchSessionRepository
           }),
         ]
       );
-      await appendWorkflowTransition(client, 'restaurant', session);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');

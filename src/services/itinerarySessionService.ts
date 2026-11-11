@@ -1,4 +1,4 @@
-import { validateCriteria, canonicalField, WORKFLOW_SCHEMA_VERSION } from '../orchestration/WorkflowDefinitions.js';
+import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
 import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
 import type { BasicProfileForm } from '../types/forms.js';
@@ -22,7 +22,6 @@ export type ItineraryState =
   | 'completed';
 
 export interface ItinerarySession {
-  schemaVersion?: string;
   lifecycleStatus?: 'active' | 'paused';
   workspaceAccess?: { tokenHash: string; createdAt: string };
   revision?: number;
@@ -53,7 +52,8 @@ export class ItinerarySessionService {
 
   async getAuthoritative(userId: string): Promise<ItinerarySession | null> {
     try {
-      return await this.repository.findLatestActiveByUserId(userId);
+      const session = await this.repository.findLatestActiveByUserId(userId);
+      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
     }
     catch { throw new PersistenceError(); }
   }
@@ -67,10 +67,8 @@ export class ItinerarySessionService {
     const session = await this.getAuthoritative(userId);
     if (!session?.itinerary) throw new PersistenceError();
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    if (session.workspaceAccess?.tokenHash === tokenHash && Date.parse(session.expiresAt) > Date.now()) return session;
-    const now = new Date();
-    const updated = { ...session, workspaceAccess: { tokenHash, createdAt: now.toISOString() },
-      expiresAt: new Date(now.getTime() + ITINERARY_SESSION_LIFETIME_MS).toISOString(), updatedAt: now.toISOString() };
+    if (session.workspaceAccess?.tokenHash === tokenHash) return session;
+    const updated = { ...session, workspaceAccess: { tokenHash, createdAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
     await this.save(updated);
     return { ...updated, revision: (session.revision ?? 0) + 1 };
   }
@@ -192,25 +190,13 @@ export class ItinerarySessionService {
 
   async get(userId: string): Promise<ItinerarySession | null> {
     const redisSession = await this.store.getJson<ItinerarySession>(this.getKey(userId));
-    if (redisSession) {
-      const cached = normalizeSession(redisSession);
-      const durable = await this.findDurableSession(userId).catch(() => undefined);
-      if (durable === undefined) return cached;
-      if (durable === null) {
-        await this.store.deleteKey(this.getKey(userId)).catch(() => false);
-        return null;
-      }
-      if (durable.id === cached.id && (durable.revision ?? 0) === (cached.revision ?? 0)) return cached;
-      const refreshed = normalizeSession(durable);
-      await this.store.setJson(this.getKey(userId), refreshed, ITINERARY_SESSION_TTL_SECONDS).catch(() => undefined);
-      return refreshed;
-    }
+    if (redisSession) return normalizeSession(redisSession);
 
     const durableSession = await this.findDurableSession(userId);
     if (!durableSession) return null;
 
     const normalized = normalizeSession(durableSession);
-    await this.store.setJson(this.getKey(userId), normalized, ITINERARY_SESSION_TTL_SECONDS).catch(() => undefined);
+    await this.store.setJson(this.getKey(userId), normalized, ITINERARY_SESSION_TTL_SECONDS);
     return normalized;
   }
 
@@ -257,7 +243,6 @@ export class ItinerarySessionService {
     existing?: ItinerarySession | null
   ): ItinerarySession {
     return {
-      schemaVersion: existing?.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
       id: existing?.id ?? crypto.randomUUID(),
       lifecycleStatus: existing?.lifecycleStatus ?? 'active',
       revision: existing?.revision ?? 0,
@@ -302,7 +287,6 @@ export function initItinerarySessionService(service: ItinerarySessionService): I
 function normalizeSession(session: ItinerarySession): ItinerarySession {
   return {
     ...session,
-    schemaVersion: session.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
     criteria: session.criteria ?? {},
     currentDay: session.currentDay,
   };

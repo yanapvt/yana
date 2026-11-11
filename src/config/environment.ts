@@ -26,16 +26,6 @@ const isTestMode = process.env.NODE_ENV === 'test' || process.env.VITEST === 'tr
 const isDevelopmentMode = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 const isNonProductionMode = isTestMode || isDevelopmentMode;
 
-/** Legacy keyword routing exists only for compatibility tests. A pilot or
- * production process must fail fast if an old deployment flag requests it. */
-export function assertLegacyRoutingConfiguration(nodeEnv: string, enabled: string | undefined): void {
-  if (enabled === 'true' && nodeEnv !== 'test') {
-    throw new Error('LEGACY_CONVERSATION_ROUTING_FALLBACK is not supported outside tests');
-  }
-}
-assertLegacyRoutingConfiguration(process.env.NODE_ENV || 'development',
-  process.env.LEGACY_CONVERSATION_ROUTING_FALLBACK);
-
 const EnvironmentSchema = z.object({
   // Environment
   nodeEnv: z.enum(['development', 'staging', 'production', 'test']).default('development'),

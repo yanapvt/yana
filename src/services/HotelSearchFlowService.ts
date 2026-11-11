@@ -213,8 +213,8 @@ export class HotelSearchFlowService {
     context: HotelSearchFlowContext,
     maxResults = 9
   ): Promise<HotelSearchFlowResult> {
-    // Google Places discovers places, not date-specific rooms or rates.
-    // Dates remain required at the later live-inventory booking check.
+    // Google Places discovery queries use the area. Dates and party details
+    // remain required by booking/provider checks, not by this browse step.
     if (!criteria.location?.trim()) {
       return {
         status: 'validation_failed',

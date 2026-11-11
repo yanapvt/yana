@@ -51,11 +51,11 @@ export class TwilioOutboundService {
       }
     }
 
-    if (options.voice && (!options.shouldContinue || await options.shouldContinue())) {
+    if (options.voice) {
       const voiceText = messages.map((message) => message.body).join('\n\n');
       try {
         const audio = await getTextToSpeechService().synthesize(voiceText);
-        if (audio?.mediaUrl && (!options.shouldContinue || await options.shouldContinue())) {
+        if (audio?.mediaUrl) {
           const voiceSent = await this.sendWhatsAppMessage(
             to,
             'Voice reply',
@@ -80,7 +80,6 @@ export class TwilioOutboundService {
     if (!options.voice) {
       let sentAny = false;
       for (const part of splitWhatsAppText(body)) {
-        if (options.shouldContinue && !(await options.shouldContinue())) break;
         const sent = await this.sendWhatsAppMessage(to, part, undefined, options.from);
         sentAny = sentAny || sent;
       }
@@ -89,7 +88,6 @@ export class TwilioOutboundService {
 
     let textSent = false;
     for (const part of splitWhatsAppText(body)) {
-      if (options.shouldContinue && !(await options.shouldContinue())) break;
       const sent = await this.sendWhatsAppMessage(to, part, undefined, options.from);
       textSent = textSent || sent;
     }
@@ -100,7 +98,6 @@ export class TwilioOutboundService {
         return textSent;
       }
 
-      if (options.shouldContinue && !(await options.shouldContinue())) return textSent;
       const voiceSent = await this.sendWhatsAppMessage(
         to,
         'Voice reply',

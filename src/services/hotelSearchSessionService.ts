@@ -1,4 +1,4 @@
-import { validateCriteria, canonicalField, WORKFLOW_SCHEMA_VERSION } from '../orchestration/WorkflowDefinitions.js';
+import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
 import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
 import type { BasicProfileForm } from '../types/forms.js';
@@ -44,7 +44,6 @@ export interface SelectedHotel {
 }
 
 export interface HotelSearchSession {
-  schemaVersion?: string;
   lifecycleStatus?: 'active' | 'paused';
   revision?: number;
   resultsRetrievedAt?: string;
@@ -364,7 +363,8 @@ export class HotelSearchSessionService {
 
   async getAuthoritative(userId: string): Promise<HotelSearchSession | null> {
     try {
-      return await this.repository.findLatestActiveByUserId(userId);
+      const session = await this.repository.findLatestActiveByUserId(userId);
+      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
     }
     catch { throw new PersistenceError(); }
   }
@@ -376,24 +376,14 @@ export class HotelSearchSessionService {
     const criteria = { ...current.criteria, ...patch };
     validateCriteria('hotel', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('hotel', key))));
     if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
-    await this.save({ ...current, criteria, normalizedCriteria: criteria, state: 'awaiting_extra_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
+    await this.save({ ...current, criteria, normalizedCriteria: criteria, results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1, state: 'awaiting_extra_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
     return { status: 'durable' };
   }
 
   async get(userId: string): Promise<HotelSearchSession | null> {
     const redisSession = await this.store.getJson<HotelSearchSession>(this.getKey(userId));
     if (redisSession) {
-      const cached = normalizeSession(redisSession);
-      const durable = await this.findDurableSession(userId).catch(() => undefined);
-      if (durable === undefined) return cached;
-      if (durable === null) {
-        await this.store.deleteKey(this.getKey(userId)).catch(() => false);
-        return null;
-      }
-      if (durable.id === cached.id && (durable.revision ?? 0) === (cached.revision ?? 0)) return cached;
-      const refreshed = normalizeSession(durable);
-      await this.store.setJson(this.getKey(userId), refreshed, HOTEL_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
-      return refreshed;
+      return normalizeSession(redisSession);
     }
 
     const durableSession = await this.findDurableSession(userId);
@@ -402,7 +392,7 @@ export class HotelSearchSessionService {
     }
 
     const normalized = normalizeSession(durableSession);
-    await this.store.setJson(this.getKey(userId), normalized, HOTEL_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
+    await this.store.setJson(this.getKey(userId), normalized, HOTEL_SEARCH_SESSION_TTL_SECONDS);
     return normalized;
   }
 
@@ -452,7 +442,6 @@ export class HotelSearchSessionService {
     existing?: HotelSearchSession | null
   ): HotelSearchSession {
     return {
-      schemaVersion: existing?.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
       id: existing?.id ?? crypto.randomUUID(),
       lifecycleStatus: existing?.lifecycleStatus ?? 'active',
       revision: existing?.revision ?? 0,
@@ -623,7 +612,6 @@ function normalizeSession(session: HotelSearchSession): HotelSearchSession {
 
   return {
     ...session,
-    schemaVersion: session.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
     userId: session.userId ?? session.whatsappUserId,
     whatsappUserId: session.whatsappUserId ?? session.userId,
     normalizedCriteria: criteria,

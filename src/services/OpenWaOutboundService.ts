@@ -24,15 +24,8 @@ export class OpenWaOutboundService {
     private readonly pause: (milliseconds: number) => Promise<void> = delay
   ) {}
   async sendWhatsAppText(to: string, body: string): Promise<boolean> {
-    return this.sendGuardedText(to, body);
-  }
-
-  private async sendGuardedText(
-    to: string, body: string, shouldContinue?: () => boolean | Promise<boolean>
-  ): Promise<boolean> {
     let sentAny = false;
     for (const part of splitWhatsAppText(body, OPENWA_TEXT_LIMIT)) {
-      if (shouldContinue && !(await shouldContinue())) break;
       const sent = await this.sendTextMessage(to, part);
       sentAny = sentAny || sent;
     }
@@ -58,15 +51,13 @@ export class OpenWaOutboundService {
       const sent =
         message.mediaUrl && isPublicHttpsUrl(message.mediaUrl)
           ? await this.sendImageCardWithTextFallback(to, message.mediaUrl, message.body, options.shouldContinue)
-          : await this.sendGuardedText(to, message.body, options.shouldContinue);
+          : await this.sendWhatsAppText(to, message.body);
       sentAny = sentAny || sent;
     }
 
     if (options.voice) {
       const voiceText = messages.map((message) => message.body).join('\n\n');
-      if (!options.shouldContinue || await options.shouldContinue()) {
-        sentAny = (await this.sendVoiceReply(to, voiceText)) || sentAny;
-      }
+      sentAny = (await this.sendVoiceReply(to, voiceText)) || sentAny;
     }
 
     return sentAny;
@@ -77,14 +68,12 @@ export class OpenWaOutboundService {
     body: string,
     options: SendOpenWaOptions = {}
   ): Promise<boolean> {
-    if (options.shouldContinue && !(await options.shouldContinue())) return false;
-    const textSent = await this.sendGuardedText(to, body, options.shouldContinue);
+    const textSent = await this.sendWhatsAppText(to, body);
 
     if (!options.voice) {
       return textSent;
     }
 
-    if (options.shouldContinue && !(await options.shouldContinue())) return textSent;
     return (await this.sendVoiceReply(to, body)) || textSent;
   }
 
@@ -168,7 +157,7 @@ export class OpenWaOutboundService {
     // cannot stop at the carousel intro after a silent downstream media failure.
     await this.pause(OPENWA_SEND_GAP_MS);
     if (shouldContinue && !(await shouldContinue())) return imageSent;
-    const textSent = await this.sendGuardedText(to, caption, shouldContinue);
+    const textSent = await this.sendWhatsAppText(to, caption);
     return imageSent || textSent;
   }
 

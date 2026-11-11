@@ -45,9 +45,6 @@ const REQUIRED_TABLES = [
   'inbound_message_claims',
   'hotel_recheck_receipts',
   'traveller_memories',
-  'journey_event_checkpoints',
-  'journey_inbound_events',
-  'journey_workflow_transitions',
 ];
 
 const REQUIRED_INDEX_TYPES = {
@@ -80,8 +77,6 @@ const REQUIRED_INDEX_TYPES = {
     'hotel_recheck_receipts_expiry_idx',
     'traveller_memories_context_idx',
     'traveller_memories_expiry_idx',
-    'journey_inbound_events_correlation_idx',
-    'journey_workflow_transitions_user_idx',
   ],
   registered_accommodation_lookup: [
     'registered_accommodations_normalized_name_idx',
@@ -134,9 +129,6 @@ async function validateMigrations(): Promise<void> {
     '024_create_traveller_memories.sql',
     '025_traveller_location_memory.sql',
     '026_concierge_followups.sql',
-    '027_journey_event_checkpoints.sql',
-    '028_journey_inbound_event_audit.sql',
-    '029_journey_workflow_transitions.sql',
   ];
 
   let allContent = '';

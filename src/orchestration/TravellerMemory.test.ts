@@ -51,13 +51,10 @@ describe('typed traveller context', () => {
       travellerMemories: facts, memoryStatus: 'available', activeSession: { flow: 'restaurant', collectedFields: {}, requiredFields: [], missingFields: [] } });
     expect(modelContext(context).travellerContext).toEqual({
       confirmedFacts: [
-        expect.objectContaining({ key: 'occasion', value: 'birthday', scope: 'trip',
-          source: 'confirmed_traveller_memory', updatedAt: base.updatedAt }),
-        expect.objectContaining({ key: 'dietary_requirement', value: 'vegan', scope: 'trip',
-          source: 'confirmed_traveller_memory', updatedAt: base.updatedAt }),
+        { key: 'occasion', value: 'birthday', scope: 'trip' },
+        { key: 'dietary_requirement', value: 'vegan', scope: 'trip' },
       ],
-      pendingConfirmations: [expect.objectContaining({ key: 'allergy', value: 'shellfish', scope: 'trip',
-        source: 'pending_traveller_memory', updatedAt: base.updatedAt })],
+      pendingConfirmations: [{ key: 'allergy', value: 'shellfish', scope: 'trip' }],
     });
   });
 

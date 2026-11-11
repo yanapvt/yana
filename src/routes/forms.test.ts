@@ -13,24 +13,13 @@ import {
 import { InMemoryProfileRepository } from '../storage/profileRepository.js';
 import { InMemoryServiceRequestRepository } from '../storage/serviceRequestRepository.js';
 import { env } from '../config/environment.js';
-import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
-import { getCanonicalMessageProcessor } from '../services/CanonicalMessageProcessor.js';
-import { ActiveConversationStateLoader } from '../orchestration/ActiveConversationStateLoader.js';
-import { Orchestrator } from '../orchestration/Orchestrator.js';
-import { MemoryUpdater } from '../orchestration/MemoryUpdater.js';
-import { createInboundConversationEvent } from '../orchestration/CanonicalConversationEvent.js';
-import { normalizeInboundMessage } from '../utils/messageNormalizer.js';
-vi.mock('../services/JourneyEventCheckpointService.js', () => ({ JourneyEventCheckpointService: class {
-  async accept() { return; }
-  async recover() { return null; }
-} }));
 vi.mock('../services/WorkflowLockService.js', () => ({ withWorkflowLock: async (_user: string, operation: () => Promise<unknown>) => operation() }));
 import { FixtureSessionRepository, FixtureStateStore } from '../tests/fixtures/sessionStorage.js';
 import { ItinerarySessionService, initItinerarySessionService } from '../services/itinerarySessionService.js';
-import { HotelSearchSessionService, getHotelSearchSessionService, initHotelSearchSessionService } from '../services/hotelSearchSessionService.js';
+import { HotelSearchSessionService, initHotelSearchSessionService } from '../services/hotelSearchSessionService.js';
 import { RestaurantSearchSessionService, initRestaurantSearchSessionService } from '../services/restaurantSearchSessionService.js';
-import { ExcursionSearchSessionService, getExcursionSearchSessionService, initExcursionSearchSessionService } from '../services/excursionSearchSessionService.js';
-import { LogisticsSearchSessionService, getLogisticsSearchSessionService, initLogisticsSearchSessionService } from '../services/logisticsSearchSessionService.js';
+import { ExcursionSearchSessionService, initExcursionSearchSessionService } from '../services/excursionSearchSessionService.js';
+import { LogisticsSearchSessionService, initLogisticsSearchSessionService } from '../services/logisticsSearchSessionService.js';
 import { ItineraryWorkspaceService, initItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
 
 describe('external form routes', () => {
@@ -122,35 +111,6 @@ describe('external form routes', () => {
     expect(bytes.byteLength).toBeGreaterThan(100_000);
   });
 
-  it('binds website chat to the token owner and sends text into the canonical processor', async () => {
-    const userId = 'whatsapp:+94770000042';
-    const token = tokenService.createToken(userId, 'profile');
-    const csrfResponse = await fetch(`${origin}/forms/profile/${token}/chat`);
-    const { csrf } = await csrfResponse.json() as { csrf: string };
-    const process = vi.spyOn(getCanonicalMessageProcessor(), 'process').mockResolvedValue({
-      inboundMessage: { from: userId }, reply: 'I can help with your trip.',
-    } as never);
-    try {
-      const response = await fetch(`${origin}/forms/profile/${token}/chat`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'Let us plan the trip', _csrf: csrf,
-          userId: 'whatsapp:+10000000000', workflowId: 'forged' }),
-      });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ reply: 'I can help with your trip.' });
-      expect(process).toHaveBeenCalledWith(expect.objectContaining({
-        userId, channel: 'website_ui', eventType: 'text',
-        payload: { content: { type: 'text', body: 'Let us plan the trip' } },
-      }), expect.any(Function));
-      const replay = await fetch(`${origin}/forms/profile/${token}/chat`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'Let us plan the trip', _csrf: csrf }),
-      });
-      expect(replay.status).toBe(403);
-      expect(process).toHaveBeenCalledTimes(1);
-    } finally { process.mockRestore(); }
-  });
-
   it('validates and stores a sanitized profile, then consumes its token', async () => {
     const userId = 'whatsapp:+94770000001';
     const token = tokenService.createToken(userId, 'profile');
@@ -212,227 +172,6 @@ describe('external form routes', () => {
     expect(html).not.toContain('Dietary Restrictions');
   });
 
-  it.each([
-    ['excursion_booking', { preferredDate: '2026-12-01', preferredTime: '09:00',
-      pickupLocation: 'Galle', guests: '2', guestNames: 'Alex and Sam', contactNumber: '+94770000000' }],
-    ['logistics_booking', { passengerName: 'Alex', phoneNumber: '+94770000000', pickupContact: 'Sam' }],
-  ] as const)('rejects a %s form when no result was selected', async (type, fields) => {
-    const userId = 'whatsapp:+94770000072';
-    const token = tokenService.createToken(userId, type);
-    const csrf = extractCsrf(await (await fetch(`${origin}/forms/${type}/${token}`)).text());
-
-    const response = await fetch(`${origin}/forms/${type}/${token}`, {
-      method: 'POST', body: new URLSearchParams({ ...fields, _csrf: csrf }),
-    });
-
-    expect(response.status).toBe(409);
-    expect(await profileService.getLatestServiceRequest(userId, type)).toBeNull();
-    expect(sendWhatsAppTextMock).not.toHaveBeenCalled();
-  });
-
-  it('submits an excursion booking request through its selected workflow session', async () => {
-    const userId = 'whatsapp:+94770000073';
-    const sessions = getExcursionSearchSessionService();
-    await sessions.saveResults(userId, { destination: 'Galle', guests: 2 },
-      [{ id: 'experience-1', name: 'Coastal walk' }], 1);
-    await sessions.selectExperience(userId, 1);
-    const token = tokenService.createToken(userId, 'excursion_booking');
-    const csrf = extractCsrf(await (await fetch(`${origin}/forms/excursion_booking/${token}`)).text());
-
-    const response = await fetch(`${origin}/forms/excursion_booking/${token}`, {
-      method: 'POST', body: new URLSearchParams({ _csrf: csrf, preferredDate: '2026-12-01',
-        preferredTime: '09:00', pickupLocation: 'Galle', guests: '2',
-        guestNames: 'Alex and Sam', contactNumber: '+94770000000' }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(await sessions.getAuthoritative(userId)).toMatchObject({
-      stage: 'provider_pending', bookingRequest: { experience: { name: 'Coastal walk' },
-        status: 'pending_provider_confirmation' },
-    });
-    expect(sendWhatsAppTextMock).toHaveBeenCalledWith(userId,
-      expect.stringContaining('YANA has not contacted the provider yet'));
-  });
-
-  it('submits a transport booking request through its selected workflow session', async () => {
-    const userId = 'whatsapp:+94770000074';
-    const sessions = getLogisticsSearchSessionService();
-    await sessions.saveResults(userId, { pickupLocation: 'Airport', destination: 'Galle' }, [{
-      id: 'driver-1', provider: 'Driver request', vehicle: 'Car', estimatedPrice: 'Quote required',
-      vehicleType: 'Car', capacity: 3, luggageCapacity: '2 bags', estimatedDuration: '2 hours',
-    }], 1);
-    await sessions.selectOption(userId, 1);
-    const token = tokenService.createToken(userId, 'logistics_booking');
-    const csrf = extractCsrf(await (await fetch(`${origin}/forms/logistics_booking/${token}`)).text());
-
-    const response = await fetch(`${origin}/forms/logistics_booking/${token}`, {
-      method: 'POST', body: new URLSearchParams({ _csrf: csrf,
-        passengerName: 'Alex', phoneNumber: '+94770000000', pickupContact: 'Sam' }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(await sessions.getAuthoritative(userId)).toMatchObject({
-      stage: 'provider_pending', bookingRequest: { provider: 'Driver request',
-        status: 'pending_provider_confirmation' },
-    });
-    expect(sendWhatsAppTextMock).toHaveBeenCalledWith(userId,
-      expect.stringContaining('No vehicle, availability, or price is confirmed'));
-  });
-
-  it('continues a WhatsApp search in the UI, then reflects a natural-language change back in the editor', async () => {
-    const userId = 'whatsapp:+94770000031';
-    const sessions = getHotelSearchSessionService();
-    const originalCriteria = { location: 'Galle', checkinDate: '2026-12-01', checkoutDate: '2026-12-08', guests: 2, rooms: 1 };
-    await sessions.saveAwaitingPreferences(userId, originalCriteria);
-    const original = (await sessions.getAuthoritative(userId))!;
-    hotelRepository.records.set(userId, { ...original,
-      results: [{ name: 'Previous hotel' }], resultBatches: [[{ name: 'Previous hotel' }]],
-      latestDisplayedBatchIndex: 0, selectedHotel: { selectedHotelId: 'hotel-1' } } as any);
-    const saveSearching = vi.spyOn(sessions, 'saveSearching');
-    const accepted = vi.spyOn(getConversationControlPlane(), 'acceptEvent');
-    const token = tokenService.createToken(userId, 'hotel');
-    const formHtml = await (await fetch(`${origin}/forms/hotel/${token}`)).text();
-    expect(formHtml).toContain(`/forms/hotel/${token}/editor`);
-    const browserPage = await fetch(`${origin}/forms/hotel/${token}/editor`);
-    const browserHtml = await browserPage.text();
-    expect(browserPage.status).toBe(200);
-    expect(browserHtml).toContain('name="action" value="update_draft"');
-    expect(browserHtml).toContain('name="expectedRevision"');
-    expect(browserHtml).toContain('Save draft');
-    const get = await fetch(`${origin}/forms/hotel/${token}/editor`, { headers: { Accept: 'application/json' } });
-    const editor = await get.json() as any;
-    expect(get.status).toBe(200);
-    expect(editor).toMatchObject({ mode: 'search_editor', workflowId: original.id,
-      expectedRevision: original.revision, actions: ['update_draft'],
-      values: originalCriteria });
-
-    const changed = await fetch(`${origin}/forms/hotel/${token}/editor`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ action: 'update_draft', _csrf: editor.csrf,
-        expectedRevision: editor.expectedRevision, fields: { location: 'Unawatuna' },
-        userId: 'whatsapp:+19999999999', workflowId: 'client-workflow' }),
-    });
-    const saved = await changed.json() as any;
-    expect(changed.status).toBe(200);
-    expect(saved.view).toMatchObject({ workflowId: original.id, expectedRevision: original.revision! + 1,
-      values: { location: 'Unawatuna', checkinDate: '2026-12-01', checkoutDate: '2026-12-08', guests: 2 } });
-    expect(accepted).toHaveBeenCalledWith(expect.objectContaining({ channel: 'website_ui', eventType: 'ui_action',
-      userId, workflowId: original.id, expectedStateVersion: original.revision,
-      payload: { action: 'update_draft', fields: { location: 'Unawatuna' }, schemaId: 'search_hotels' } }));
-    const afterUi = (await sessions.getAuthoritative(userId))!;
-    expect(afterUi.criteria).toMatchObject({ ...originalCriteria, location: 'Unawatuna' });
-    expect(afterUi.results).toHaveLength(1);
-    expect(afterUi.selectedHotel).toMatchObject({ selectedHotelId: 'hotel-1' });
-    expect((await new ActiveConversationStateLoader().load(userId))?.verifiedResults).toBeUndefined();
-    expect(saveSearching).not.toHaveBeenCalled();
-
-    const inbound = normalizeInboundMessage({ MessageSid: 'SM-after-editor', From: userId,
-      To: 'whatsapp:+14155238886', Body: 'Could we move check-in to 2026-12-05?' });
-    const whatsapp = await getConversationControlPlane().acceptEvent(createInboundConversationEvent(inbound, 'corr-after-editor'));
-    expect(whatsapp).toMatchObject({ userId, workflowId: original.id,
-      sessionId: expect.any(String), conversationId: expect.any(String) });
-    const active = await new ActiveConversationStateLoader().load(userId);
-    const plan = await new Orchestrator({ llmInterpreter: { interpret: async () => ({
-      role: 'change_existing_criteria', intent: 'hotel_search', entities: { checkinDate: '2026-12-05' },
-      confidence: 0.96, taskTransition: 'continue', proposedAction: { name: 'none', arguments: {} },
-      responseText: 'I can update your check-in date.',
-    }) } }).plan({ inboundMessage: inbound, text: inbound.content.type === 'text' ? inbound.content.body : '',
-      profileComplete: true, activeSession: active ?? undefined });
-    expect(plan.decision.action).toBe('continue_flow');
-    expect((await new MemoryUpdater().persistUpdate(plan.context, plan.memoryUpdate)).status).toBe('durable');
-    const afterConversation = (await sessions.getAuthoritative(userId))!;
-    expect(afterConversation.id).toBe(original.id);
-    expect(afterConversation.criteria).toMatchObject({ location: 'Unawatuna', checkinDate: '2026-12-05',
-      checkoutDate: '2026-12-08', guests: 2, rooms: 1 });
-    expect(afterConversation.results).toHaveLength(1);
-    expect(saveSearching).not.toHaveBeenCalled();
-
-    expect((await fetch(`${origin}${saved.editorUrl}`, { headers: { Accept: 'application/json' } })).status).toBe(409);
-    const freshToken = tokenService.createToken(userId, 'hotel');
-    const fresh = await (await fetch(`${origin}/forms/hotel/${freshToken}/editor`,
-      { headers: { Accept: 'application/json' } })).json() as any;
-    expect(fresh).toMatchObject({ workflowId: original.id, expectedRevision: afterConversation.revision,
-      values: { location: 'Unawatuna', checkinDate: '2026-12-05', checkoutDate: '2026-12-08', guests: 2 } });
-    expect((await fetch(`${origin}/forms/hotel/${token}/editor`, { method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ action: 'update_draft', _csrf: editor.csrf,
-        expectedRevision: editor.expectedRevision, fields: { location: 'Colombo' } }) })).status).toBe(409);
-    expect((await sessions.getAuthoritative(userId))?.criteria.location).toBe('Unawatuna');
-    accepted.mockRestore();
-    saveSearching.mockRestore();
-  });
-
-  it('keeps one workflow when the UI changes guests and WhatsApp changes location', async () => {
-    const userId = 'whatsapp:+94770000032';
-    const sessions = getHotelSearchSessionService();
-    const originalCriteria = { location: 'Galle', checkinDate: '2026-12-01',
-      checkoutDate: '2026-12-08', guests: 2, rooms: 1 };
-    await sessions.saveAwaitingPreferences(userId, originalCriteria);
-    const original = (await sessions.getAuthoritative(userId))!;
-    const search = vi.spyOn(sessions, 'saveSearching');
-    const token = tokenService.createToken(userId, 'hotel');
-    const editor = await (await fetch(`${origin}/forms/hotel/${token}/editor`,
-      { headers: { Accept: 'application/json' } })).json() as any;
-    const ui = await fetch(`${origin}/forms/hotel/${token}/editor`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ action: 'update_draft', _csrf: editor.csrf,
-        expectedRevision: editor.expectedRevision, fields: { guests: 3 } }),
-    });
-    expect(ui.status).toBe(200);
-    expect((await sessions.getAuthoritative(userId))?.criteria).toMatchObject({ ...originalCriteria, guests: 3 });
-
-    const inbound = normalizeInboundMessage({ MessageSid: 'SM-location-after-ui', From: userId,
-      To: 'whatsapp:+14155238886', Body: 'Somewhere closer to the beach in Unawatuna' });
-    await getConversationControlPlane().acceptEvent(createInboundConversationEvent(inbound, 'corr-location-after-ui'));
-    const active = await new ActiveConversationStateLoader().load(userId);
-    const interpret = vi.fn().mockResolvedValue({ role: 'change_existing_criteria',
-      intent: 'hotel_search', entities: { location: 'Unawatuna' }, confidence: 0.97,
-      taskTransition: 'continue', proposedAction: { name: 'none', arguments: {} },
-      responseText: 'I can look around Unawatuna.' });
-    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan({
-      inboundMessage: inbound, text: 'Somewhere closer to the beach in Unawatuna',
-      profileComplete: true, activeSession: active ?? undefined });
-    expect(plan.decision.action).toBe('continue_flow');
-    expect(interpret).toHaveBeenCalledTimes(1);
-    expect((await new MemoryUpdater().persistUpdate(plan.context, plan.memoryUpdate)).status).toBe('durable');
-    const final = (await sessions.getAuthoritative(userId))!;
-    expect(final.id).toBe(original.id);
-    expect(final.revision).toBeGreaterThan(original.revision ?? 0);
-    expect(final.criteria).toMatchObject({ ...originalCriteria, location: 'Unawatuna', guests: 3 });
-    expect(search).not.toHaveBeenCalled();
-    search.mockRestore();
-  });
-
-  it('applies a transcribed WhatsApp voice date correction to the same saved workflow', async () => {
-    const userId = 'whatsapp:+94770000033';
-    const sessions = getHotelSearchSessionService();
-    await sessions.saveAwaitingPreferences(userId, { location: 'Galle',
-      checkinDate: '2026-12-01', checkoutDate: '2026-12-08', guests: 2 });
-    const original = (await sessions.getAuthoritative(userId))!;
-    const voice = { ...normalizeInboundMessage({ MessageSid: 'SM-voice-date', From: userId,
-      To: 'whatsapp:+14155238886', Body: '' }),
-      inputType: 'voice' as const, content: { type: 'text' as const,
-        body: 'Could we move check-in to 2026-12-03?' } };
-    const accepted = await getConversationControlPlane().acceptEvent(
-      createInboundConversationEvent(voice, 'corr-voice-date'));
-    expect(accepted).toMatchObject({ userId, workflowId: original.id, eventType: 'audio' });
-    const active = await new ActiveConversationStateLoader().load(userId);
-    const interpret = vi.fn().mockResolvedValue({ role: 'change_existing_criteria',
-      intent: 'hotel_search', entities: { checkinDate: '2026-12-03' }, confidence: 0.97,
-      taskTransition: 'continue', proposedAction: { name: 'none', arguments: {} },
-      responseText: 'I can move check-in to 3 December.' });
-    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan({
-      inboundMessage: voice, text: voice.content.body, profileComplete: true,
-      activeSession: active ?? undefined });
-    expect(interpret).toHaveBeenCalledTimes(1);
-    expect(plan.decision.action).toBe('continue_flow');
-    expect((await new MemoryUpdater().persistUpdate(plan.context, plan.memoryUpdate)).status).toBe('durable');
-    const updated = (await sessions.getAuthoritative(userId))!;
-    expect(updated.id).toBe(original.id);
-    expect(updated.criteria).toMatchObject({ location: 'Galle', checkinDate: '2026-12-03',
-      checkoutDate: '2026-12-08', guests: 2 });
-  });
-
   it('rejects POST submissions without the form CSRF nonce', async () => {
     const token = tokenService.createToken('whatsapp:+94770000002', 'hotel');
     const response = await fetch(`${origin}/forms/hotel/${token}`, {
@@ -444,7 +183,6 @@ describe('external form routes', () => {
   });
 
   it('stores a hotel request, sends the WhatsApp confirmation, and renders a return link', async () => {
-    const accepted = vi.spyOn(getConversationControlPlane(), 'acceptEvent');
     const userId = 'whatsapp:+94770000005';
     const token = tokenService.createToken(userId, 'hotel');
     const csrf = extractCsrf(await (await fetch(`${origin}/forms/hotel/${token}`)).text());
@@ -452,9 +190,6 @@ describe('external form routes', () => {
       method: 'POST',
       body: new URLSearchParams({
         _csrf: csrf,
-        userId: 'whatsapp:+19999999999',
-        sessionId: 'client-session',
-        workflowId: 'client-workflow',
         destination: 'Galle Fort',
         checkIn: '2026-07-10',
         checkOut: '2026-07-12',
@@ -474,11 +209,6 @@ describe('external form routes', () => {
     const requests = await profileService.getServiceRequests(userId, 'hotel');
 
     expect(response.status).toBe(200);
-    expect(accepted).toHaveBeenCalledWith(expect.objectContaining({
-      channel: 'website_form', eventType: 'form_submission', userId,
-      sourceEventId: expect.any(String), correlationId: response.headers.get('x-correlation-id'),
-    }));
-    expect(accepted.mock.calls.at(-1)?.[0]).not.toMatchObject({ workflowId: 'client-workflow', sessionId: 'client-session' });
     expect(html).toContain('https://wa.me/14155238886');
     expect(html).not.toContain('?text=done');
     expect(requests).toHaveLength(1);
@@ -490,15 +220,6 @@ describe('external form routes', () => {
       userId,
       expect.stringContaining('Reply with your preferences')
     );
-    const startedInUi = await getHotelSearchSessionService().getAuthoritative(userId);
-    expect(startedInUi?.id).toBeTruthy();
-    const returnMessage = normalizeInboundMessage({ MessageSid: 'SM-return-from-hotel-form', From: userId,
-      To: 'whatsapp:+14155238886', Body: 'Continue my stay search' });
-    const returnEvent = await getConversationControlPlane().acceptEvent(
-      createInboundConversationEvent(returnMessage, 'corr-return-from-form'));
-    expect(returnEvent).toMatchObject({ userId, workflowId: startedInUi?.id,
-      sessionId: expect.any(String), conversationId: expect.any(String) });
-    accepted.mockRestore();
   });
 
   it('submits an itinerary form and immediately sends the generated trip plan', async () => {

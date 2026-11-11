@@ -63,15 +63,8 @@ export class MetaWhatsAppOutboundService {
   }
 
   async sendWhatsAppText(to: string, body: string): Promise<boolean> {
-    return this.sendGuardedText(to, body);
-  }
-
-  private async sendGuardedText(
-    to: string, body: string, shouldContinue?: () => boolean | Promise<boolean>
-  ): Promise<boolean> {
     let sentAny = false;
     for (const part of splitWhatsAppText(body, META_TEXT_LIMIT)) {
-      if (shouldContinue && !(await shouldContinue())) break;
       const sent = await this.sendTextMessage(to, part);
       sentAny = sentAny || sent;
     }
@@ -93,9 +86,7 @@ export class MetaWhatsAppOutboundService {
     if (carouselSent) {
       if (options.voice) {
         const voiceText = messages.map((message) => message.body).join('\n\n');
-        if (!options.shouldContinue || await options.shouldContinue()) {
-          return (await this.sendVoiceReply(to, voiceText)) || carouselSent;
-        }
+        return (await this.sendVoiceReply(to, voiceText)) || carouselSent;
       }
 
       return true;
@@ -106,30 +97,26 @@ export class MetaWhatsAppOutboundService {
       if (options.shouldContinue && !(await options.shouldContinue())) break;
       const sent =
         message.mediaUrl && isPublicHttpsUrl(message.mediaUrl)
-          ? await this.sendImageWithTextFallback(to, message.mediaUrl, message.body, options.shouldContinue)
-          : await this.sendGuardedText(to, message.body, options.shouldContinue);
+          ? await this.sendImageWithTextFallback(to, message.mediaUrl, message.body)
+          : await this.sendWhatsAppText(to, message.body);
       sentAny = sentAny || sent;
     }
 
     if (options.voice) {
       const voiceText = messages.map((message) => message.body).join('\n\n');
-      if (!options.shouldContinue || await options.shouldContinue()) {
-        sentAny = (await this.sendVoiceReply(to, voiceText)) || sentAny;
-      }
+      sentAny = (await this.sendVoiceReply(to, voiceText)) || sentAny;
     }
 
     return sentAny;
   }
 
   async sendWhatsAppReply(to: string, body: string, options: SendMetaOptions = {}): Promise<boolean> {
-    if (options.shouldContinue && !(await options.shouldContinue())) return false;
-    const textSent = await this.sendGuardedText(to, body, options.shouldContinue);
+    const textSent = await this.sendWhatsAppText(to, body);
 
     if (!options.voice) {
       return textSent;
     }
 
-    if (options.shouldContinue && !(await options.shouldContinue())) return textSent;
     return (await this.sendVoiceReply(to, body)) || textSent;
   }
 
@@ -153,10 +140,8 @@ export class MetaWhatsAppOutboundService {
   private async sendImageWithTextFallback(
     to: string,
     mediaUrl: string,
-    caption: string,
-    shouldContinue?: () => boolean | Promise<boolean>
+    caption: string
   ): Promise<boolean> {
-    if (shouldContinue && !(await shouldContinue())) return false;
     const captionParts = splitWhatsAppText(caption, META_CAPTION_LIMIT);
     const imageSent = await this.sendMessage({
       messaging_product: 'whatsapp',
@@ -172,12 +157,12 @@ export class MetaWhatsAppOutboundService {
     if (imageSent) {
       let sentAny = true;
       for (const extraCaptionPart of captionParts.slice(1)) {
-        sentAny = (await this.sendGuardedText(to, extraCaptionPart, shouldContinue)) || sentAny;
+        sentAny = (await this.sendWhatsAppText(to, extraCaptionPart)) || sentAny;
       }
       return sentAny;
     }
 
-    return this.sendGuardedText(to, caption, shouldContinue);
+    return this.sendWhatsAppText(to, caption);
   }
 
   private async trySendCarouselMessage(

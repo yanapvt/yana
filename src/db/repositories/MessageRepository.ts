@@ -50,19 +50,13 @@ export class MessageRepository {
        ORDER BY m.created_at DESC, m.message_id DESC LIMIT $2`,
       [traveller.replace(/^whatsapp:/, ''), Math.min(12, Math.max(1, limit))]
     );
-    const ordered = result.rows.reverse();
-    let lastReset = -1;
-    for (let index = 0; index < ordered.length; index += 1) {
-      if (ordered[index].role === 'user' && ordered[index].metadata?.conversationBoundary === 'reset') lastReset = index;
-    }
-    return ordered.slice(lastReset + 1).map((row) => ({ role: row.role,
+    return result.rows.reverse().map((row) => ({ role: row.role,
       content: sanitizeConversationText(`${row.role === 'assistant' && row.metadata?.delivery !== 'submitted' ? '[Generated reply; delivery not verified] ' : ''}${String(row.content?.text ?? '')}`) }));
   }
 
   /** Role-aware idempotency under the traveller row lock; generated replies are not delivery receipts. */
   async appendConversationTurn(input: {
     traveller: string; peer: string; requestId: string; role: 'user' | 'assistant'; text: string;
-    conversationBoundary?: 'reset';
   }): Promise<'durable' | 'absent'> {
     const client = await pool.connect();
     try {
@@ -83,10 +77,7 @@ export class MessageRepository {
           `INSERT INTO messages(session_id,user_id,correlation_id,from_number,to_number,message_type,role,content,metadata)
            VALUES($1,$2,$3,$4,$5,'text',$6,$7,$8)`,
           [sessionId, userId, correlation, phone, input.peer.replace(/^whatsapp:/, '').slice(0, 20), input.role,
-             JSON.stringify({ text: sanitizeConversationText(input.text, 2000) }), JSON.stringify({
-               delivery: input.role === 'assistant' ? 'generated' : 'received',
-               ...(input.role === 'user' && input.conversationBoundary ? { conversationBoundary: input.conversationBoundary } : {}),
-             })]
+            JSON.stringify({ text: sanitizeConversationText(input.text, 2000) }), JSON.stringify({ delivery: input.role === 'assistant' ? 'generated' : 'received' })]
         );
         await client.query('UPDATE sessions SET last_activity_at=NOW() WHERE session_id=$1', [sessionId]);
       }
