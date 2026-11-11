@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
+import { appendWorkflowTransition } from './WorkflowTransitionAudit.js';
 import type { HotelSearchSession } from '../services/hotelSearchSessionService.js';
 
 const HOTEL_SESSIONS_KEY = 'yanaHotelSearchSessions';
@@ -114,6 +115,7 @@ export class PostgresHotelSearchSessionRepository implements HotelSearchSessionR
           }),
         ]
       );
+      await appendWorkflowTransition(client, 'hotel', session);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');

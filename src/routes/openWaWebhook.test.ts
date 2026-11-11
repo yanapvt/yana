@@ -43,6 +43,15 @@ describe('OpenWA webhook reliability', () => {
       'openwa:test-user@c.us', 'safe reply', { voice: true }
     ));
   });
+  it('passes a button selection to the shared processor with its provider ID', async () => {
+    claim.mockResolvedValue('new');
+    const response = await post({ event: 'message', data: { id: 'stable-button-1',
+      from: '94770000001@c.us', type: 'buttons_response', selectedButtonId: 'details 1', body: 'Details' } });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(processInbound).toHaveBeenCalledOnce());
+    expect(processInbound.mock.calls[0][0]).toMatchObject({ messageId: 'stable-button-1',
+      type: 'interactive', content: { type: 'interactive', selectedId: 'details 1' } });
+  });
   it('enriches search results and dispatches image cards through OpenWA', async () => {
     buildReply.mockResolvedValue([
       { body: 'Hotel matches' },
@@ -62,6 +71,13 @@ describe('OpenWA webhook reliability', () => {
   it('acknowledges a duplicate without processing or replying', async () => {
     claim.mockResolvedValue('duplicate'); const response = await post(payload); expect(await response.json()).toMatchObject({ duplicate: true });
     expect(processInbound).not.toHaveBeenCalled(); expect(sendReply).not.toHaveBeenCalled();
+  });
+  it('ignores an outbound echo before claiming or processing it', async () => {
+    const response = await post({ event: 'message', data: { id: 'sent-1',
+      from: '94770000001@c.us', body: 'Sent by YANA', type: 'chat', fromMe: true } });
+    expect(await response.json()).toMatchObject({ ignored: 'outbound_echo' });
+    expect(claim).not.toHaveBeenCalled();
+    expect(processInbound).not.toHaveBeenCalled();
   });
   it('returns 503 when shared idempotency is unavailable', async () => {
     claim.mockResolvedValue('unavailable'); const response = await post(payload); expect(response.status).toBe(503); expect(processInbound).not.toHaveBeenCalled();

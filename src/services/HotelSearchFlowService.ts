@@ -213,14 +213,13 @@ export class HotelSearchFlowService {
     context: HotelSearchFlowContext,
     maxResults = 9
   ): Promise<HotelSearchFlowResult> {
-    const params = this.toToolParams(criteria);
-    const validationErrors = this.validateRequiredCriteria(params);
-
-    if (validationErrors.length > 0) {
+    // Google Places discovers places, not date-specific rooms or rates.
+    // Dates remain required at the later live-inventory booking check.
+    if (!criteria.location?.trim()) {
       return {
         status: 'validation_failed',
         criteria,
-        reply: `I have your hotel request, but I still need: ${validationErrors.join(', ')}.`,
+        reply: 'Which town or area should I use to look for stays?',
       };
     }
 

@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { normalizeMetaWhatsAppInboundMessage } from './metaWhatsAppMessageNormalizer.js';
 
 describe('normalizeMetaWhatsAppInboundMessage', () => {
+  it('does not invent an unstable provider ID when a message ID is missing', () => {
+    const message = normalizeMetaWhatsAppInboundMessage({ entry: [{ changes: [{ value: {
+      messages: [{ from: '94770000001', type: 'text', text: { body: 'Hi' } }],
+    } }] }] });
+    expect(message.messageId).toBe('');
+  });
   it('normalizes a Meta text message', () => {
     const message = normalizeMetaWhatsAppInboundMessage({
       object: 'whatsapp_business_account',

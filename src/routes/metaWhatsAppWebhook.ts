@@ -12,7 +12,6 @@ import {
   normalizeMetaWhatsAppInboundMessage,
   type MetaWhatsAppWebhookPayload,
 } from '../utils/metaWhatsAppMessageNormalizer.js';
-import { handleMetaRestaurantFlowSubmission } from '../services/MetaRestaurantFlowSubmissionService.js';
 
 const router = Router();
 
@@ -81,14 +80,6 @@ async function processMetaInboundAsync(
   correlationId: string
 ): Promise<void> {
   try {
-    const flowSubmission = await handleMetaRestaurantFlowSubmission(inboundMessage);
-    if (flowSubmission.handled) {
-      await getMetaWhatsAppOutboundService().sendWhatsAppReply(
-        inboundMessage.from,
-        flowSubmission.reply ?? 'I received your dining preferences.'
-      );
-      return;
-    }
     const processed = await processNormalizedInboundMessage(inboundMessage, correlationId);
     const delivered = await getMetaWhatsAppOutboundService().sendWhatsAppReply(
       inboundMessage.from,

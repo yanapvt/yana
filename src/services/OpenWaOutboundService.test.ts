@@ -91,6 +91,7 @@ describe('OpenWaOutboundService', () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
     const shouldContinue = vi.fn()
       .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
       .mockResolvedValue(false);
     const service = new OpenWaOutboundService(config, fetcher, console, async () => undefined);
 
@@ -103,6 +104,26 @@ describe('OpenWaOutboundService', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String((fetcher.mock.calls[0]?.[1] as RequestInit).body)).toContain('Hotel result introduction');
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain('Hotel 1');
+  });
+
+  it('does not send a late search reply after its workflow is invalidated', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    const service = new OpenWaOutboundService(config, fetcher);
+    expect(await service.sendWhatsAppReply('whatsapp:+15550000000', 'Old search result', {
+      shouldContinue: () => false,
+    })).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('stops a split search reply after its workflow changes', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    const service = new OpenWaOutboundService(config, fetcher);
+    const shouldContinue = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+    expect(await service.sendWhatsAppReply('whatsapp:+15550000000', 'A'.repeat(4000), {
+      shouldContinue,
+    })).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it('sends synthesized speech as audio after a voice-note reply', async () => {

@@ -84,7 +84,9 @@ export function normalizeMetaWhatsAppInboundMessage(
   const content = extractMetaMessageContent(message, options);
 
   return {
-    messageId: message.id || `meta-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    // A missing provider ID cannot be deduplicated safely; the transport
+    // rejects it instead of inventing a different ID on each delivery.
+    messageId: message.id || '',
     from,
     to,
     timestamp: getMetaTimestamp(message.timestamp),

@@ -49,6 +49,19 @@ export class SearchFlowEngine {
     return Math.min((batchIndex + 1) * this.batchSize, resultCount);
   }
 
+  nextPage<T>(
+    batches: T[][],
+    latestDisplayedBatchIndex: number | undefined,
+    nextOffset: number,
+    resultCount: number
+  ): { page: T[]; nextOffset: number } | null {
+    const currentIndex = typeof latestDisplayedBatchIndex === 'number'
+      ? latestDisplayedBatchIndex : this.latestBatchIndex(nextOffset, resultCount);
+    const nextIndex = currentIndex + 1;
+    const page = batches[nextIndex] ?? [];
+    return page.length ? { page, nextOffset: this.nextOffsetForBatch(nextIndex, resultCount) } : null;
+  }
+
   tokenize(value: string): string[] {
     return Array.from(
       new Set(

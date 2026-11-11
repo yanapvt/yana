@@ -24,6 +24,10 @@ interface OpenWaMessagePayload {
   fromMe?: boolean;
   body?: string;
   text?: string;
+  selectedButtonId?: string;
+  selectedRowId?: string;
+  buttonId?: string;
+  rowId?: string;
   caption?: string;
   type?: string;
   mimetype?: string;
@@ -153,6 +157,18 @@ function extractOpenWaMessageContent(message: OpenWaMessagePayload): MessageCont
     '';
   const messageType = getString(message.type) || '';
   const embeddedMediaData = getString(message.media?.data);
+
+  if (messageType === 'buttons_response' || messageType === 'list_response') {
+    const selectedId = messageType === 'buttons_response'
+      ? getString(message.selectedButtonId) || getString(message.buttonId) || body
+      : getString(message.selectedRowId) || getString(message.rowId) || body;
+    if (selectedId) return {
+      type: 'interactive',
+      interactionType: messageType === 'buttons_response' ? 'button_reply' : 'list_reply',
+      selectedId,
+      selectedTitle: body,
+    };
+  }
 
   if (body?.trim()) {
     return {

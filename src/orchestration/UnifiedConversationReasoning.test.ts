@@ -33,6 +33,81 @@ function modelReply(overrides: Partial<LLMInterpretation>): LLMInterpretation {
 }
 
 describe('unified primary conversational reasoning', () => {
+  it.each([
+    'Tell me about hotels in Galle.',
+    'What are good restaurants in Mirissa?',
+    'What can we do in Kandy?',
+    'What transport is available around Colombo?',
+    'Could you suggest a relaxed itinerary for the south coast?',
+    'Where can I shop for local crafts?',
+    'What is Galle Fort known for?',
+  ])('answers open-ended exploration without activating a transaction: %s', async (text) => {
+    const interpret = vi.fn().mockResolvedValue(modelReply({
+      responseText: 'I can help you explore that. What would you most like to know?',
+    }));
+    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan(baseInput(text));
+    expect(interpret).toHaveBeenCalledTimes(1);
+    expect(plan.decision).toMatchObject({ action: 'answer_general_question', targetFlow: 'none' });
+    expect(plan.decision.sessionPatch).toBeUndefined();
+    expect(plan.ui?.mode).toBe('chat_reply');
+  });
+
+  it.each([
+    ['restaurant', 'location', 'Mirissa', 'search_restaurants'],
+    ['hotel', 'location', 'Galle', 'search_hotels'],
+    ['excursion', 'destination', 'Kandy', 'search_excursions'],
+    ['logistics', 'pickupLocation', 'Colombo', 'search_transport'],
+  ] as const)('keeps a short %s answer grounded in the outstanding question', async (flow, field, answer, schema) => {
+    const active: OrchestrationSessionSnapshot = {
+      id: `${flow}-task`, revision: 2, lifecycleStatus: 'active', flow,
+      state: 'awaiting_preferences', activeSchema: schema,
+      awaitedField: field, collectedFields: {}, requiredFields: [field], missingFields: [field],
+    };
+    const interpret = vi.fn().mockResolvedValue(modelReply({
+      role: 'unclear', intent: 'unclear', confidence: 0.3, suggestedAction: 'clarify',
+      responseText: 'Hello, how can I help you today?',
+    }));
+    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan({
+      ...baseInput(answer, active),
+      conversationHistory: [
+        { role: 'user', content: `Help me find ${flow} options` },
+        { role: 'assistant', content: `Which ${field} should I use?` },
+      ],
+    });
+    expect(interpret).toHaveBeenCalledTimes(1);
+    expect(modelContext(plan.context).pendingQuestion).toMatchObject({ expectedAnswerType: field, workflowId: active.id });
+    expect(plan.decision).toMatchObject({ action: 'continue_flow', targetFlow: flow });
+    expect(plan.decision.sessionPatch?.collectedFields).toMatchObject({ [field]: answer });
+    expect(plan.interpretation?.responseText).toContain(answer);
+    expect(plan.interpretation?.responseText).not.toContain('how can I help');
+  });
+
+  it('clarifies an uncertain misspelling without storing it as a verified location', async () => {
+    const active: OrchestrationSessionSnapshot = { ...session('restaurant'),
+      collectedFields: {}, requiredFields: ['location'], missingFields: ['location'], awaitedField: 'location' };
+    const interpret = vi.fn().mockResolvedValue(modelReply({
+      role: 'answer_to_current_question', intent: 'restaurant_search', entities: { location: 'Mirissa' },
+      clarificationRequired: true, question: 'Did you mean Mirissa?', confidence: 0.72,
+      suggestedAction: 'clarify',
+    }));
+    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan(baseInput('Mirissw', active));
+    expect(plan.decision.action).toBe('ask_clarifying_question');
+    expect(plan.decision.sessionPatch).toBeUndefined();
+    expect(plan.interpretation?.responseText).toBe('Did you mean Mirissa?');
+  });
+
+  it('uses a contextual correction supplied by the primary model for a short place answer', async () => {
+    const active: OrchestrationSessionSnapshot = { ...session('restaurant'),
+      collectedFields: {}, requiredFields: ['location'], missingFields: ['location'], awaitedField: 'location' };
+    const interpret = vi.fn().mockResolvedValue(modelReply({
+      role: 'answer_to_current_question', intent: 'restaurant_search', entities: { location: 'Mirissa' },
+      confidence: 0.94, suggestedAction: 'none', responseText: 'Mirissa sounds lovely. Shall I show a few places to eat?',
+    }));
+    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan(baseInput('Miriss', active));
+    expect(plan.decision.sessionPatch?.collectedFields).toMatchObject({ location: 'Mirissa' });
+    expect(plan.interpretation?.responseText).toContain('Mirissa');
+  });
+
   it('acknowledges an anniversary without activating a booking or transaction', async () => {
     const interpret = vi.fn().mockResolvedValue(modelReply({
       responseText: 'That sounds lovely. I can keep the anniversary in mind as we plan.',
@@ -78,6 +153,48 @@ describe('unified primary conversational reasoning', () => {
 
     expect(plan.decision).toMatchObject({ action: 'ask_clarifying_question', targetFlow: 'hotel' });
     expect(plan.context.activeSession).toEqual(active);
+  });
+
+  it('keeps the response consistent with a backend-rejected date change in one model call', async () => {
+    const active = { ...session('hotel'), collectedFields: {
+      location: 'Galle', checkinDate: '2026-12-01', checkoutDate: '2026-12-03', guests: 2,
+    }, requiredFields: ['location', 'checkinDate'], missingFields: [] };
+    const interpret = vi.fn().mockImplementation(async (_prompt, context) => {
+      expect(modelContext(context).sessionState?.collectedFields).toMatchObject(active.collectedFields);
+      return modelReply({ role: 'change_existing_criteria', intent: 'hotel_search',
+        entities: { checkinDate: '2026-12-05' }, confidence: 0.95,
+        responseText: 'Your check-in date has been updated.' });
+    });
+    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan(
+      baseInput('Could we make it Saturday?', active));
+    expect(interpret).toHaveBeenCalledTimes(1);
+    expect(plan.decision.action).toBe('ask_clarifying_question');
+    expect(plan.interpretation?.responseText).toContain('confirm the new start and end dates');
+    expect(plan.ui?.text).toBe(plan.interpretation?.responseText);
+    expect(plan.context.activeSession?.collectedFields).toEqual(active.collectedFields);
+  });
+
+  it('renders an approved search editor from the saved workflow, not uncommitted model fields', async () => {
+    const active = { ...session('hotel'), collectedFields: { location: 'Galle',
+      checkinDate: '2026-12-01', checkoutDate: '2026-12-08', guests: 2 },
+      requiredFields: ['location', 'checkinDate'], missingFields: [] };
+    const interpret = vi.fn().mockResolvedValue(modelReply({ role: 'change_existing_criteria',
+      intent: 'hotel_search', entities: { location: 'Unawatuna' }, taskTransition: 'continue',
+      uiRecommendation: { mode: 'search_editor', schemaId: 'search_hotels' },
+      responseText: 'I can update the area.' }));
+    const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan(
+      baseInput('Let’s look around Unawatuna', active));
+    expect(interpret).toHaveBeenCalledTimes(1);
+    expect(plan.decision.sessionPatch?.collectedFields).toMatchObject({ location: 'Unawatuna',
+      checkinDate: '2026-12-01', checkoutDate: '2026-12-08', guests: 2 });
+    expect(plan.ui).toMatchObject({ mode: 'search_editor', workflowId: active.id,
+      expectedRevision: active.revision, actions: ['update_draft'],
+      values: { location: 'Galle', checkinDate: '2026-12-01', checkoutDate: '2026-12-08', guests: 2 } });
+    const mismatched = await new Orchestrator({ llmInterpreter: { interpret: async () => modelReply({
+      role: 'change_existing_criteria', intent: 'hotel_search', entities: { location: 'Unawatuna' },
+      uiRecommendation: { mode: 'search_editor', schemaId: 'search_restaurants' },
+    }) } }).plan(baseInput('Let’s look around Unawatuna', active));
+    expect(mismatched.ui?.mode).toBe('chat_reply');
   });
 
   it('supplies stable IDs for previously displayed results on a natural reference', async () => {

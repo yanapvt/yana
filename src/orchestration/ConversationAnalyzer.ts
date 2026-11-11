@@ -299,6 +299,9 @@ function extractAwaitedFieldAnswer(field: string | undefined, rawText: string): 
 
   if (/^(location|destination|pickupLocation|dropOffLocation)$/i.test(field)) {
     if (!/^[\p{L}\p{N}][\p{L}\p{N}\s.'-]{0,79}$/u.test(value)) return undefined;
+    if (value.split(/\s+/).length > 3 ||
+        /^(?:yes|no|done|thanks|thank you|please|okay|ok|sure|help|reset|restart|resume|continue|later|not now|show results|more|next)$/i.test(value) ||
+        /\b(?:send|form|link|booking|reservation|weather|instead|change|cancel)\b/i.test(value)) return undefined;
     return value.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
   }
 

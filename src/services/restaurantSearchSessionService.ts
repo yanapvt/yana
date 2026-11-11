@@ -1,4 +1,4 @@
-import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
+import { validateCriteria, canonicalField, WORKFLOW_SCHEMA_VERSION } from '../orchestration/WorkflowDefinitions.js';
 import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
 import type { BasicProfileForm } from '../types/forms.js';
@@ -41,6 +41,7 @@ export interface SelectedRestaurant {
 }
 
 export interface RestaurantSearchSession {
+  schemaVersion?: string;
   lifecycleStatus?: 'active' | 'paused';
   revision?: number;
   resultsRetrievedAt?: string;
@@ -134,7 +135,7 @@ export class RestaurantSearchSessionService {
       pendingLocationConfirmation: undefined,
       normalizedCriteria: criteria,
       criteria,
-      additionalPreferences: undefined,
+      additionalPreferences: criteria.additionalPreferences,
       state: 'awaiting_preferences',
       lifecycleStatus: 'active',
       stage: 'awaiting_preferences',
@@ -250,8 +251,7 @@ export class RestaurantSearchSessionService {
 
   async getAuthoritative(userId: string): Promise<RestaurantSearchSession | null> {
     try {
-      const session = await this.repository.findLatestActiveByUserId(userId);
-      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
+      return await this.repository.findLatestActiveByUserId(userId);
     }
     catch { throw new PersistenceError(); }
   }
@@ -262,15 +262,28 @@ export class RestaurantSearchSessionService {
     const patch = validateCriteria('restaurant', fields);
     const criteria = { ...current.criteria, ...patch };
     validateCriteria('restaurant', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('restaurant', key))));
-    if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
-    await this.save({ ...current, criteria, normalizedCriteria: criteria, results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1, state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
+    const resolvesLocation = typeof patch.location === 'string' && Boolean(current.pendingLocationConfirmation);
+    if (!resolvesLocation && Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
+    await this.save({ ...current, criteria, normalizedCriteria: criteria,
+      pendingLocationConfirmation: resolvesLocation ? undefined : current.pendingLocationConfirmation,
+      state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
     return { status: 'durable' };
   }
 
   async get(userId: string): Promise<RestaurantSearchSession | null> {
     const redisSession = await this.store.getJson<RestaurantSearchSession>(this.getKey(userId));
     if (redisSession) {
-      return normalizeSession(redisSession);
+      const cached = normalizeSession(redisSession);
+      const durable = await this.findDurableSession(userId).catch(() => undefined);
+      if (durable === undefined) return cached;
+      if (durable === null) {
+        await this.store.deleteKey(this.getKey(userId)).catch(() => false);
+        return null;
+      }
+      if (durable.id === cached.id && (durable.revision ?? 0) === (cached.revision ?? 0)) return cached;
+      const refreshed = normalizeSession(durable);
+      await this.store.setJson(this.getKey(userId), refreshed, RESTAURANT_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
+      return refreshed;
     }
 
     const durableSession = await this.findDurableSession(userId);
@@ -279,7 +292,7 @@ export class RestaurantSearchSessionService {
     }
 
     const normalized = normalizeSession(durableSession);
-    await this.store.setJson(this.getKey(userId), normalized, RESTAURANT_SEARCH_SESSION_TTL_SECONDS);
+    await this.store.setJson(this.getKey(userId), normalized, RESTAURANT_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
     return normalized;
   }
 
@@ -326,6 +339,7 @@ export class RestaurantSearchSessionService {
     existing?: RestaurantSearchSession | null
   ): RestaurantSearchSession {
     return {
+      schemaVersion: existing?.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
       id: existing?.id ?? crypto.randomUUID(),
       lifecycleStatus: existing?.lifecycleStatus ?? 'active',
       revision: existing?.revision ?? 0,
@@ -387,6 +401,7 @@ function normalizeSession(session: RestaurantSearchSession): RestaurantSearchSes
 
   return {
     ...session,
+    schemaVersion: session.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
     userId: session.userId ?? session.whatsappUserId,
     whatsappUserId: session.whatsappUserId ?? session.userId,
     normalizedCriteria: criteria,

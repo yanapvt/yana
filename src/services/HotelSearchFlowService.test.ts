@@ -17,6 +17,21 @@ const completeCriteria = {
 };
 
 describe('HotelSearchFlowService', () => {
+  it('browses Google Places by location without requiring booking dates', async () => {
+    const browsingService = { isConfigured: vi.fn().mockReturnValue(true),
+      searchHotels: vi.fn().mockResolvedValue({ provider: 'google_places', results: [
+        { id: 'galle-1', name: 'Galle Beach Stay', rating: 4.4 },
+      ] }) };
+    const service = new HotelSearchFlowService({ browsingService: browsingService as any,
+      sltdaRegistryConfigured: false,
+      searchSettingsProvider: { getSettings: vi.fn().mockResolvedValue({
+        sltdaFilterEnabled: false, minimumGoogleRating: null, minimumGoogleReviewCount: null,
+      }) },
+    });
+    const result = await service.handleBrowseSearch({ location: 'Galle' }, { correlationId: 'browse-only' });
+    expect(result.status).toBe('browse_results');
+    expect(browsingService.searchHotels).toHaveBeenCalledWith({ location: 'Galle' }, { maxResults: 9 });
+  });
   it('returns provider-not-connected response when provider execution is disabled', async () => {
     const toolRegistry = {
       isToolAvailable: vi.fn().mockResolvedValue(false),
