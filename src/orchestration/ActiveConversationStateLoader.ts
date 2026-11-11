@@ -79,7 +79,8 @@ export class ActiveConversationStateLoader {
 }
 
 function snapshot(active: SessionCandidate): OrchestrationSessionSnapshot {
-    const requiredFields = workflow(active.flow)?.required ?? active.requiredFields;
+    const requiredFields = active.flow === 'hotel' && active.stage === 'awaiting_preferences'
+      ? ['location'] : workflow(active.flow)?.required ?? active.requiredFields;
     const missingFields = active.stage === 'awaiting_preferences'
       ? computeMissing(active.flow, active.fields, requiredFields)
       : [];

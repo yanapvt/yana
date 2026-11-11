@@ -213,14 +213,13 @@ export class HotelSearchFlowService {
     context: HotelSearchFlowContext,
     maxResults = 9
   ): Promise<HotelSearchFlowResult> {
-    const params = this.toToolParams(criteria);
-    const validationErrors = this.validateRequiredCriteria(params);
-
-    if (validationErrors.length > 0) {
+    // Google Places discovery queries use the area. Dates and party details
+    // remain required by booking/provider checks, not by this browse step.
+    if (!criteria.location?.trim()) {
       return {
         status: 'validation_failed',
         criteria,
-        reply: `I have your hotel request, but I still need: ${validationErrors.join(', ')}.`,
+        reply: 'Which town or area should I use to look for stays?',
       };
     }
 

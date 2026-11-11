@@ -19,6 +19,13 @@ export interface DecisionEngineInput {
 export class DecisionEngine {
   decide(input: DecisionEngineInput): OrchestrationDecision {
     const model = input.interpretation;
+    if (model?.proposedAction?.name === 'open_form' &&
+        !hasExplicitBookingRequest(input.context.message.text)) {
+      return { action: 'answer_general_question', intent: 'general_inquiry',
+        targetFlow: input.context.activeSession?.flow ?? 'none', confidence: model.confidence,
+        entities: {}, missingFields: input.context.activeSession?.missingFields ?? [],
+        reason: 'A booking form requires an explicit traveller request to proceed.' };
+    }
     if (model && !input.context.profileComplete && requiresProfile(model.intent)) {
       return { action: 'require_profile', intent: model.intent, targetFlow: 'profile', confidence: model.confidence,
         entities: {}, missingFields: [], reason: 'Profile-first gate required before interpreting workflow proposals.' };
@@ -206,6 +213,10 @@ export class DecisionEngine {
   }
 }
 
+function hasExplicitBookingRequest(message: string): boolean {
+  return /\b(?:book|reserve|purchase|pay)\b|\bconfirm\s+(?:the\s+|my\s+)?(?:booking|reservation|order)\b|\bproceed\s+with\s+(?:the\s+|my\s+)?(?:booking|reservation|order)\b|\bplace\s+(?:the\s+|an?\s+)?order\b/i.test(message);
+}
+
 function mergeSignals(
   analysis: ConversationAnalysis,
   interpretation?: LLMInterpretation
@@ -292,7 +303,7 @@ function requiresProfile(intent: OrchestrationIntent): boolean {
 }
 
 function defaultRequiredFields(flow: OrchestrationFlow): string[] {
-  return [...(workflow(flow)?.required ?? [])];
+  return flow === 'hotel' ? ['location'] : [...(workflow(flow)?.required ?? [])];
 }
 
 function schemaForFlow(flow: OrchestrationFlow): string | undefined {

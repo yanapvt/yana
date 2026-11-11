@@ -396,6 +396,19 @@ export async function processInboundMessage(
   const memoryConsentReply = await handleTravellerMemoryConsent(inboundMessage.from, inboundText);
   if (memoryConsentReply) return memoryConsentReply;
 
+  // A short answer belongs to the most recent active hotel prompt. Paused or
+  // older dining sessions must not reinterpret "yes" or "no" as their answer.
+  if (/^(?:yes|yes please|sure|no|no thanks|none|show(?: me)?(?: the| some)? options|show(?: me)? hotels|search)$/i.test(inboundText.trim())) {
+    const hotel = await getHotelSearchSessionService().get(inboundMessage.from);
+    if (hotel?.lifecycleStatus !== 'paused' && hotel?.stage === 'awaiting_preferences' &&
+        hotel.state === 'awaiting_extra_preferences' &&
+        hotel.criteria.location?.trim()) {
+      const hotelReply = await handleActiveHotelSearchSession(
+        inboundMessage.from, inboundMessage.to, inboundText, correlationId, hotel, options);
+      if (hotelReply) return hotelReply;
+    }
+  }
+
   const pendingRestaurantLocationReply = await handlePendingRestaurantLocationConfirmation(
     inboundMessage.from, inboundText
   );
@@ -461,6 +474,43 @@ export async function processInboundMessage(
     awaitedField: orchestrationPlan.context.activeSession?.awaitedField ?? 'none',
     redacted: true,
   });
+
+  const hotelDraft = !isBookingIntentCue(userMessage) &&
+    !/\b(?:restaurants?|dining|dinner|lunch|excursions?|activities?|transport|taxi|itinerary)\b/i.test(userMessage)
+    ? await getHotelSearchSessionService().get(inboundMessage.from) : null;
+  if (hotelDraft?.lifecycleStatus !== 'paused' && hotelDraft?.stage === 'awaiting_preferences' &&
+      hotelDraft.state === 'awaiting_extra_preferences' && !hasCompleteHotelCriteria(hotelDraft.criteria) &&
+      !isResumeCue(inboundText)) {
+    const modelFields = validateCriteria('hotel', orchestrationPlan.interpretation?.entities ?? {}, false) as HotelSearchCriteria;
+    const statedArea = getHotelAreaFromText(userMessage, !hotelDraft.criteria.location);
+    const preference = /\b(?:beach|pool|colonial|quiet|luxury|budget|boutique|family|view|garden|spa)\b/i.test(userMessage)
+      ? userMessage.trim().slice(0, 300) : undefined;
+    const proposed: HotelSearchCriteria = {
+      ...hotelDraft.criteria, ...modelFields,
+      ...(statedArea ? { location: statedArea } : {}),
+      ...(preference ? { additionalPreferences: preference } : {}),
+    };
+    const changed = Object.keys(proposed).some((field) =>
+      JSON.stringify(proposed[field as keyof HotelSearchCriteria]) !==
+      JSON.stringify(hotelDraft.criteria[field as keyof HotelSearchCriteria]));
+    if (changed) {
+      await getHotelSearchSessionService().saveAwaitingPreferences(inboundMessage.from, proposed,
+        { originalMessage: hotelDraft.originalMessage });
+      const naturalReply = safeHotelDiscoveryReply(orchestrationPlan.interpretation?.responseText,
+        hotelDraft.criteria.location, proposed.location);
+      if (naturalReply) return naturalReply;
+      const area = proposed.location ? ` around ${proposed.location}` : '';
+      return preference
+        ? `I’ve kept that preference for stays${area}. Shall I show you a few options, or is there another must-have?`
+        : `Got it${area}. I can show you a few stays now; dates and guest details can wait until you decide to book.`;
+    }
+    const proposedReply = orchestrationPlan.interpretation?.responseText ?? '';
+    if ((statedArea && proposed.location) ||
+        /\b(?:check.?in|check.?out|guests?|rooms?|dates?)\b/i.test(proposedReply) ||
+        (proposed.location && /\b(?:which|what)\s+(?:town|area|location)\b/i.test(proposedReply))) {
+      return `I have ${proposed.location ?? 'your preferences'} for the hotel search. Shall I show you a few options?`;
+    }
+  }
 
   let memoryConfirmationPrompt = '';
   if (orchestrationPlan.interpretation?.memoryCandidates?.length) {
@@ -528,6 +578,13 @@ export async function processInboundMessage(
   ) {
     return withMemoryConfirmation(orchestrationPlan.interpretation?.question || orchestrationPlan.interpretation?.responseText ||
       'Please confirm what you would like to change. I have kept your current saved details.');
+  }
+  if (orchestrationPlan.decision.reason === 'A booking form requires an explicit traveller request to proceed.') {
+    const reply = orchestrationPlan.interpretation?.responseText?.trim();
+    if (reply && !/\b(?:form|book(?:ing)?|reserv(?:e|ation)|payment|pay|confirm)\b/i.test(reply)) {
+      return withMemoryConfirmation(reply);
+    }
+    return withMemoryConfirmation('I’d be glad to help you plan your trip. Which part of Sri Lanka are you thinking of visiting?');
   }
   if (orchestrationPlan.decision.action === 'answer_general_question' && orchestrationPlan.interpretation?.responseText) {
     return withMemoryConfirmation(orchestrationPlan.interpretation.responseText);
@@ -750,7 +807,8 @@ export async function processInboundMessage(
   );
 
   if (hotelIntakeResult.handled) {
-    return withMemoryConfirmation(await startFreshHotelSearch(inboundMessage.from, userMessage));
+    return withMemoryConfirmation(await startFreshHotelSearch(
+      inboundMessage.from, userMessage, hotelIntakeResult.criteria));
   }
 
   try {
@@ -1017,6 +1075,11 @@ async function handleValidatedServiceSwitch(
 
 async function handlePendingRestaurantLocationConfirmation(userId: string, text: string): Promise<string | null> {
   const session = await getRestaurantSearchSessionService().get(userId);
+  const currentHotel = await getHotelSearchSessionService().get(userId);
+  if (currentHotel?.lifecycleStatus !== 'paused' && currentHotel?.stage === 'awaiting_preferences' &&
+      (!session?.updatedAt || Date.parse(currentHotel.updatedAt) >= Date.parse(session.updatedAt))) {
+    return null;
+  }
   const proposed = session?.lifecycleStatus === 'paused' ? undefined : session?.pendingLocationConfirmation;
   if (!proposed || session?.state !== 'confirming_location') return null;
   const reply = text.trim().replace(/[.!?]+$/, '');
@@ -1165,7 +1228,7 @@ async function handleHotelFormGate(
     }
   }
 
-  if (isHotelRequestMessage(userMessage)) {
+  if (isHotelRequestMessage(userMessage) && isBookingIntentCue(userMessage)) {
     await getHotelIntakeService().clear(userId);
     const activeHotelSession = await getHotelSearchSessionService().get(userId);
     if (activeHotelSession?.state === 'hotel_form_sent') {
@@ -1883,7 +1946,7 @@ async function handleActiveHotelSearchSession(
   const sessionService = getHotelSearchSessionService();
   const session = activeSession ?? (await sessionService.get(userId));
 
-  if (!session) {
+  if (!session || session.lifecycleStatus === 'paused') {
     return null;
   }
 
@@ -1896,7 +1959,7 @@ async function handleActiveHotelSearchSession(
   }
 
   if (session.state === 'hotel_form_sent') {
-    if (isFormResendCue(inboundText) || isHotelRequestMessage(inboundText)) {
+    if (isFormResendCue(inboundText) || (isHotelRequestMessage(inboundText) && isBookingIntentCue(inboundText))) {
       return resendHotelFormLink(
         userId,
         inboundText,
@@ -1913,11 +1976,9 @@ async function handleActiveHotelSearchSession(
       return 'I am still waiting for the hotel request form details. Please complete the hotel form link I sent, then return here and type "done".';
     }
 
-    return resendHotelFormLink(
-      userId,
-      inboundText,
-      'To avoid missing dates, guest count, or budget, please complete the hotel request form. I will search once it is submitted.'
-    );
+    // A form sent earlier cannot take over a new conversational turn.
+    await sessionService.pauseOutbound(userId);
+    return null;
   }
 
   if (session.stage === 'booking_provider_pending' || session.state === 'booking_provider_pending') {
@@ -2107,7 +2168,7 @@ async function handleActiveHotelSearchSession(
     return null;
   }
 
-  if (!hasCompleteHotelCriteria(session.criteria)) {
+  if (!session.criteria.location?.trim()) {
     if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
       const restoredHotelRequest = await restoreLatestHotelRequest(userId);
       if (restoredHotelRequest) {
@@ -2118,13 +2179,30 @@ async function handleActiveHotelSearchSession(
     return null;
   }
 
-  if (isResumeCue(inboundText) || isResumeConversationCue(inboundText)) {
+  if ((isResumeCue(inboundText) || isResumeConversationCue(inboundText)) &&
+      !/^(?:yes|ok|okay)$/i.test(inboundText.trim())) {
     return buildHotelPreferencePrompt(session.criteria);
+  }
+
+  const wantsOptions = hasCompleteHotelCriteria(session.criteria) || isNoExtraPreferenceCue(inboundText) ||
+    /^(?:yes|yes please|sure|show(?: me)?(?: the| some)? options|show(?: me)? hotels|find(?: me)? hotels)$/i.test(inboundText.trim());
+  if (!wantsOptions) {
+    if (/[?]\s*$/.test(inboundText.trim())) return null;
+    if (/\b(?:weekend|today|tomorrow|tonight|january|february|march|april|may|june|july|august|september|october|november|december)\b|\b\d{1,2}(?:st|nd|rd|th)?\b/i.test(inboundText)) {
+      return `I can show you stays around ${session.criteria.location} now. We can use those dates when you decide to book.`;
+    }
+    await sessionService.saveAwaitingPreferences(userId, {
+      ...session.criteria, additionalPreferences: [session.criteria.additionalPreferences, inboundText]
+        .filter(Boolean).join('; ').slice(0, 500),
+    }, { originalMessage: session.originalMessage });
+    return 'I have that preference. Shall I show you a few options in the area?';
   }
 
   const criteria = {
     ...session.criteria,
-    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : inboundText,
+    additionalPreferences: /^(?:yes|yes please|sure|show(?: me)?(?: the| some)? options|show(?: me)? hotels|find(?: me)? hotels)$/i.test(inboundText.trim()) ||
+      isNoExtraPreferenceCue(inboundText)
+      ? session.criteria.additionalPreferences : inboundText,
   };
   await sessionService.saveSearching(userId, criteria);
 
@@ -2182,6 +2260,9 @@ async function routeActiveConversation(
   const decision = mapOrchestrationPlanToLegacyDecision(plan);
   console.log(`[${correlationId}] Reusing primary conversation decision for hotel routing:`,
     JSON.stringify(decision, null, 2));
+  if (activeHotelSession.stage === 'awaiting_preferences') {
+    return { action: 'continue_current_flow' };
+  }
   if (decision.confidence >= 0.7 && isHotelRelatedIntent(decision.intent) &&
       (decision.suggestedAction === 'ask_missing' || decision.suggestedAction === 'execute_tool')) {
     return { action: 'start_new_hotel_search' };
@@ -2367,11 +2448,25 @@ function shouldTreatHotelRequestAsNewSearch(
   );
 }
 
-async function startFreshHotelSearch(userId: string, userMessage: string): Promise<string> {
+async function startFreshHotelSearch(
+  userId: string, userMessage: string, collectedCriteria: HotelSearchCriteria = {}
+): Promise<string> {
   await getHotelIntakeService().clear(userId);
   await getHotelSearchSessionService().clear(userId);
   await clearCompetingSearchSessions(userId, 'hotel');
   await getPendingRequestService().clearProfileGateRequest(userId);
+  if (!isBookingIntentCue(userMessage)) {
+    const location = getHotelAreaFromText(userMessage, true) ??
+      collectedCriteria.location ?? await getRecentTripArea(userId);
+    const criteria = validateCriteria('hotel', {
+      ...(location ? { location } : {}), ...collectedCriteria,
+    }, false) as HotelSearchCriteria;
+    await getHotelSearchSessionService().saveAwaitingPreferences(userId, criteria,
+      { originalMessage: userMessage });
+    return criteria.location
+      ? `I can look for stays around ${criteria.location}. Do you have a style or area in mind, or shall I show you a few options?`
+      : 'I can help you explore stays. Which town or area are you considering?';
+  }
   const reply = await handleHotelFormGate(
     userId,
     userMessage,
@@ -3611,7 +3706,9 @@ async function buildPostProfileGreeting(
 
 function buildHotelPreferencePrompt(criteria: HotelSearchCriteria): string {
   if (!hasCompleteHotelCriteria(criteria)) {
-    return 'I do not have the completed hotel search form details yet. Please complete the hotel form link I sent, or tell me the destination, dates, guests, rooms, and budget so I can continue.';
+    return criteria.location
+      ? `I have ${criteria.location} as the area for your stay. Would you like to add a preference, or shall I show you a few options?`
+      : 'Which town or area should I use to look for stays?';
   }
 
   return [
@@ -4798,10 +4895,53 @@ function getDiscoveryLocation(parameters: Record<string, unknown>, message: stri
   if (fromDecision) return fromDecision;
 
   const match = message.match(
-    /\b(?:in|near|around|at)\s+([A-Z][A-Za-z0-9' -]{1,45}?)(?=\s+(?:tomorrow|today|tonight|this|next|for|on|what|where|with)\b|[,.!?]|$)/i
+    /\b(?:in|near|around|at)\s+([A-Z][A-Za-z0-9' -]{1,45}?)(?=\s+(?:tomorrow|today|tonight|now|please|this|next|from|for|on|what|where|with|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|[,.!?]|$)/i
   );
   const candidate = match?.[1]?.trim();
   return candidate && !/^(?:me|here|there)$/i.test(candidate) ? candidate : null;
+}
+
+function getHotelAreaFromText(message: string, awaitingArea: boolean): string | null {
+  const directed = getDiscoveryLocation({}, message);
+  if (directed) return directed;
+  const beforePreference = message.match(/^\s*([\p{L}\p{M}' -]{2,40}?)\s*,\s*(?:close|near|by|on)\b/iu)?.[1]?.trim();
+  const candidate = beforePreference ?? (awaitingArea || /\btown\s*$/i.test(message)
+    ? message.trim() : '');
+  if (!candidate || candidate.split(/\s+/).length > 3 ||
+      /\b(?:next|weekend|tomorrow|today|tonight|date|night|november|december|january|february|march|april|may|june|july|august|september|october|colonial|pool|beach|hotel|stay|wife|husband|done|complete|completed|submitted|resume|continue|help|plan|yes|no|thanks)\b/i.test(candidate)) {
+    return null;
+  }
+  return getPendingDiscoveryLocation(candidate);
+}
+
+function safeHotelDiscoveryReply(reply: string | undefined, previousArea?: string, currentArea?: string): string | null {
+  const text = reply?.trim();
+  if (!text || text.length > 500 ||
+      /\b(?:form|book(?:ing|ed)?|reserv(?:e|ation)|payment|paid|confirmed|availability|available|prices?|check.?in|check.?out|guests?|rooms?)\b/i.test(text) ||
+      (currentArea && /\b(?:which|what)\s+(?:town|area|location)\b|\bwhere\s+(?:would|should|do)\s+you\s+(?:like|want|stay)\b/i.test(text)) ||
+      (previousArea && currentArea && previousArea.toLowerCase() !== currentArea.toLowerCase() &&
+        text.toLowerCase().includes(previousArea.toLowerCase()))) {
+    return null;
+  }
+  return text;
+}
+
+async function getRecentTripArea(userId: string): Promise<string | null> {
+  const history: Array<{ role: 'user' | 'assistant'; content: string }> =
+    await new MessageRepository().findRecentByTraveller(userId, 12).catch(() => []);
+  let lastReset = -1;
+  history.forEach((turn, index) => {
+    if (turn.role === 'user' && isResetCue(turn.content)) lastReset = index;
+  });
+  for (const turn of history.slice(lastReset + 1).reverse()) {
+    if (turn.role !== 'user') continue;
+    const match = turn.content.match(
+      /\b(?:coming|going|travell?ing|visiting|arriving|staying)\s+(?:to|in)\s+([\p{L}\p{M}' -]{2,45}?)(?=\s+(?:with|for|on|and|next|this)\b|[,.!?]|$)/iu
+    );
+    const area = match?.[1]?.trim();
+    if (area && !/^(?:sri lanka|lk)$/i.test(area)) return area.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
+  }
+  return null;
 }
 
 function getPendingDiscoveryLocation(message: string): string | null {
