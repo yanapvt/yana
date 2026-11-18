@@ -3,6 +3,22 @@ import type { InboundMessage, StoredProfile } from '../types/index.js';
 import { ContextBuilder, modelContext } from './ContextBuilder.js';
 
 describe('ContextBuilder', () => {
+  it('does not infer an answer type from a workflow field that contradicts the delivered question', () => {
+    const inboundMessage: InboundMessage = {
+      messageId: 'SM-guest-reply', from: 'whatsapp:+15550000000', to: 'whatsapp:+14155238886',
+      timestamp: new Date(), type: 'text', inputType: 'text', content: { type: 'text', body: '2' },
+    };
+    const build = (awaitedField: string) => new ContextBuilder().build({ inboundMessage, text: '2',
+      profileComplete: true, activeSession: { flow: 'hotel', state: 'awaiting_preferences',
+        awaitedField, collectedFields: { location: 'Colombo' }, requiredFields: ['guests'],
+        missingFields: ['guests'] },
+      conversationHistory: [{ role: 'assistant', content: 'How many guests?' }],
+    });
+    expect(build('location').pendingQuestion).toMatchObject({ text: 'How many guests?' });
+    expect(build('location').pendingQuestion).not.toHaveProperty('expectedAnswerType');
+    expect(build('guests').pendingQuestion).toMatchObject({ expectedAnswerType: 'guests' });
+  });
+
   it('keeps a conversational question with an active task and ignores a stale one', () => {
     const inboundMessage: InboundMessage = {
       messageId: 'SM-question', from: 'whatsapp:+15550000000', to: 'whatsapp:+14155238886',
@@ -19,6 +35,10 @@ describe('ContextBuilder', () => {
       ] });
     expect(modelContext(current).pendingQuestion?.text).toContain('Would you prefer');
     expect(modelContext(current).conversationTopic).toBe('restaurant');
+    const migrated = builder.build({ inboundMessage, text: 'A quiet one', profileComplete: true,
+      activeSession, continuation: { topic: null, pendingQuestion: null,
+        revision: 0, generation: 0, eventId: null } });
+    expect(modelContext(migrated).conversationTopic).toBe('restaurant');
 
     const stale = builder.build({ inboundMessage, text: 'A quiet one', profileComplete: true,
       activeSession, conversationHistory: [

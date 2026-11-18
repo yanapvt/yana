@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
 import { assignCorrelationId } from '../middleware/correlationId.js';
 import { deduplicateWebhook } from '../middleware/deduplication.js';
 import { webhookRateLimiter } from '../middleware/rateLimiting.js';
@@ -29,7 +30,7 @@ router.post(
 
     try {
       const inboundMessage = normalizeInboundMessage(req.body as TwilioWebhookPayload);
-      const processed = await processNormalizedInboundMessage(inboundMessage, correlationId);
+      const processed = await processNormalizedInboundMessage(inboundMessage, correlationId, true);
       const reply = await buildWebhookReply(
         processed.inboundMessage.from,
         processed.reply,
@@ -44,6 +45,8 @@ router.post(
       );
 
       if (delivered) {
+        if (processed.canonicalEvent) await getConversationControlPlane().recordOutboundQuestion(
+          processed.canonicalEvent, 'provider_accepted');
         res.type('text/xml').status(200).send(
           '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
         );
@@ -51,6 +54,8 @@ router.post(
       }
 
       res.type('text/xml').status(200).send(toTwiml(reply));
+      if (processed.canonicalEvent) await getConversationControlPlane().recordOutboundQuestion(
+        processed.canonicalEvent, 'provider_accepted');
     } catch (error) {
       logSafeOperatorFailure(console, 'webhook_processing_failed', correlationId, error);
       if (!res.headersSent) {

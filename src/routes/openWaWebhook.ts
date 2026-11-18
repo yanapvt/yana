@@ -4,6 +4,7 @@ import { assignCorrelationId } from '../middleware/correlationId.js';
 import { webhookRateLimiter } from '../middleware/rateLimiting.js';
 import { env } from '../config/environment.js';
 import { buildWebhookReply, processNormalizedInboundMessage } from './webhook.js';
+import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
 import { getOpenWaOutboundService } from '../services/OpenWaOutboundService.js';
 import { getInboundIdempotencyService, type IdempotencyDecision } from '../services/InboundIdempotencyService.js';
 import {
@@ -69,7 +70,7 @@ async function processOpenWaInboundAsync(
   correlationId: string
 ): Promise<void> {
   try {
-    const processed = await processNormalizedInboundMessage(inboundMessage, correlationId);
+    const processed = await processNormalizedInboundMessage(inboundMessage, correlationId, true);
     const outbound = getOpenWaOutboundService();
     const enrichedReply = await buildWebhookReply(
       inboundMessage.from,
@@ -84,6 +85,11 @@ async function processOpenWaInboundAsync(
       : await outbound.sendWhatsAppMessages(inboundMessage.from, enrichedReply, {
           voice: processed.inboundMessage.inputType === 'voice',
         });
+    if (processed.canonicalEvent) {
+      await getConversationControlPlane().recordOutboundQuestion(processed.canonicalEvent,
+        delivered ? 'provider_accepted' : 'failed');
+      if (delivered) await getConversationControlPlane().recordOutboundQuestion(processed.canonicalEvent, 'sent');
+    }
 
     if (!delivered) {
       console.warn(

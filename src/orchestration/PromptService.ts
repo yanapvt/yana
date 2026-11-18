@@ -129,9 +129,11 @@ Respond ONLY with valid JSON, no additional text. Use only the keys below. Omit 
 - intentConfidence: the same calibrated value as confidence
 - ambiguity: {isAmbiguous, alternatives, reason}; omit reason when there is no ambiguity
 - clarificationRequired and optional clarificationQuestion
+- When your reply asks the traveller a question, provide followUpQuestion with the exact question text and expectedAnswerType (for example location, service, preference, airport, or date). Omit it when no answer is awaited. This state is separate from transactional workflows.
 - parameters: extracted parameters (object)
 - fieldUpdates: candidate updates to the active workflow only (object)
 - memoryCandidates: explicit cross-service traveller facts found in this message only (array, maximum 12). Each item is {key, value, scope, confidence, explicit, requiresConfirmation}. Allowed keys are occasion, companion_name, companion_relationship, preference, dislike, dietary_requirement, allergy, accessibility_need, budget_preference, communication_preference, current_location, trip_destination. Scope is profile, trip, or task. Use trip by default. current_location means where the traveller says they are now; trip_destination means a stated destination. Do not infer either from a search location alone. Allergies and accessibility needs always require confirmation. Companion details and occasions are trip-scoped. Never propose inferred mood or personality as memory. Do not repeat facts already present in travellerContext.
+- Keep trip, occasion and booking details in their event context. A booking or payment confirmation does not grant permission to save profile preferences. Propose persistent memory only for a clearly attributed, positive traveller fact; the backend asks separate, exact consent before confirming it. Do not turn a companion's preference or a neutral or negative statement into the traveller's positive preference.
 - missingFields: proposed missing field names (string[]); backend validation is authoritative
 - taskTransition: continue | pause | resume | switch | none
 - recommendedSchema: only a supplied registered schema, when applicable
@@ -164,12 +166,18 @@ export class PromptService {
   reconcileDecisionResponse(decision: OrchestrationDecision, interpretation: LLMInterpretation): string | undefined {
     if (decision.reason === 'Save a location answer before starting discovery.' ||
         decision.reason === 'Save a preference before starting discovery.') {
+      if (typeof decision.entities.durationNights === 'number') {
+        const nights = decision.entities.durationNights;
+        return `Got it, ${nights} ${nights === 1 ? 'night' : 'nights'}. I’ll keep that stay length in mind while we explore hotels.`;
+      }
       const place = String(decision.entities.location ?? decision.entities.destination ?? '').trim();
       if (decision.reason === 'Save a preference before starting discovery.') {
         const preference = String(decision.entities.additionalPreferences ?? decision.entities.diningStyle ?? '').trim();
         return `I’ll keep ${preference} in mind. Shall I show you a few options${place ? ` in ${place}` : ''}?`;
       }
-      return place ? `Got it, ${place}. Is there an atmosphere or preference you have in mind, or shall I show you a few options?`
+      return place && decision.targetFlow === 'restaurant'
+        ? `Got it, ${place}. Shall I show you places to eat around ${place}, or is there a preference I should keep in mind?`
+        : place ? `Got it, ${place}. Is there an atmosphere or preference you have in mind, or shall I show you a few options?`
         : 'Is there a preference you have in mind, or shall I show you a few options?';
     }
     if (decision.reason === 'Confirm the uncertain answer to the current question.' ||
@@ -187,10 +195,12 @@ export class PromptService {
         : decision.targetFlow === 'excursion' ? 'activities'
         : decision.targetFlow === 'logistics' ? 'transport options' : 'your plan';
       const modelReply = interpretation.responseText?.trim();
+      const modelAnswer = field ? interpretation.entities[field] : undefined;
       return modelReply && interpretation.intent === decision.intent &&
+        (modelAnswer === undefined || JSON.stringify(modelAnswer) === JSON.stringify(value)) &&
         !/\b(?:what (?:service|would you like)|what would you like to do next|how can i help|i (?:have|'ve|’ve) kept your current request|hotel.*restaurant.*excursion|which (?:town|area)|what (?:town|area)|where should i search)\b/i.test(modelReply)
         ? modelReply
-        : answer ? `Got it, ${answer}. Would you like me to show ${flow} there, or is there a preference I should keep in mind?`
+        : answer ? `Got it, ${answer}. Would you like me to show ${flow}${decision.targetFlow === 'restaurant' && (field === 'location' || field === 'destination') ? ` around ${answer}` : ' there'}, or is there a preference I should keep in mind?`
           : `Got it. What would you like to do next with ${flow}?`;
     }
     if (decision.reason === 'A booking form requires an explicit traveller request to proceed.') {
@@ -204,6 +214,15 @@ export class PromptService {
           : 'I’d be glad to help you plan your trip. Which part of Sri Lanka are you thinking of visiting?';
     }
     if (decision.action === 'ask_clarifying_question') {
+      if (decision.reason.startsWith('Confirm whether to switch')) {
+        return 'Would you like to continue your current request or switch to the new one?';
+      }
+      if (decision.reason === 'Clarify which service owns the proposed field question.') {
+        return 'Which request would you like to continue with?';
+      }
+      if (decision.reason === 'Clarify which field the proposed question asks for.') {
+        return 'Could you clarify which detail you would like to provide first?';
+      }
       if (!interpretation.responseText && !interpretation.question && !interpretation.clarificationRequired) return undefined;
       if (interpretation.clarificationRequired && interpretation.question) {
         const response = interpretation.responseText?.trim();
@@ -218,9 +237,6 @@ export class PromptService {
       }
       if (decision.reason.startsWith('Clarify a conflicting field proposal')) {
         return 'Could you confirm which detail you would like to change? I have kept your saved details for now.';
-      }
-      if (decision.reason.startsWith('Confirm whether to switch')) {
-        return 'Would you like to continue your current request or switch to the new one?';
       }
       return interpretation.question ?? 'Could you clarify what you would like to do? I have kept your current request.';
     }

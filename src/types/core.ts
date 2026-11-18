@@ -263,6 +263,7 @@ export interface LLMDecisionOutput {
   ambiguity?: { isAmbiguous: boolean; alternatives: string[]; reason?: string };
   clarificationRequired?: boolean;
   clarificationQuestion?: string;
+  followUpQuestion?: { text: string; expectedAnswerType?: string };
   parameters: Record<string, unknown>;
   fieldUpdates?: Record<string, unknown>;
   memoryCandidates?: import('../orchestration/TravellerMemory.js').MemoryCandidate[];

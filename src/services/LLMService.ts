@@ -114,6 +114,8 @@ const DECISION_TOOL = {
         taskTransition: { type: 'string', enum: ['continue', 'pause', 'resume', 'switch', 'none'] },
         clarificationRequired: { type: 'boolean' },
         clarificationQuestion: { type: 'string' },
+        followUpQuestion: { type: 'object', properties: { text: { type: 'string' },
+          expectedAnswerType: { type: 'string' } }, required: ['text'], additionalProperties: false },
         proposedAction: { type: 'object', properties: {
           name: { type: 'string', enum: ['none', 'search', 'open_form', 'handoff'] },
           arguments: { type: 'object', additionalProperties: true },
@@ -418,8 +420,13 @@ export class LLMService {
       // those as omitted while keeping action and schema validation strict.
       if (output && typeof output === 'object' && !Array.isArray(output)) {
         const candidate = output as Record<string, unknown>;
-        for (const key of ['clarificationQuestion', 'recommendedSchema', 'uiRecommendation', 'proposedAction', 'reasoning', 'intentConfidence']) {
+        for (const key of ['clarificationQuestion', 'followUpQuestion', 'recommendedSchema', 'uiRecommendation', 'proposedAction', 'reasoning', 'intentConfidence']) {
           if (candidate[key] === null) delete candidate[key];
+        }
+        if (candidate.followUpQuestion && typeof candidate.followUpQuestion === 'object' &&
+            !Array.isArray(candidate.followUpQuestion)) {
+          const followUp = candidate.followUpQuestion as Record<string, unknown>;
+          if (followUp.expectedAnswerType === null) delete followUp.expectedAnswerType;
         }
         // intentConfidence duplicates confidence in the decision contract.
         // Ignore a disagreement rather than discarding an otherwise validated
@@ -489,6 +496,7 @@ export class LLMService {
         ambiguity: parsed.ambiguity,
         clarificationRequired: parsed.clarificationRequired,
         clarificationQuestion: parsed.clarificationQuestion,
+        followUpQuestion: parsed.followUpQuestion,
         parameters: parsed.parameters,
         fieldUpdates: parsed.fieldUpdates,
         memoryCandidates: parsed.memoryCandidates,

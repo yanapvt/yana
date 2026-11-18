@@ -71,7 +71,8 @@ describe('unified primary conversational reasoning', () => {
       ...baseInput(answer, active),
       conversationHistory: [
         { role: 'user', content: `Help me find ${flow} options` },
-        { role: 'assistant', content: `Which ${field} should I use?` },
+        { role: 'assistant', content: flow === 'logistics'
+          ? 'Which pickup location should I use?' : `Which ${field} should I use?` },
       ],
     });
     expect(interpret).toHaveBeenCalledTimes(1);
@@ -96,7 +97,7 @@ describe('unified primary conversational reasoning', () => {
     expect(plan.interpretation?.responseText).toBe('Did you mean Mirissa?');
   });
 
-  it('uses a contextual correction supplied by the primary model for a short place answer', async () => {
+  it('keeps the traveller place answer when the model proposes a different spelling', async () => {
     const active: OrchestrationSessionSnapshot = { ...session('restaurant'),
       collectedFields: {}, requiredFields: ['location'], missingFields: ['location'], awaitedField: 'location' };
     const interpret = vi.fn().mockResolvedValue(modelReply({
@@ -104,8 +105,9 @@ describe('unified primary conversational reasoning', () => {
       confidence: 0.94, suggestedAction: 'none', responseText: 'Mirissa sounds lovely. Shall I show a few places to eat?',
     }));
     const plan = await new Orchestrator({ llmInterpreter: { interpret } }).plan(baseInput('Miriss', active));
-    expect(plan.decision.sessionPatch?.collectedFields).toMatchObject({ location: 'Mirissa' });
-    expect(plan.interpretation?.responseText).toContain('Mirissa');
+    expect(plan.decision.sessionPatch?.collectedFields).toMatchObject({ location: 'Miriss' });
+    expect(plan.interpretation?.responseText).toContain('Miriss');
+    expect(plan.interpretation?.responseText).not.toContain('Mirissa');
   });
 
   it('acknowledges an anniversary without activating a booking or transaction', async () => {
@@ -230,7 +232,9 @@ describe('unified primary conversational reasoning', () => {
       ],
     }));
     const firstPlan = await new Orchestrator({ llmInterpreter: { interpret: firstInterpret } }).plan(baseInput(firstText));
-    expect(firstPlan.memoryUpdate.memoryCandidates).toHaveLength(2);
+    expect(firstPlan.memoryUpdate.memoryCandidates).toMatchObject([
+      { key: 'occasion', value: 'anniversary' },
+    ]);
 
     const confirmedFacts = firstPlan.memoryUpdate.memoryCandidates!.map((candidate, index) => ({
       ...candidate, id: `memory-${index}`, userId: 'whatsapp:+15550000000',
@@ -252,8 +256,9 @@ describe('unified primary conversational reasoning', () => {
       const projected = modelContext(context);
       expect(projected.travellerContext?.confirmedFacts).toEqual(expect.arrayContaining([
         expect.objectContaining({ key: 'occasion', value: 'anniversary' }),
-        expect.objectContaining({ key: 'preference', value: 'wife is an architect' }),
       ]));
+      expect(projected.travellerContext?.confirmedFacts.some((fact) =>
+        fact.key === 'preference' && fact.value === 'wife is an architect')).toBe(false);
       expect(projected.verifiedResults?.items).toContainEqual(expect.objectContaining({
         resultId: 'experience-2', position: 2, name: 'Old Town Architecture Tour',
       }));
@@ -273,8 +278,9 @@ describe('unified primary conversational reasoning', () => {
     expect(plan.decision).toMatchObject({ action: 'switch_flow', targetFlow: 'restaurant' });
     expect(plan.decision.entities).toMatchObject({
       selection: 2, resultId: 'experience-2', referencedResultName: 'Old Town Architecture Tour',
-      specialOccasion: 'Anniversary', additionalPreferences: 'Architecture-inspired setting',
+      specialOccasion: 'anniversary',
     });
+    expect(plan.decision.entities).not.toHaveProperty('additionalPreferences');
     expect(plan.context.activeSession?.verifiedResults?.items[1].resultId).toBe('experience-2');
     expect(plan.ui?.mode).toBe('chat_reply');
   });

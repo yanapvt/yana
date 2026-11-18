@@ -3,8 +3,13 @@ import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { env } from '../config/environment.js';
 
-const { claim, processInbound, sendReply } = vi.hoisted(() => ({
+const { claim, processInbound, sendReply, recordStatus, recordQuestion } = vi.hoisted(() => ({
   claim: vi.fn(), processInbound: vi.fn(), sendReply: vi.fn(),
+  recordStatus: vi.fn(), recordQuestion: vi.fn(),
+}));
+vi.mock('../orchestration/ConversationControlPlane.js', () => ({
+  getConversationControlPlane: () => ({ recordProviderMessageStatus: recordStatus,
+    recordOutboundQuestion: recordQuestion }),
 }));
 vi.mock('../services/InboundIdempotencyService.js', () => ({
   getInboundIdempotencyService: () => ({ claim }),
@@ -80,10 +85,27 @@ describe('Meta WhatsApp transport', () => {
   });
 
   it('ignores a provider status update before claiming or processing it', async () => {
-    const response = await post({ entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.sent' }] } }] }] });
+    const response = await post({ entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.sent', status: 'delivered' }] } }] }] });
     expect(await response.json()).toMatchObject({ ignored: 'status_webhook' });
     expect(claim).not.toHaveBeenCalled();
     expect(processInbound).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(recordStatus).toHaveBeenCalledWith('wamid.sent', 'delivered'));
+  });
+
+  it('binds a provider-accepted outbound reply to the normalized event', async () => {
+    const event = { eventId: 'event-meta', userId: 'whatsapp:+94770000001',
+      sourceEventId: 'wamid.inbound' };
+    processInbound.mockImplementation(async (message) => ({ inboundMessage: message,
+      reply: 'Which area?', canonicalEvent: event }));
+    sendReply.mockImplementation(async (_to, _reply, options) => {
+      await options.onProviderAccepted('wamid.outbound'); return true;
+    });
+    const response = await post(payload({ id: 'wamid.inbound', from: '94770000001',
+      type: 'text', text: { body: 'Restaurants' } }));
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(recordQuestion).toHaveBeenCalledWith(event,
+      'provider_accepted', 'wamid.outbound'));
+    await vi.waitFor(() => expect(recordQuestion).toHaveBeenCalledWith(event, 'sent'));
   });
 
   it('rejects an invalid signature when a Meta secret is configured', async () => {

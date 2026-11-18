@@ -196,9 +196,11 @@ describe('architecture persistence against PostgreSQL', () => {
     await Promise.all(Array.from({ length: 3 }, () => messages.appendConversationTurn({ ...input, role: 'user', text: 'Vegetarian food please.' })));
     await messages.appendConversationTurn({ ...input, role: 'assistant', text: 'Which city?' });
     const history = await new MessageRepository().findRecentByTraveller(traveller);
-    expect(history).toHaveLength(2);
-    expect(history.map((turn) => turn.role)).toEqual(['user', 'assistant']);
-    expect(history[1].content).toContain('delivery not verified');
+    expect(history.map((turn) => turn.role)).toEqual(['user']);
+    await messages.markAssistantDelivery(traveller, input.requestId, 'provider_accepted');
+    const acceptedHistory = await messages.findRecentByTraveller(traveller);
+    expect(acceptedHistory.map((turn) => turn.role)).toEqual(['user', 'assistant']);
+    expect(acceptedHistory[1].content).toBe('Which city?');
   });
 
   it('excludes a second connection while locked and releases after an operation fails', async () => {

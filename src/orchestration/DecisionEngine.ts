@@ -8,7 +8,10 @@ import type {
   OrchestrationSessionSnapshot,
 } from './Orchestrator.js';
 import { env } from '../config/environment.js';
-import { missingFields as computeMissing, requiredFieldsForAction, validateCriteria, workflow, type WorkflowActionStage } from './WorkflowDefinitions.js';
+import { expectedFieldForConversation, explicitFieldsInPendingAnswer,
+  fieldQuestionPurpose, isExplicitServiceRequest } from './ConversationAnalyzer.js';
+import { isInformationalRequest, requestsExplicitFieldChange, supportedWorkflowFields } from './MutationAuthority.js';
+import { canonicalField, missingFields as computeMissing, requiredFieldsForAction, validateCriteria, workflow, type WorkflowActionStage } from './WorkflowDefinitions.js';
 
 export interface DecisionEngineInput {
   context: OrchestrationContext;
@@ -23,6 +26,37 @@ export class DecisionEngine {
       return { action: 'require_profile', intent: model.intent, targetFlow: 'profile', confidence: model.confidence,
         entities: {}, missingFields: [], reason: 'Profile-first gate required before interpreting workflow proposals.' };
     }
+    if (input.context.pendingQuestion && input.analysis.role !== 'answer_to_current_question') {
+      const current = input.context.activeSession;
+      if (current && model?.role === 'change_existing_criteria' &&
+          (!input.analysis.pendingAnswerMismatch || requestsExplicitFieldChange(input.context.message.text)) &&
+          resolveTargetFlow(model.intent) === current.flow &&
+          !model.clarificationRequired && model.confidence >= env.llm.confidenceThreshold &&
+          model.taskTransition !== 'switch' && model.taskTransition !== 'pause' &&
+          (!model.proposedAction || model.proposedAction.name === 'none')) {
+        const candidates = supportedWorkflowFields(current.flow, model.entities, input.context.message.text,
+          { existingFields: current.collectedFields,
+            pendingField: expectedFieldForConversation(current.flow, input.context.pendingQuestion.expectedAnswerType),
+            confirmedLocation: current.pendingDecisions?.locationConfirmation });
+        const corrections = Object.fromEntries(Object.entries(candidates).filter(([field, value]) =>
+          current.collectedFields[field] !== undefined &&
+          JSON.stringify(current.collectedFields[field]) !== JSON.stringify(value)));
+        if (Object.keys(corrections).length) {
+          const sessionPatch = buildPatchedSession(current, current.flow, corrections,
+            current.requiredFields);
+          return { action: 'continue_flow', intent: model.intent, targetFlow: current.flow,
+            confidence: model.confidence, entities: corrections,
+            missingFields: sessionPatch?.missingFields ?? [], sessionPatch,
+            reason: 'Persist the corrected fields without running a new action.' };
+        }
+      }
+      if (input.analysis.pendingAnswerMismatch) {
+        return { action: 'ask_clarifying_question', intent: input.analysis.intent,
+          targetFlow: input.analysis.targetFlow, confidence: input.analysis.confidence,
+          entities: {}, missingFields: input.context.activeSession?.missingFields ?? [],
+          reason: 'The reply does not match the pending answer type.' };
+      }
+    }
     if (model?.taskTransition === 'pause' && input.context.activeSession &&
         !model.clarificationRequired && model.confidence >= env.llm.confidenceThreshold) {
       return {
@@ -31,11 +65,78 @@ export class DecisionEngine {
         reason: 'Validated model interpretation requested pausing the active workflow.',
       };
     }
+    const continuationFlow = input.analysis.role === 'answer_to_current_question'
+      ? input.analysis.targetFlow : 'none';
+    const continuationField = expectedFieldForConversation(continuationFlow,
+      input.context.pendingQuestion?.expectedAnswerType);
+    const continuationValue = continuationField && input.analysis.entities[continuationField];
+    if (!input.context.activeSession && continuationFlow !== 'none' && continuationField &&
+        continuationValue !== undefined &&
+        !model?.clarificationRequired) {
+      const entities = validateCriteria(continuationFlow, {
+        ...explicitAdditionalFields(input.context.message.text, continuationField),
+        [continuationField]: continuationValue,
+      }, false);
+      const sessionPatch = buildPatchedSession(undefined, continuationFlow, entities,
+        requiredFieldsForAction(continuationFlow, 'discovery'));
+      return { action: 'continue_flow', intent: input.analysis.intent, targetFlow: continuationFlow,
+        confidence: input.analysis.confidence, entities,
+        missingFields: sessionPatch?.missingFields ?? [], sessionPatch,
+        reason: 'Save a location answer before starting discovery.' };
+    }
+    const proposedQuestion = fieldQuestionPurpose(model?.responseText, model?.followUpQuestion);
+    if (proposedQuestion?.ambiguous) {
+      return { action: 'ask_clarifying_question', intent: input.analysis.intent,
+        targetFlow: input.context.activeSession?.flow ?? 'none',
+        confidence: model?.confidence ?? input.analysis.confidence, entities: {},
+        missingFields: input.context.activeSession?.missingFields ?? [],
+        reason: proposedQuestion.ambiguousField
+          ? 'Clarify which field the proposed question asks for.'
+          : 'Clarify which service owns the proposed field question.' };
+    }
+    const questionOwner = proposedQuestion && proposedQuestion.flow !== 'none' ? proposedQuestion.flow
+      : model && resolveTargetFlow(model.intent) !== 'none' ? resolveTargetFlow(model.intent)
+      : input.analysis.role === 'new_intent' ? input.analysis.targetFlow : 'none';
+    const activeFlow = input.context.activeSession?.flow;
+    const acceptedTopic = input.context.conversationTopic;
+    const ownedFlow = activeFlow ?? (acceptedTopic === 'hotel' || acceptedTopic === 'restaurant' ||
+      acceptedTopic === 'excursion' || acceptedTopic === 'logistics' || acceptedTopic === 'itinerary'
+      ? acceptedTopic : undefined);
+    // A clear traveller request remains authoritative when the model omits its
+    // optional transition hint. Require independent analyzer evidence and an
+    // agreeing interpreted service; a service mentioned in a question is not a switch.
+    const explicitSwitch = Boolean(ownedFlow && input.analysis.role === 'new_intent' &&
+      input.analysis.targetFlow !== 'none' && input.analysis.targetFlow !== ownedFlow &&
+      input.analysis.confidence >= env.llm.confidenceThreshold &&
+      isExplicitServiceRequest(input.context.message.text.trim().toLocaleLowerCase(),
+        input.analysis.targetFlow, ownedFlow) &&
+      !isInformationalRequest(input.context.message.text) &&
+      (!model || resolveTargetFlow(model.intent) === input.analysis.targetFlow));
+    const acceptedSwitch = (model?.taskTransition === 'switch' &&
+      !isInformationalRequest(input.context.message.text) &&
+      model.confidence >= env.llm.confidenceThreshold && resolveTargetFlow(model.intent) === questionOwner) ||
+      (explicitSwitch && questionOwner === input.analysis.targetFlow);
+    if (proposedQuestion && ownedFlow && questionOwner !== 'none' && questionOwner !== ownedFlow &&
+        !acceptedSwitch) {
+      return { action: 'ask_clarifying_question', intent: input.analysis.intent,
+        targetFlow: ownedFlow, confidence: model?.confidence ?? input.analysis.confidence,
+        entities: {}, missingFields: input.context.activeSession?.missingFields ?? [],
+        reason: `Confirm whether to switch from ${ownedFlow} to ${questionOwner}.` };
+    }
+    if (proposedQuestion && ownedFlow && !activeFlow && questionOwner !== 'none' &&
+        questionOwner !== ownedFlow && acceptedSwitch) {
+      return { action: 'answer_general_question', intent: model!.intent, targetFlow: questionOwner,
+        confidence: model!.confidence, entities: {}, missingFields: [],
+        reason: 'Validated conversational topic switch without an active workflow.' };
+    }
     // A validated conversational answer takes precedence over keyword hints.
     // A side question can mention another service without requesting a switch.
     if (model?.intent === 'general_inquiry' && model.role === 'question_or_faq' &&
         model.responseText && !model.clarificationRequired && model.taskTransition !== 'switch' &&
-        model.confidence >= env.llm.confidenceThreshold) {
+        model.confidence >= env.llm.confidenceThreshold &&
+        !(model.followUpQuestion && input.context.activeSession &&
+          input.analysis.role === 'new_intent' && input.analysis.targetFlow !== 'none' &&
+          input.analysis.targetFlow !== input.context.activeSession.flow)) {
       return {
         action: 'answer_general_question', intent: 'general_inquiry',
         targetFlow: input.context.activeSession?.flow ?? 'none', confidence: model.confidence,
@@ -53,16 +154,13 @@ export class DecisionEngine {
     // answer. A generic model classification must not erase that evidence.
     // Explicit side questions, corrections and task switches still take priority.
     const active = input.context.activeSession;
-    const awaitedField = active?.awaitedField;
+    const awaitedField = active?.flow === continuationFlow && continuationField
+      ? continuationField : active?.awaitedField;
     const awaitedValue = awaitedField && input.analysis.role === 'answer_to_current_question'
       ? input.analysis.entities[awaitedField] : undefined;
     const groundedAnswer = active && awaitedField && awaitedValue !== undefined &&
       input.analysis.targetFlow === active.flow &&
-      !/[?]/.test(input.context.message.text) &&
-      model?.role !== 'question_or_faq' && model?.role !== 'change_existing_criteria' &&
-      model?.taskTransition !== 'switch' && model?.taskTransition !== 'pause' &&
-      (!model || model.intent === 'unclear' || model.intent === 'general_inquiry' ||
-        resolveTargetFlow(model.intent) === active.flow);
+      !/[?]/.test(input.context.message.text);
     if (groundedAnswer && model?.clarificationRequired) {
       return { action: 'ask_clarifying_question', intent: model.intent,
         targetFlow: active.flow, confidence: model.confidence, entities: { [awaitedField]: awaitedValue },
@@ -71,9 +169,8 @@ export class DecisionEngine {
     }
     if (groundedAnswer) {
       const entities = validateCriteria(active.flow, {
-        [awaitedField]: model?.entities[awaitedField] ?? awaitedValue,
-        ...Object.fromEntries(Object.entries(model?.entities ?? {}).filter(([field]) =>
-          field !== awaitedField)),
+        [awaitedField]: awaitedValue,
+        ...explicitAdditionalFields(input.context.message.text, awaitedField),
       }, false);
       const patchedSession = buildPatchedSession(active, active.flow, entities, active.requiredFields);
       return { action: 'continue_flow', intent: input.analysis.intent,
@@ -125,10 +222,23 @@ export class DecisionEngine {
         !/[?]/.test(input.context.message.text) &&
         !/\b(?:show|search|find|list|options|recommend|book|reserve)\b/i.test(preferenceReply) &&
         !hasExplicitBookingRequest(input.context.message.text)) {
-      const entities = validateCriteria('restaurant', {
+      const proposedPreference = supportedWorkflowFields('restaurant', {
         additionalPreferences: model.entities.additionalPreferences ??
           model.entities.diningStyle ?? preferenceReply,
+        ...explicitFieldsInPendingAnswer(input.context.message.text),
+      }, input.context.message.text, { existingFields: active.collectedFields });
+      const entities = validateCriteria('restaurant', {
+        ...proposedPreference,
+        ...(proposedPreference.additionalPreferences === undefined
+          ? supportedWorkflowFields('restaurant', { additionalPreferences: preferenceReply },
+              input.context.message.text, { existingFields: active.collectedFields }) : {}),
       }, false);
+      if (!Object.keys(entities).length) {
+        return { action: 'ask_clarifying_question', intent: 'restaurant_search',
+          targetFlow: 'restaurant', confidence: model.confidence, entities: {},
+          missingFields: active.missingFields,
+          reason: 'Clarify a preference that was not supported by the traveller reply.' };
+      }
       const sessionPatch = buildPatchedSession(active, 'restaurant', entities,
         requiredFieldsForAction('restaurant', 'discovery'));
       return { action: 'continue_flow', intent: 'restaurant_search', targetFlow: 'restaurant',
@@ -177,9 +287,45 @@ export class DecisionEngine {
       resultId: verifiedResult.resultId,
       referencedResultName: verifiedResult.name,
     } : {};
+    const modelEntities = input.interpretation?.entities ?? {};
+    const informationalQuestion = isInformationalRequest(input.context.message.text);
+    if (informationalQuestion && input.context.activeSession?.flow === targetFlow &&
+        !model?.clarificationRequired) {
+      return { action: 'answer_general_question', intent: signal.intent, targetFlow,
+        confidence: signal.confidence, entities: {}, missingFields: input.context.activeSession.missingFields,
+        reason: 'Answer an informational question without changing saved workflow fields.' };
+    }
+    const supportedModelFields = supportedWorkflowFields(targetFlow, modelEntities, input.context.message.text,
+      { existingFields: input.context.activeSession?.flow === targetFlow
+        ? input.context.activeSession.collectedFields : undefined,
+        pendingField: expectedFieldForConversation(targetFlow, input.context.pendingQuestion?.expectedAnswerType),
+        confirmedLocation: input.context.activeSession?.flow === targetFlow
+          ? input.context.activeSession.pendingDecisions?.locationConfirmation : undefined });
     const entities: Record<string, unknown> = input.interpretation && input.analysis.role !== 'command'
-      ? { ...input.interpretation.entities, ...groundedResultReference }
+      ? { ...Object.fromEntries(Object.entries(modelEntities).filter(([field]) => !canonicalField(targetFlow, field))),
+          ...supportedModelFields, ...groundedResultReference }
       : { ...input.analysis.entities };
+    if (model?.entities.additionalPreferences && entities.additionalPreferences === undefined &&
+        input.context.activeSession?.flow === targetFlow && input.analysis.role === 'extra_preference' &&
+        model.role === 'change_existing_criteria' && !/[?]/.test(input.context.message.text)) {
+      const statedPreference = input.context.message.text.trim();
+      Object.assign(entities, supportedWorkflowFields(targetFlow,
+        { additionalPreferences: statedPreference }, input.context.message.text,
+        { existingFields: input.context.activeSession.collectedFields }));
+    }
+    const unsupportedExistingChange = input.context.activeSession?.flow === targetFlow &&
+      Object.entries(modelEntities).some(([field, value]) => {
+        const canonical = canonicalField(targetFlow, field);
+        return canonical && input.context.activeSession?.collectedFields[canonical] !== undefined &&
+          JSON.stringify(input.context.activeSession.collectedFields[canonical]) !== JSON.stringify(value) &&
+          supportedModelFields[canonical] === undefined;
+      });
+    if (unsupportedExistingChange && input.analysis.role !== 'question_or_faq' &&
+        Object.keys(supportedModelFields).length === 0 && entities.additionalPreferences === undefined) {
+      return { action: 'ask_clarifying_question', intent: signal.intent, targetFlow,
+        confidence: signal.confidence, entities: {}, missingFields: input.context.activeSession?.missingFields ?? [],
+        reason: 'Clarify a conflicting field proposal without changing saved fields.' };
+    }
     if (!active && pendingPlaceField && contextualPlace && entities[pendingPlaceField] === undefined) {
       entities[pendingPlaceField] = contextualPlace;
     }
@@ -292,19 +438,25 @@ export class DecisionEngine {
       };
     }
 
+    const crossFlowQuestion = Boolean(current && targetFlow !== 'none' &&
+      targetFlow !== current.flow && (model?.taskTransition === 'switch' || model?.followUpQuestion ||
+        explicitSwitch));
     if (model?.responseText && (!model.proposedAction || model.proposedAction.name === 'none') &&
         model.taskTransition !== 'switch' && model.taskTransition !== 'resume' &&
         model.suggestedAction !== 'execute_tool' && Object.keys(entities).length === 0 &&
+        !crossFlowQuestion &&
         (model.role === 'question_or_faq' || input.context.activeSession?.flow === targetFlow)) {
       return {
         action: 'answer_general_question', intent: signal.intent,
-        targetFlow: input.context.activeSession?.flow ?? 'none', confidence: model.confidence,
+        targetFlow: input.context.activeSession?.flow ??
+          (model.followUpQuestion && model.intent === signal.intent ? targetFlow : 'none'),
+        confidence: model.confidence,
         entities: {}, missingFields: input.context.activeSession?.missingFields ?? [],
         reason: 'Use the primary conversational reply without advancing a workflow field.',
       };
     }
 
-    if (signal.role === 'question_or_faq') {
+    if (signal.role === 'question_or_faq' && !crossFlowQuestion) {
       return {
         action: 'answer_general_question',
         intent: signal.intent,
@@ -320,12 +472,10 @@ export class DecisionEngine {
     // an uncertain classification. Require a confident explicit route or a
     // confident model switch proposal before replacing active journey state.
     if (current && targetFlow !== 'none' && targetFlow !== current.flow) {
-      const explicitSwitch = input.analysis.role === 'new_intent' &&
-        input.analysis.confidence >= env.llm.confidenceThreshold &&
-        resolveTargetFlow(input.analysis.intent) === targetFlow;
       const modelSwitch = model?.taskTransition === 'switch' &&
+        !isInformationalRequest(input.context.message.text) &&
         model.confidence >= env.llm.confidenceThreshold && resolveTargetFlow(model.intent) === targetFlow;
-      if (!(model ? modelSwitch : explicitSwitch)) {
+      if (!(modelSwitch || (explicitSwitch && input.analysis.targetFlow === targetFlow))) {
         return { action: 'ask_clarifying_question', intent: signal.intent, targetFlow: current.flow,
           confidence: signal.confidence, entities: {}, missingFields: current.missingFields,
           reason: `Confirm whether to switch from ${current.flow} to ${targetFlow}.` };
@@ -343,14 +493,18 @@ export class DecisionEngine {
             model?.suggestedAction === 'ask_missing')) ? 'provider_search' : 'discovery';
     const actionRequested = requestedStage !== 'discovery';
     if (model && !actionRequested && !current && model.taskTransition !== 'switch') {
-      return { action: 'answer_general_question', intent: signal.intent, targetFlow: 'none',
+      return { action: 'answer_general_question', intent: signal.intent,
+        targetFlow: proposedQuestion && model.confidence >= env.llm.confidenceThreshold &&
+          model.intent === signal.intent && questionOwner === targetFlow ? targetFlow : 'none',
         confidence: model.confidence, entities: {}, missingFields: [],
         reason: 'A service mention alone does not activate a workflow.' };
     }
-    const requiredFields = model && (actionRequested || current?.flow !== targetFlow)
+    const targetSession = current?.flow === targetFlow ? current
+      : input.context.pausedSessions?.find((session) => session.flow === targetFlow);
+    const requiredFields = model && (actionRequested || !targetSession)
       ? requiredFieldsForAction(targetFlow, requestedStage)
-      : current?.flow === targetFlow ? current.requiredFields : workflow(targetFlow)?.required ?? [];
-    const combinedFields = { ...(current?.flow === targetFlow ? current.collectedFields : {}), ...entities };
+      : targetSession?.requiredFields ?? workflow(targetFlow)?.required ?? [];
+    const combinedFields = { ...targetSession?.collectedFields, ...entities };
     if (targetFlow === 'hotel' || targetFlow === 'itinerary') {
       const [start, end] = targetFlow === 'hotel'
         ? ['checkinDate', 'checkoutDate'] : ['arrivalDate', 'departureDate'];
@@ -361,7 +515,7 @@ export class DecisionEngine {
           reason: `Clarify the ${end} after the proposed ${start} change.` };
       }
     }
-    const patchedSession = buildPatchedSession(input.context.activeSession, targetFlow, entities, requiredFields);
+    const patchedSession = buildPatchedSession(targetSession, targetFlow, entities, requiredFields);
     const missingFields = patchedSession?.missingFields ?? [];
 
     if (
@@ -438,6 +592,39 @@ export class DecisionEngine {
       reason: 'No executable service flow was identified.',
     };
   }
+
+  /** Validate the question actually selected for delivery before any workflow
+   * transition is applied. This is independent of optional model metadata. */
+  validateResponseQuestion(input: DecisionEngineInput, decision: OrchestrationDecision,
+    responseText?: string): OrchestrationDecision {
+    const question = fieldQuestionPurpose(responseText);
+    if (!question) return decision;
+    const active = input.context.activeSession?.flow;
+    const acceptedTopic = input.context.conversationTopic;
+    const owner = active ?? (acceptedTopic === 'hotel' || acceptedTopic === 'restaurant' ||
+      acceptedTopic === 'excursion' || acceptedTopic === 'logistics' || acceptedTopic === 'itinerary'
+      ? acceptedTopic : undefined);
+    if (!question.ambiguous && (question.flow === 'none' ||
+        question.flow === decision.targetFlow &&
+        (question.flow === owner || decision.action === 'switch_flow' ||
+          decision.reason === 'Validated conversational topic switch without an active workflow.' || !owner))) {
+      return decision;
+    }
+    return { action: 'ask_clarifying_question', intent: input.analysis.intent,
+      targetFlow: owner ?? 'none', confidence: input.interpretation?.confidence ?? input.analysis.confidence,
+      entities: {}, missingFields: input.context.activeSession?.missingFields ?? [],
+      reason: question.ambiguousField ? 'Clarify which field the proposed question asks for.'
+        : question.ambiguous ? 'Clarify which service owns the proposed field question.'
+        : `Confirm whether to switch from ${owner ?? 'the current topic'} to ${question.flow}.` };
+  }
+}
+
+/** Additional pending-answer fields come from the traveller's message, not
+ * from the model proposal. The caller validates them for its workflow. */
+function explicitAdditionalFields(message: string, answeredField: string): Record<string, unknown> {
+  const supported = explicitFieldsInPendingAnswer(message);
+  delete supported[answeredField];
+  return supported;
 }
 
 function hasExplicitBookingRequest(message: string): boolean {

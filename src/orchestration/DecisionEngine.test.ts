@@ -26,6 +26,18 @@ function context(): OrchestrationContext {
 }
 
 describe('DecisionEngine', () => {
+  it('does not turn an informational statement into a restaurant preference when metadata claims correction', () => {
+    const current = context();
+    current.message.text = 'I want to know about romantic restaurants';
+    current.activeSession!.collectedFields.additionalPreferences = 'quiet';
+    const decision = new DecisionEngine().decide({ context: current,
+      analysis: { role: 'extra_preference', intent: 'restaurant_search', targetFlow: 'restaurant',
+        entities: {}, confidence: 0.8, rawText: current.message.text, shouldUseLLM: true },
+      interpretation: { role: 'change_existing_criteria', intent: 'restaurant_search',
+        entities: { additionalPreferences: 'romantic' }, confidence: 0.95 } });
+    expect(decision.entities).not.toHaveProperty('additionalPreferences');
+    expect(decision.sessionPatch?.collectedFields.additionalPreferences).not.toBe('romantic');
+  });
   it('saves a short answer to its location question before searching', () => {
     const current = context();
     current.activeSession = undefined;
@@ -340,15 +352,17 @@ describe('DecisionEngine', () => {
   });
 
   it('keeps LLM interpretation as input but lets code decide the action', () => {
+    const current = context();
+    current.message.text = 'I want rooftop seating';
     const decision = new DecisionEngine().decide({
-      context: context(),
+      context: current,
       analysis: {
         role: 'extra_preference',
         intent: 'unclear',
         targetFlow: 'restaurant',
         entities: {},
         confidence: 0.4,
-        rawText: 'rooftop',
+        rawText: 'I want rooftop seating',
         shouldUseLLM: true,
       },
       interpretation: {
@@ -395,9 +409,10 @@ describe('DecisionEngine', () => {
     expect(current.activeSession.collectedFields).toEqual({ destination: 'Ella', preferredDate: '2026-12-01' });
 
     current.message.text = '08:30';
+    current.pendingQuestion = { text: 'What time would suit you?', expectedAnswerType: 'time' };
     const continuation = new DecisionEngine().decide({ context: current,
       analysis: { role: 'answer_to_current_question', intent: 'excursion_search', targetFlow: 'excursion',
-        entities: {}, confidence: 0.7, rawText: '08:30', shouldUseLLM: true },
+        entities: { preferredTime: '08:30' }, confidence: 0.7, rawText: '08:30', shouldUseLLM: true },
       interpretation: { role: 'answer_to_current_question', intent: 'excursion_search',
         entities: { preferredTime: '08:30' }, confidence: 0.96, taskTransition: 'continue' } });
     expect(continuation).toMatchObject({ action: 'continue_flow', targetFlow: 'excursion',
@@ -595,6 +610,7 @@ describe('DecisionEngine', () => {
   it('searches restaurants with a location without collecting reservation fields', () => {
     const current = context();
     current.activeSession = undefined;
+    current.message.text = 'Find restaurants in Galle';
     const decision = new DecisionEngine().decide({ context: current,
       analysis: { role: 'new_intent', intent: 'restaurant_search', targetFlow: 'restaurant', entities: {},
         confidence: 0.9, rawText: 'Find restaurants in Galle', shouldUseLLM: true },
@@ -633,6 +649,7 @@ describe('DecisionEngine', () => {
   it('requires pickup time before a transport provider search', () => {
     const current = context();
     current.activeSession = undefined;
+    current.message.text = 'Find a ride from Colombo to Galle on 2026-12-01 for 2 passengers';
     const decision = new DecisionEngine().decide({ context: current,
       analysis: { role: 'new_intent', intent: 'logistics_request', targetFlow: 'logistics', entities: {},
         confidence: 0.9, rawText: 'Find a ride', shouldUseLLM: true },

@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { validateAndMapDecision } from './LLMDecisionInterpreter.js';
 
 describe('LLMDecisionInterpreter validation', () => {
+  it('passes a structured conversational question without activating a workflow', () => {
+    const result = validateAndMapDecision({ intent: 'search_excursions', parameters: {},
+      missingFields: [], suggestedAction: 'none', confidence: 0.9,
+      responseText: 'Which area would you like to explore',
+      followUpQuestion: { text: 'Which area would you like to explore', expectedAnswerType: 'location' } });
+    expect(result.followUpQuestion).toEqual({ text: 'Which area would you like to explore',
+      expectedAnswerType: 'location' });
+    expect(result.proposedAction).toBeUndefined();
+  });
   it('marks a validated field correction as a change to the active workflow', () => {
     const result = validateAndMapDecision({
       intent: 'search_restaurants', parameters: {}, fieldUpdates: { diningDate: '2026-12-02' },

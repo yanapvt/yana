@@ -1,6 +1,7 @@
 import { getStateStore } from './StateStore.js';
 import { getLLMService } from './LLMService.js';
 import { validateCriteria } from '../orchestration/WorkflowDefinitions.js';
+import { supportedWorkflowFields } from '../orchestration/MutationAuthority.js';
 import { sanitizeConversationText } from '../utils/contextPrivacy.js';
 
 type HotelField =
@@ -17,6 +18,7 @@ export interface HotelSearchCriteria {
   checkoutDate?: string;
   guests?: number;
   rooms?: number;
+  durationNights?: number;
   starRating?: string;
   hotelType?: string;
   facilities?: string;
@@ -449,7 +451,7 @@ export class HotelIntakeService {
         context: modelContext,
       });
       const parsed = validateCriteria('hotel', JSON.parse(response)) as LLMHotelCriteriaExtraction;
-      return this.sanitizeLLMExtraction(parsed);
+      return this.sanitizeLLMExtraction(supportedWorkflowFields('hotel', { ...parsed }, message));
     } catch (error) {
       console.warn('[HotelIntakeService] LLM criteria extraction failed, using deterministic extraction:', error);
       return {};

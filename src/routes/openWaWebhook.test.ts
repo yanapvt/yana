@@ -1,12 +1,16 @@
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { claim, processInbound, buildReply, sendReply, sendMessages } = vi.hoisted(() => ({
+const { claim, processInbound, buildReply, sendReply, sendMessages, recordQuestion } = vi.hoisted(() => ({
   claim: vi.fn(),
   processInbound: vi.fn(),
   buildReply: vi.fn(),
   sendReply: vi.fn(),
   sendMessages: vi.fn(),
+  recordQuestion: vi.fn(),
+}));
+vi.mock('../orchestration/ConversationControlPlane.js', () => ({
+  getConversationControlPlane: () => ({ recordOutboundQuestion: recordQuestion }),
 }));
 vi.mock('../services/InboundIdempotencyService.js', () => ({ getInboundIdempotencyService: () => ({ claim }) }));
 vi.mock('./webhook.js', () => ({ processNormalizedInboundMessage: processInbound, buildWebhookReply: buildReply }));
@@ -33,6 +37,19 @@ describe('OpenWA webhook reliability', () => {
   it('accepts one stable delivery and dispatches one outbound reply', async () => {
     claim.mockResolvedValue('new'); const response = await post(payload); expect(response.status).toBe(200); expect(await response.json()).toMatchObject({ accepted: true });
     await vi.waitFor(() => expect(sendReply).toHaveBeenCalledOnce());
+  });
+  it('records provider acceptance or failure for the outbound question', async () => {
+    const event = { eventId: 'event-openwa', userId: 'openwa:test-user@c.us' };
+    processInbound.mockResolvedValue({ reply: 'Which area?', inboundMessage: { inputType: 'text' },
+      canonicalEvent: event });
+    claim.mockResolvedValue('new');
+    await post(payload);
+    await vi.waitFor(() => expect(recordQuestion).toHaveBeenCalledWith(event, 'provider_accepted'));
+    expect(recordQuestion).toHaveBeenCalledWith(event, 'sent');
+    recordQuestion.mockClear();
+    sendReply.mockResolvedValue(false);
+    await post({ ...payload, data: { ...payload.data, id: 'stable-message-2' } });
+    await vi.waitFor(() => expect(recordQuestion).toHaveBeenCalledWith(event, 'failed'));
   });
   it('requests audio delivery for a transcribed voice note', async () => {
     processInbound.mockResolvedValue({ reply: 'I heard you', inboundMessage: { inputType: 'voice' } });

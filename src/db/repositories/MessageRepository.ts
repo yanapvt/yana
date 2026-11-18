@@ -43,10 +43,34 @@ export interface MessageTranslation {
 // ============================================================================
 
 export class MessageRepository {
+  async markAssistantDelivery(traveller: string, requestId: string,
+    status: 'provider_accepted' | 'sent' | 'delivered' | 'failed', providerMessageId?: string): Promise<void> {
+    const hash = crypto.createHash('sha256').update(requestId).digest('hex').slice(0, 32);
+    const correlation = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
+    await pool.query(`UPDATE messages m SET metadata=COALESCE(m.metadata,'{}'::jsonb) ||
+      jsonb_build_object('delivery', $3::text, 'providerMessageId',
+        COALESCE($4::text,m.metadata->>'providerMessageId'))
+      FROM users u WHERE m.user_id=u.user_id AND u.phone_number=$1 AND m.correlation_id=$2
+        AND m.role='assistant' AND (m.metadata->>'delivery' IS NULL OR
+          m.metadata->>'delivery'='generated' OR
+          m.metadata->>'delivery'='provider_accepted' AND $3 IN ('sent','delivered','failed') OR
+          m.metadata->>'delivery'='sent' AND $3 IN ('delivered','failed'))`,
+    [traveller.replace(/^whatsapp:/, ''), correlation, status, providerMessageId ?? null]);
+  }
+
+  async markAssistantDeliveryByProviderId(providerMessageId: string,
+    status: 'sent' | 'delivered' | 'failed'): Promise<void> {
+    await pool.query(`UPDATE messages SET metadata=metadata || jsonb_build_object('delivery',$2::text)
+      WHERE role='assistant' AND metadata->>'providerMessageId'=$1
+        AND metadata->>'delivery' NOT IN ('delivered','failed')`, [providerMessageId, status]);
+  }
+
   async findRecentByTraveller(traveller: string, limit = 12): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
     const result = await pool.query(
       `SELECT m.role, m.content, m.metadata FROM messages m JOIN users u ON u.user_id=m.user_id
        WHERE u.phone_number=$1 AND m.role IN ('user','assistant')
+         AND (m.role='user' OR m.metadata->>'delivery' IN
+           ('provider_accepted','sent','delivered','submitted'))
        ORDER BY m.created_at DESC, m.message_id DESC LIMIT $2`,
       [traveller.replace(/^whatsapp:/, ''), Math.min(12, Math.max(1, limit))]
     );
@@ -55,8 +79,9 @@ export class MessageRepository {
     for (let index = 0; index < ordered.length; index += 1) {
       if (ordered[index].role === 'user' && ordered[index].metadata?.conversationBoundary === 'reset') lastReset = index;
     }
-    return ordered.slice(lastReset + 1).map((row) => ({ role: row.role,
-      content: sanitizeConversationText(`${row.role === 'assistant' && row.metadata?.delivery !== 'submitted' ? '[Generated reply; delivery not verified] ' : ''}${String(row.content?.text ?? '')}`) }));
+    return ordered.slice(lastReset + 1).filter((row) => row.role !== 'assistant' ||
+      ['provider_accepted', 'sent', 'delivered', 'submitted'].includes(row.metadata?.delivery)).map((row) => ({ role: row.role,
+      content: sanitizeConversationText(String(row.content?.text ?? '')) }));
   }
 
   /** Role-aware idempotency under the traveller row lock; generated replies are not delivery receipts. */

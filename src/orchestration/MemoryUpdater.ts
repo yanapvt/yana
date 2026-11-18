@@ -4,6 +4,8 @@ import type {
   OrchestrationDecision,
 } from './Orchestrator.js';
 import { validateCriteria } from './WorkflowDefinitions.js';
+import { expectedFieldForConversation } from './ConversationAnalyzer.js';
+import { supportedMemoryCandidates, supportedWorkflowFields } from './MutationAuthority.js';
 import type { MemoryCandidate } from './TravellerMemory.js';
 import { PostgresTravellerMemoryRepository, type TravellerMemoryRepository } from '../storage/travellerMemoryRepository.js';
 
@@ -11,9 +13,10 @@ export class MemoryUpdater {
   constructor(private readonly travellerMemories: TravellerMemoryRepository = new PostgresTravellerMemoryRepository()) {}
 
   async persistContextMemories(context: OrchestrationContext, update: MemoryUpdateResult): Promise<import('../storage/Persistence.js').PersistenceOutcome> {
-    if (!update.memoryCandidates?.length) return { status: 'durable', reason: 'No traveller context proposed' };
+    const grounded = supportedMemoryCandidates(update.memoryCandidates ?? [], context.message.text);
+    if (!grounded.length) return { status: 'durable', reason: 'No traveller-supported context proposed' };
     try {
-      await this.travellerMemories.saveCandidates(context.userId, context.message.messageId, update.memoryCandidates, 'trip:current');
+      await this.travellerMemories.saveCandidates(context.userId, context.message.messageId, grounded, 'trip:current');
       return { status: 'durable', reason: 'Validated traveller context persisted' };
     } catch { return { status: 'failed', reason: 'Traveller context could not be persisted' }; }
   }
@@ -36,13 +39,24 @@ export class MemoryUpdater {
     if (typeof service.applyCriteriaPatch !== 'function') {
       return { status: 'degraded', reason: 'The active workflow executor owns this state transition' };
     }
-    return service.applyCriteriaPatch(context.userId, context.activeSession.revision ?? 0, validateCriteria(flow, update.session.collectedFields, false));
+    const proposed = validateCriteria(flow, update.session.collectedFields, false);
+    const changed = Object.fromEntries(Object.entries(proposed).filter(([field, value]) =>
+      JSON.stringify(context.activeSession?.collectedFields[field]) !== JSON.stringify(value)));
+    const grounded = supportedWorkflowFields(flow, changed, context.message.text, {
+      existingFields: context.activeSession.collectedFields,
+      pendingField: expectedFieldForConversation(flow, context.pendingQuestion?.expectedAnswerType),
+      confirmedLocation: context.activeSession.pendingDecisions?.locationConfirmation,
+    });
+    if (Object.keys(grounded).length !== Object.keys(changed).length)
+      return { status: 'failed', reason: 'The proposed field change lacks traveller evidence' };
+    return service.applyCriteriaPatch(context.userId, context.activeSession.revision ?? 0, proposed);
   }
   prepareUpdate(
     context: OrchestrationContext,
     decision: OrchestrationDecision,
     memoryCandidates: MemoryCandidate[] = []
   ): MemoryUpdateResult {
+    memoryCandidates = supportedMemoryCandidates(memoryCandidates, context.message.text);
     if (decision.action === 'require_profile' || decision.action === 'answer_smalltalk' || decision.action === 'answer_general_question') {
       return {
         shouldPersist: memoryCandidates.length > 0,

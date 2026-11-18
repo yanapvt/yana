@@ -1,16 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { InboundMessage } from '../types/core.js';
 import { normalizeMetaWhatsAppInboundMessage } from '../utils/metaWhatsAppMessageNormalizer.js';
-import { createWebsiteConversationEvent } from '../orchestration/CanonicalConversationEvent.js';
+import { createInboundConversationEvent, createWebsiteConversationEvent } from '../orchestration/CanonicalConversationEvent.js';
 import { LLMServiceError } from '../services/LLMService.js';
 import { FixtureSessionRepository, FixtureStateStore } from '../tests/fixtures/sessionStorage.js';
 import { ContextBuilder } from '../orchestration/ContextBuilder.js';
 import { ConversationControlPlane, getConversationControlPlane, initConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
 import { WorkflowExecutorRegistry } from '../orchestration/WorkflowExecutorRegistry.js';
 const recentTurnsMock = vi.hoisted(() => vi.fn());
+const continuationLoadMock = vi.hoisted(() => vi.fn());
 vi.mock('../services/JourneyEventCheckpointService.js', () => ({ JourneyEventCheckpointService: class {
   async accept() { return; }
   async recover() { return null; }
+} }));
+vi.mock('../services/ConversationContinuationService.js', () => ({ ConversationContinuationService: class {
+  async load() { return continuationLoadMock(); }
+  async record() { return; }
+  async reset() { return; }
 } }));
 vi.mock('../services/WorkflowLockService.js', () => ({ withWorkflowLock: async (_user: string, operation: () => Promise<unknown>) => operation() }));
 vi.mock('../db/repositories/MessageRepository.js', () => ({ MessageRepository: class {
@@ -361,6 +367,14 @@ vi.mock('../services/SpeechToTextService.js', () => {
 import { SpeechToTextServiceError } from '../services/SpeechToTextService.js';
 import { processInboundMessage, processNormalizedInboundMessage, processWebhookPayload } from './webhook.js';
 
+function pendingContinuation(topic: string, text: string, expectedAnswerType: string) {
+  return { topic, pendingQuestion: { text, expectedAnswerType }, revision: 1,
+    generation: 0, eventId: null };
+}
+const processWithContinuation = (message: InboundMessage, correlationId: string) =>
+  processInboundMessage(message, correlationId,
+    { event: createInboundConversationEvent(message, correlationId) });
+
 describe('webhook hotel search flow', () => {
   const previousLegacyFallback = process.env.LEGACY_CONVERSATION_ROUTING_FALLBACK;
   beforeEach(() => {
@@ -369,6 +383,7 @@ describe('webhook hotel search flow', () => {
     getAuthoritativeItineraryMock.mockImplementation((id: string) => getItinerarySessionMock(id));
     vi.clearAllMocks();
     recentTurnsMock.mockReset().mockResolvedValue([]);
+    continuationLoadMock.mockReset().mockResolvedValue(null);
     getNameStateMock.mockResolvedValue(null);
     handleNameReplyMock.mockResolvedValue(null);
     askAboutNameMock.mockResolvedValue(null);
@@ -608,9 +623,9 @@ describe('webhook hotel search flow', () => {
       browseResponse: { results: [] } });
 
     const areaReply = await processInboundMessage(
-      buildTextMessage('Negambo, close to the beach'), 'corr-hotel-area-change');
+      buildTextMessage('Change my hotel area to Negambo, close to the beach'), 'corr-hotel-area-change');
     const preferenceReply = await processInboundMessage(
-      buildTextMessage('colonial, must have a pool too'), 'corr-hotel-style-pool');
+      buildTextMessage('Must have a colonial style and pool too'), 'corr-hotel-style-pool');
     const resultReply = await processInboundMessage(buildTextMessage('yes'), 'corr-hotel-options-yes');
 
     expect(areaReply).toContain('Negambo');
@@ -1154,6 +1169,8 @@ describe('webhook hotel search flow', () => {
     ['resturants', 'collombo', 'Colombo'],
     ['I am hungry', 'Moratuwa', 'Moratuwa'],
   ])('keeps restaurant discovery conversational for %s followed by %s', async (originalMessage, locationReply, expectedLocation) => {
+    continuationLoadMock.mockResolvedValue(pendingContinuation('restaurant',
+      'Which town or area should I search for dining?', 'location'));
     getRestaurantSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       whatsappUserId: 'whatsapp:+15550009999',
@@ -1169,7 +1186,7 @@ describe('webhook hotel search flow', () => {
       updatedAt: '2026-10-14T17:50:00.000Z',
     });
 
-    const reply = await processInboundMessage(buildTextMessage(locationReply), 'corr-restaurant-location');
+    const reply = await processWithContinuation(buildTextMessage(locationReply), 'corr-restaurant-location');
 
     expect(reply).toContain(locationReply.replace(/^./, (letter) => letter.toUpperCase()));
     expect(reply).not.toContain('/forms/restaurant/');
@@ -1183,6 +1200,8 @@ describe('webhook hotel search flow', () => {
   });
 
   it('continues a restored restaurant conversation without requiring a form', async () => {
+    continuationLoadMock.mockResolvedValue(pendingContinuation('restaurant',
+      'Which town or area should I search for dining?', 'location'));
     getRestaurantSearchSessionMock.mockResolvedValue({
       userId: 'whatsapp:+15550009999',
       whatsappUserId: 'whatsapp:+15550009999',
@@ -1197,7 +1216,7 @@ describe('webhook hotel search flow', () => {
       updatedAt: '2026-10-14T17:50:00.000Z',
     });
 
-    const reply = await processInboundMessage(buildTextMessage('Moratuwa'), 'corr-restaurant-legacy-location');
+    const reply = await processWithContinuation(buildTextMessage('Moratuwa'), 'corr-restaurant-legacy-location');
 
     expect(reply).toContain('Moratuwa');
     expect(reply).not.toContain('/forms/restaurant/');
@@ -1495,18 +1514,18 @@ describe('webhook hotel search flow', () => {
     llmDecideMock.mockResolvedValue({ intent: 'search_restaurants', parameters: {},
       fieldUpdates: { additionalPreferences: 'Beachfront seating' }, missingFields: [],
       suggestedAction: 'ask_missing', proposedAction: { name: 'none', arguments: {} },
-      responseText: 'I have added beachfront seating to your dinner preferences.',
+      responseText: 'I have noted your preference for somewhere closer to the beach.',
       taskTransition: 'continue', confidence: 0.95 });
 
     const reply = await processInboundMessage(
       buildTextMessage('Somewhere closer to the beach'), 'corr-dinner-beach-preference'
     );
 
-    expect(reply).toContain('added beachfront seating');
+    expect(reply).toContain('closer to the beach');
     expect(applyRestaurantCriteriaPatchMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999', 4,
       expect.objectContaining({ location: 'Hikkaduwa', diningDate: '2026-12-02', guests: 2,
-        additionalPreferences: 'Beachfront seating' })
+        additionalPreferences: 'Somewhere closer to the beach' })
     );
     expect(handleRestaurantBrowseSearchMock).not.toHaveBeenCalled();
     expect(saveRestaurantFormSentMock).not.toHaveBeenCalled();
@@ -2225,7 +2244,7 @@ describe('webhook hotel search flow', () => {
     });
 
     const reply = await processInboundMessage(
-      buildTextMessage('beginner friendly with sunset views'),
+      buildTextMessage('I want beginner friendly with sunset views'),
       'corr-excursion-search'
     );
 
@@ -2234,7 +2253,7 @@ describe('webhook hotel search flow', () => {
       'whatsapp:+15550009999',
       expect.objectContaining({
         destination: 'Ella',
-        additionalPreferences: 'beginner friendly with sunset views',
+        additionalPreferences: 'I want beginner friendly with sunset views',
       })
     );
 
@@ -2253,7 +2272,7 @@ describe('webhook hotel search flow', () => {
     await vi.waitFor(() => {
       expect(saveExcursionResultsMock).toHaveBeenCalledWith(
         'whatsapp:+15550009999',
-        expect.objectContaining({ additionalPreferences: 'beginner friendly with sunset views' }),
+        expect.objectContaining({ additionalPreferences: 'I want beginner friendly with sunset views' }),
         expect.arrayContaining([expect.objectContaining({ name: 'Experience 1' })]),
         3
       );
@@ -2764,7 +2783,7 @@ describe('webhook hotel search flow', () => {
     });
 
     const reply = await processInboundMessage(
-      buildTextMessage('beachfront with pool and ocean view'),
+      buildTextMessage('I want beachfront with pool and ocean view'),
       'corr-webhook-5'
     );
 
@@ -2774,7 +2793,7 @@ describe('webhook hotel search flow', () => {
       'whatsapp:+15550009999',
       expect.objectContaining({
         location: 'Galle Fort',
-        additionalPreferences: 'beachfront with pool and ocean view',
+        additionalPreferences: 'I want beachfront with pool and ocean view',
       })
     );
 
@@ -2784,7 +2803,7 @@ describe('webhook hotel search flow', () => {
     expect(handleBrowseSearchMock).toHaveBeenCalledWith(
       expect.objectContaining({
         location: 'Galle Fort',
-        additionalPreferences: 'beachfront with pool and ocean view',
+        additionalPreferences: 'I want beachfront with pool and ocean view',
       }),
       expect.objectContaining({
         correlationId: 'corr-webhook-5',
@@ -2795,7 +2814,7 @@ describe('webhook hotel search flow', () => {
       expect(saveResultsMock).toHaveBeenCalledWith(
         'whatsapp:+15550009999',
         expect.objectContaining({
-          additionalPreferences: 'beachfront with pool and ocean view',
+          additionalPreferences: 'I want beachfront with pool and ocean view',
         }),
         expect.arrayContaining([expect.objectContaining({ name: 'Hotel 1' })]),
         3
@@ -2866,7 +2885,7 @@ describe('webhook hotel search flow', () => {
       },
     });
 
-    const reply = await processInboundMessage(buildTextMessage('beachfront'), 'corr-webhook-15');
+    const reply = await processInboundMessage(buildTextMessage('I want beachfront'), 'corr-webhook-15');
 
     expect(reply).toBe('Top 3 Google Places hotels');
     expectNoInternalPresentationTerms(reply);
@@ -2874,7 +2893,7 @@ describe('webhook hotel search flow', () => {
     expect(handleBrowseSearchMock).toHaveBeenCalledWith(
       expect.objectContaining({
         location: 'Galle Fort',
-        additionalPreferences: 'beachfront',
+        additionalPreferences: 'I want beachfront',
       }),
       expect.objectContaining({
         correlationId: 'corr-webhook-15',
@@ -2884,7 +2903,7 @@ describe('webhook hotel search flow', () => {
     expect(saveResultsMock).toHaveBeenCalledWith(
       'whatsapp:+15550009999',
       expect.objectContaining({
-        additionalPreferences: 'beachfront',
+        additionalPreferences: 'I want beachfront',
       }),
       expect.arrayContaining([expect.objectContaining({ name: 'Hotel 1' })]),
       3
@@ -4077,7 +4096,7 @@ describe('webhook hotel search flow', () => {
     });
 
     const reply = await processInboundMessage(
-      buildTextMessage('English-speaking driver with multiple stops'),
+      buildTextMessage('I want an English-speaking driver with multiple stops'),
       'corr-logistics-search'
     );
 
@@ -4086,7 +4105,7 @@ describe('webhook hotel search flow', () => {
       'whatsapp:+15550009999',
       expect.objectContaining({
         pickupLocation: 'Colombo Fort',
-        additionalPreferences: 'English-speaking driver with multiple stops',
+        additionalPreferences: 'I want an English-speaking driver with multiple stops',
       })
     );
 

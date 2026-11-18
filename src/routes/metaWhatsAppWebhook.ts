@@ -4,6 +4,7 @@ import { assignCorrelationId } from '../middleware/correlationId.js';
 import { webhookRateLimiter } from '../middleware/rateLimiting.js';
 import { env } from '../config/environment.js';
 import { processNormalizedInboundMessage } from './webhook.js';
+import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
 import { getMetaWhatsAppMediaService } from '../services/MetaWhatsAppMediaService.js';
 import { getMetaWhatsAppOutboundService } from '../services/MetaWhatsAppOutboundService.js';
 import { getInboundIdempotencyService } from '../services/InboundIdempotencyService.js';
@@ -43,6 +44,16 @@ router.post(
 
       const payload = req.body as MetaWhatsAppWebhookPayload;
       if (isMetaStatusWebhook(payload)) {
+        for (const entry of payload.entry ?? []) for (const change of entry.changes ?? []) {
+          for (const raw of change.value?.statuses ?? []) {
+            if (!raw || typeof raw !== 'object') continue;
+            const { id, status } = raw as { id?: unknown; status?: unknown };
+            if (typeof id === 'string' && id.length < 256 &&
+                (status === 'sent' || status === 'delivered' || status === 'failed')) {
+              await getConversationControlPlane().recordProviderMessageStatus(id, status);
+            }
+          }
+        }
         res.status(200).json({ ok: true, ignored: 'status_webhook' });
         return;
       }
@@ -80,12 +91,18 @@ async function processMetaInboundAsync(
   correlationId: string
 ): Promise<void> {
   try {
-    const processed = await processNormalizedInboundMessage(inboundMessage, correlationId);
+    const processed = await processNormalizedInboundMessage(inboundMessage, correlationId, true);
     const delivered = await getMetaWhatsAppOutboundService().sendWhatsAppReply(
       inboundMessage.from,
       processed.reply,
-      { voice: processed.inboundMessage.inputType === 'voice' }
+      { voice: processed.inboundMessage.inputType === 'voice',
+        ...(processed.canonicalEvent ? { onProviderAccepted: async (id?: string) => {
+          await getConversationControlPlane().recordOutboundQuestion(processed.canonicalEvent!,
+            'provider_accepted', id);
+        } } : {}) }
     );
+    if (processed.canonicalEvent) await getConversationControlPlane().recordOutboundQuestion(
+      processed.canonicalEvent, delivered ? 'sent' : 'failed');
 
     if (!delivered) {
       console.warn(

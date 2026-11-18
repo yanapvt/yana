@@ -5,11 +5,14 @@ import type { ContextPackage } from '../services/LLMService.js';
 import { validateCriteria, workflow, WORKFLOW_SCHEMA_VERSION, WORKFLOW_DEFINITIONS } from './WorkflowDefinitions.js';
 import type {
   OrchestrationContext,
+  OrchestrationFlow,
   OrchestrationSessionSnapshot,
 } from './Orchestrator.js';
 import type { TravellerMemoryFact } from './TravellerMemory.js';
 import { relevantMemories } from './TravellerMemory.js';
 import type { TravellerMemoryRepository } from '../storage/travellerMemoryRepository.js';
+import type { ConversationContinuation } from '../storage/JourneyEventCheckpointRepository.js';
+import { answersStagedQuestion, expectedFieldForConversation, fieldQuestionPurpose } from './ConversationAnalyzer.js';
 
 export interface ContextBuilderInput {
   inboundMessage: InboundMessage;
@@ -25,6 +28,7 @@ export interface ContextBuilderInput {
   historyStatus?: OrchestrationContext['historyStatus'];
   travellerMemories?: TravellerMemoryFact[];
   memoryStatus?: OrchestrationContext['memoryStatus'];
+  continuation?: ConversationContinuation | null;
 }
 
 export class ContextBuilder {
@@ -61,11 +65,21 @@ export class ContextBuilder {
       .replace(/^\[Generated reply; delivery not verified\]\s*/i, '');
     const question = assistantProse?.match(/([^\n.!?]{3,250}\?)(?![\s\S]*\?)/)?.[1]?.trim();
     const active = input.activeSession?.lifecycleStatus !== 'paused' ? input.activeSession : undefined;
-    const pendingQuestion = question && latestAssistantIndex === history.length - 1 &&
+    const questionPurpose = fieldQuestionPurpose(question);
+    const verifiedAwaitedField = active?.awaitedField && questionPurpose && !questionPurpose.ambiguous &&
+      expectedFieldForConversation(active.flow, questionPurpose.expectedAnswerType) === active.awaitedField
+      ? active.awaitedField : undefined;
+    const inferredQuestion = question && latestAssistantIndex === history.length - 1 &&
       !/your saved requests are paused/i.test(latestAssistant ?? '')
-      ? { text: question, ...(active?.awaitedField ? { expectedAnswerType: active.awaitedField } : {}),
+      ? { text: question, ...(verifiedAwaitedField ? { expectedAnswerType: verifiedAwaitedField } : {}),
           ...(active?.id ? { workflowId: active.id } : {}) }
       : undefined;
+    const staged = input.continuation?.outboundQuestion;
+    const stagedAnswer = staged?.status === 'attempted' && !input.continuation?.pendingQuestion &&
+      input.continuation?.topic && answersStagedQuestion(input.continuation.topic as OrchestrationFlow,
+        staged.question, input.text);
+    const pendingQuestion = input.continuation !== undefined
+      ? input.continuation?.pendingQuestion ?? (stagedAnswer ? staged?.question : undefined) : inferredQuestion;
     return {
       userId: input.inboundMessage.from,
       message: {
@@ -79,7 +93,8 @@ export class ContextBuilder {
       travellerMemories: input.travellerMemories?.map((fact) => structuredClone(fact)),
       memoryStatus: input.memoryStatus,
       conversationHistory: history.map((turn) => ({ ...turn, content: turn.content.slice(0, 1000) })),
-      conversationTopic: active?.flow,
+      conversationTopic: input.continuation !== undefined
+        ? input.continuation?.topic ?? active?.flow : active?.flow,
       pendingQuestion,
       pendingClarification: pendingQuestion && !pendingQuestion.expectedAnswerType ? pendingQuestion.text : undefined,
       historyStatus: input.historyStatus,
