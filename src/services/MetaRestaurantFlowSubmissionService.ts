@@ -1,10 +1,12 @@
-import type { InboundMessage, InteractiveContent } from '../types/core.js';
+import type { CanonicalConversationEvent, InboundMessage, InteractiveContent } from '../types/core.js';
 import type { RestaurantRequestForm } from '../types/forms.js';
 import { restaurantRequestFormSchema } from '../validation/formSchemas.js';
 import { getFormTokenService } from './formTokenService.js';
 import { getProfileService } from './profileService.js';
 import { mapRestaurantRequestFormToCriteria } from './restaurantRequestMapper.js';
 import { getRestaurantSearchSessionService } from './restaurantSearchSessionService.js';
+import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
+import { createInboundConversationEvent, validateCanonicalConversationEvent } from '../orchestration/CanonicalConversationEvent.js';
 
 export interface MetaRestaurantFlowSubmissionResult {
   handled: boolean;
@@ -12,11 +14,22 @@ export interface MetaRestaurantFlowSubmissionResult {
 }
 
 export async function handleMetaRestaurantFlowSubmission(
-  message: InboundMessage
+  message: InboundMessage,
+  correlationId: string,
+  acceptedEvent?: CanonicalConversationEvent
 ): Promise<MetaRestaurantFlowSubmissionResult> {
   const content = message.content as InteractiveContent;
   if (content.type !== 'interactive' || content.interactionType !== 'flow_reply') {
     return { handled: false };
+  }
+
+  const event = acceptedEvent
+    ? validateCanonicalConversationEvent(acceptedEvent)
+    : await getConversationControlPlane().acceptEvent(createInboundConversationEvent(message, correlationId));
+  if (event.userId !== message.from || event.sourceEventId !== message.messageId ||
+      event.correlationId !== correlationId || event.channel !== 'whatsapp_meta' ||
+      event.eventType !== 'interactive' || event.metadata.interactionType !== 'flow_reply') {
+    return { handled: true, reply: 'I could not safely match that dining form to this chat. Please ask me to open it again.' };
   }
 
   const response = normalizeResponse(content.responseData ?? {});
@@ -31,6 +44,15 @@ export async function handleMetaRestaurantFlowSubmission(
     };
   }
 
+  const sessions = getRestaurantSearchSessionService();
+  const current = await sessions.getAuthoritative(message.from);
+  if (!current || !tokenRecord.workflowId || tokenRecord.workflowId !== current.id ||
+      tokenRecord.workflowRevision !== current.revision || event.workflowId !== current.id ||
+      event.expectedStateVersion !== current.revision) {
+    return { handled: true,
+      reply: 'That dining form is out of date. Please ask me to open it again so your latest details are preserved.' };
+  }
+
   const parsed = restaurantRequestFormSchema.safeParse(response);
   if (!parsed.success) {
     return {
@@ -40,9 +62,11 @@ export async function handleMetaRestaurantFlowSubmission(
   }
 
   const form = parsed.data as RestaurantRequestForm;
-  const saved = await getProfileService().saveServiceRequest(message.from, 'restaurant', form);
   const criteria = mapRestaurantRequestFormToCriteria(form);
-  await getRestaurantSearchSessionService().saveAwaitingPreferences(message.from, criteria, {
+  const reconciled = await getConversationControlPlane().reconcileFormSubmission(message.from, 'restaurant',
+    { ...criteria }, { id: current.id, revision: current.revision }, event);
+  const saved = await getProfileService().saveServiceRequest(message.from, 'restaurant', form, token);
+  await sessions.saveAwaitingPreferences(message.from, reconciled.collectedFields, {
     restaurantFormResponseId: saved.id,
   });
   getFormTokenService().consumeToken(token!, 'restaurant');

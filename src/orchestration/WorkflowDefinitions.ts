@@ -20,15 +20,15 @@ const fields: Record<string, z.ZodTypeAny> = {
   interests: z.array(text).max(20),
 };
 export const WORKFLOW_DEFINITIONS = {
-  hotel: { schema: 'search_hotels', required: ['location', 'checkinDate', 'checkoutDate', 'guests'], requestRequired: ['location', 'checkinDate', 'checkoutDate', 'guests', 'rooms'],
+  hotel: { schema: 'search_hotels', required: ['location', 'checkinDate', 'checkoutDate', 'guests'], discoveryRequired: ['location'], providerSearchRequired: ['location'], requestRequired: ['location', 'checkinDate', 'checkoutDate', 'guests', 'rooms'],
     fields: ['location', 'checkinDate', 'checkoutDate', 'guests', 'rooms', 'boardBasis', 'budgetPerNight', 'starRating', 'hotelType', 'facilities', 'bedPreference', 'specialOccasion', 'additionalPreferences'] },
-  restaurant: { schema: 'search_restaurants', required: ['location'], requestRequired: ['location', 'diningDate', 'diningTime', 'guests', 'priceRange'],
+  restaurant: { schema: 'search_restaurants', required: ['location'], discoveryRequired: ['location'], providerSearchRequired: ['location'], requestRequired: ['location', 'diningDate', 'diningTime', 'guests', 'priceRange'],
     fields: ['location', 'diningDate', 'diningTime', 'guests', 'cuisine', 'priceRange', 'diningStyle', 'dietaryRequirements', 'allergies', 'indoorOutdoor', 'specialOccasion', 'seatingPreference', 'additionalPreferences'] },
-  excursion: { schema: 'search_excursions', required: ['destination'], requestRequired: ['destination', 'preferredDate', 'preferredTime', 'guests', 'budget'],
+  excursion: { schema: 'search_excursions', required: ['destination'], discoveryRequired: ['destination'], providerSearchRequired: ['destination'], requestRequired: ['destination', 'preferredDate', 'preferredTime', 'guests', 'budget'],
     fields: ['destination', 'preferredDate', 'preferredTime', 'guests', 'category', 'tourType', 'budget', 'duration', 'fitnessLevel', 'activityType', 'experienceCategory', 'additionalPreferences'] },
-  logistics: { schema: 'search_transport', required: ['pickupLocation', 'destination', 'pickupDate', 'passengers'], requestRequired: ['pickupLocation', 'destination', 'pickupDate', 'pickupTime', 'passengers'],
+  logistics: { schema: 'search_transport', required: ['pickupLocation', 'destination', 'pickupDate', 'passengers'], discoveryRequired: [], providerSearchRequired: ['pickupLocation', 'destination', 'pickupDate', 'pickupTime', 'passengers'], requestRequired: ['pickupLocation', 'destination', 'pickupDate', 'pickupTime', 'passengers'],
     fields: ['pickupLocation', 'destination', 'pickupDate', 'pickupTime', 'passengers', 'vehicleType', 'luggage', 'childSeatsRequired', 'accessibility', 'journeyType', 'preferredProvider', 'specialRequirements', 'flightNumber', 'budget', 'additionalPreferences'] },
-  itinerary: { schema: 'plan_itinerary', required: ['arrivalDate', 'departureDate', 'adults'], requestRequired: ['arrivalDate', 'arrivalTime', 'departureDate', 'departureTime', 'adults', 'budget', 'travelStyle'],
+  itinerary: { schema: 'plan_itinerary', required: ['arrivalDate', 'departureDate', 'adults'], discoveryRequired: [], providerSearchRequired: ['arrivalDate', 'arrivalTime', 'departureDate', 'departureTime', 'adults', 'budget', 'travelStyle'], requestRequired: ['arrivalDate', 'arrivalTime', 'departureDate', 'departureTime', 'adults', 'budget', 'travelStyle'],
     fields: ['arrivalAirport', 'arrivalDate', 'arrivalTime', 'departureAirport', 'departureDate', 'departureTime', 'adults', 'children', 'childAges', 'budget', 'accommodationStyle', 'travelStyle', 'interests', 'preferredTransport', 'walkingPreference', 'specialRequirements', 'additionalPreferences'] },
 } as const;
 export type ServiceFlow = keyof typeof WORKFLOW_DEFINITIONS;
@@ -36,12 +36,23 @@ export const WORKFLOW_SCHEMA_VERSION = '1.0';
 export function workflow(flow: OrchestrationFlow) {
   return flow in WORKFLOW_DEFINITIONS ? WORKFLOW_DEFINITIONS[flow as ServiceFlow] : undefined;
 }
+export type WorkflowActionStage = 'discovery' | 'provider_search' | 'booking' | 'confirmation';
+/** Booking forms and provider confirmations retain their own deterministic validators. */
+export function requiredFieldsForAction(flow: OrchestrationFlow, stage: WorkflowActionStage): readonly string[] {
+  const definition = workflow(flow);
+  if (!definition || stage === 'confirmation') return [];
+  if (stage === 'discovery') return definition.discoveryRequired;
+  if (stage === 'provider_search') return definition.providerSearchRequired;
+  return definition.requestRequired;
+}
 const normalize = (field: string) => field.replace(/[_-]/g, '').toLowerCase();
 export function canonicalField(flow: OrchestrationFlow, field: string): string | undefined {
   const aliases: Record<string, string> = flow === 'logistics'
     ? { dropofflocation: 'destination', date: 'pickupDate', time: 'pickupTime' }
-    : flow === 'hotel' ? { destination: 'location', checkin: 'checkinDate', checkout: 'checkoutDate', mealplan: 'boardBasis' }
-    : flow === 'excursion' ? { location: 'destination' } : flow === 'restaurant' ? { destination: 'location' } : {};
+    : flow === 'hotel' ? { destination: 'location', city: 'location', checkin: 'checkinDate', checkout: 'checkoutDate', mealplan: 'boardBasis' }
+    : flow === 'excursion' ? { location: 'destination', city: 'destination' } : flow === 'restaurant'
+      ? { destination: 'location', city: 'location', occasion: 'specialOccasion',
+          preference: 'additionalPreferences', atmosphere: 'diningStyle' } : {};
   return aliases[normalize(field)] ?? workflow(flow)?.fields.find((key) => normalize(key) === normalize(field));
 }
 export function validateCriteria(flow: OrchestrationFlow, input: Record<string, unknown>, strict = true): Record<string, unknown> {
@@ -73,7 +84,7 @@ export function missingFields(flow: OrchestrationFlow, input: Record<string, unk
 export const decisionOutputSchema = z.object({
   contractVersion: z.literal('2.0').default('2.0'),
   responseText: z.string().trim().max(4096).default(''),
-  intent: z.string().min(1).max(80), parameters: z.record(z.unknown()),
+  intent: z.string().min(1).max(80), parameters: z.record(z.unknown()).default({}),
   intentConfidence: z.number().finite().min(0).max(1).optional(),
   ambiguity: z.object({
     isAmbiguous: z.boolean(), alternatives: z.array(z.string().min(1).max(80)).max(5),
@@ -83,11 +94,11 @@ export const decisionOutputSchema = z.object({
   clarificationQuestion: z.string().trim().min(1).max(500).optional(),
   fieldUpdates: z.record(z.unknown()).default({}),
   memoryCandidates: z.array(memoryCandidateSchema).max(12).default([]),
-  missingFields: z.array(z.string().min(1).max(80)).max(30),
+  missingFields: z.array(z.string().min(1).max(80)).max(30).default([]),
   taskTransition: z.enum(['continue', 'pause', 'resume', 'switch', 'none']).default('none'),
   recommendedSchema: z.string().min(1).max(80).optional(),
   uiRecommendation: z.object({
-    mode: z.enum(['chat_reply', 'clarification', 'clarification_form', 'results_list', 'itinerary_editor', 'confirmation']),
+    mode: z.enum(['chat_reply', 'clarification', 'clarification_form', 'results_list', 'search_editor', 'itinerary_editor', 'confirmation']),
     schemaId: z.string().min(1).max(80).optional(),
   }).strict().optional(),
   proposedAction: z.object({
@@ -97,9 +108,12 @@ export const decisionOutputSchema = z.object({
     arguments: z.object({ schemaId: z.string().min(1).max(80).optional() }).strict().default({}),
   }).strict().optional(),
   unresolvedQuestions: z.array(z.string().trim().min(1).max(500)).max(10).default([]),
-  suggestedAction: z.enum(['ask_missing', 'execute_tool', 'clarify', 'handoff']),
+  suggestedAction: z.enum(['none', 'ask_missing', 'execute_tool', 'clarify', 'handoff']).default('none'),
   confidence: z.number().finite().min(0).max(1), reasoning: z.string().max(1000).optional(),
 }).strict().superRefine((value, context) => {
+  if (/\b(?:i(?:'ve| have)?|we(?:'ve| have)?)\s+(?:already\s+)?(?:booked|reserved|charged|paid|confirmed\s+(?:your|the)\s+(?:booking|reservation|payment))\b|\b(?:your|the)\s+(?:booking|reservation|payment|charge|room|hotel|stay|table|ride)\s+(?:is|was|has been)\s+(?:confirmed|booked|reserved|completed|successful|processed|paid)\b|\b(?:booking|reservation|payment)\s+(?:confirmed|complete|completed|successful)\b/i.test(value.responseText)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['responseText'], message: 'Unverified transaction outcome' });
+  }
   if (value.intentConfidence !== undefined && Math.abs(value.intentConfidence - value.confidence) > 0.001) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['intentConfidence'], message: 'Confidence fields must agree' });
   }

@@ -15,6 +15,28 @@ describe('MetaWhatsAppOutboundService', () => {
     process.env.TRANSCRIPTION_MODEL = 'whisper-large-v3-turbo';
   });
 
+  it('does not send a late text reply after its workflow is invalidated', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { MetaWhatsAppOutboundService } = await import('./MetaWhatsAppOutboundService.js');
+    expect(await new MetaWhatsAppOutboundService().sendWhatsAppReply('whatsapp:+94777269221', 'Old result', {
+      shouldContinue: () => false,
+    })).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('stops a split reply after its workflow changes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    vi.stubGlobal('fetch', fetchMock);
+    const { MetaWhatsAppOutboundService } = await import('./MetaWhatsAppOutboundService.js');
+    const shouldContinue = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+    expect(await new MetaWhatsAppOutboundService().sendWhatsAppReply(
+      'whatsapp:+94777269221', 'A'.repeat(4000), { shouldContinue }
+    )).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('sends image result cards as a Meta carousel with book and details quick replies', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

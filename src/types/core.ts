@@ -55,6 +55,30 @@ export interface InboundMessage {
   metadata?: Record<string, unknown>;
 }
 
+/** Channel-neutral input to the existing conversation control plane. The
+ * payload contains validated application data, never a raw provider webhook. */
+export interface CanonicalConversationEvent {
+  eventId: string;
+  sourceEventId: string;
+  idempotencyKey: string;
+  correlationId: string;
+  userId: string;
+  channel: 'whatsapp_twilio' | 'whatsapp_openwa' | 'whatsapp_meta' | 'website_form' | 'website_ui';
+  eventType: 'text' | 'audio' | 'media' | 'interactive' | 'form_submission' | 'ui_selection' | 'ui_action';
+  occurredAt: Date;
+  receivedAt: Date;
+  conversationId: string;
+  sessionId: string | null;
+  workflowId: string | null;
+  expectedStateVersion: number | null;
+  /** Authoritative revision observed by CORE at ingress. */
+  stateVersion: number | null;
+  /** Optional reference to context; never an identity or workflow authority. */
+  contextId: string | null;
+  payload: Record<string, unknown>;
+  metadata: Record<string, string | number | boolean | null>;
+}
+
 export type MessageContent =
   | TextContent
   | MediaContent
@@ -246,7 +270,7 @@ export interface LLMDecisionOutput {
   taskTransition?: 'continue' | 'pause' | 'resume' | 'switch' | 'none';
   recommendedSchema?: string;
   uiRecommendation?: {
-    mode: 'chat_reply' | 'clarification' | 'clarification_form' | 'results_list' | 'itinerary_editor' | 'confirmation';
+    mode: 'chat_reply' | 'clarification' | 'clarification_form' | 'results_list' | 'search_editor' | 'itinerary_editor' | 'confirmation';
     schemaId?: string;
   };
   proposedAction?: {
@@ -254,7 +278,7 @@ export interface LLMDecisionOutput {
     arguments: Record<string, unknown>;
   };
   unresolvedQuestions?: string[];
-  suggestedAction: 'ask_missing' | 'execute_tool' | 'clarify' | 'handoff';
+  suggestedAction: 'none' | 'ask_missing' | 'execute_tool' | 'clarify' | 'handoff';
   confidence: number;
   reasoning?: string;
 }

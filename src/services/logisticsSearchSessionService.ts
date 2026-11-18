@@ -1,10 +1,11 @@
-import { validateCriteria, canonicalField } from '../orchestration/WorkflowDefinitions.js';
+import { validateCriteria, canonicalField, WORKFLOW_SCHEMA_VERSION } from '../orchestration/WorkflowDefinitions.js';
 import { PersistenceError } from '../storage/Persistence.js';
 import crypto from 'node:crypto';
-import type { BasicProfileForm } from '../types/forms.js';
+import type { BasicProfileForm, LogisticsBookingForm } from '../types/forms.js';
 import { getStateStore, type StateStore } from './StateStore.js';
 import { defaultSearchFlowEngine } from './SearchFlowEngine.js';
-import type { LogisticsBookingRequest, LogisticsSearchCriteria } from './logisticsRequestMapper.js';
+import { logisticsBookingFormSchema } from '../validation/formSchemas.js';
+import { mapLogisticsBookingFormToRequest, type LogisticsBookingRequest, type LogisticsSearchCriteria } from './logisticsRequestMapper.js';
 import { logInfrastructureFallback } from './InfrastructureLog.js';
 import type { TransportOption } from './TransportProvider.js';
 import {
@@ -41,6 +42,7 @@ export interface SelectedTransportOption {
 }
 
 export interface LogisticsSearchSession {
+  schemaVersion?: string;
   lifecycleStatus?: 'active' | 'paused';
   revision?: number;
   resultsRetrievedAt?: string;
@@ -226,10 +228,21 @@ export class LogisticsSearchSessionService {
     });
   }
 
+  async submitBookingForm(userId: string, form: LogisticsBookingForm): Promise<void> {
+    const validatedForm = logisticsBookingFormSchema.parse(form);
+    const session = await this.get(userId);
+    if (!session?.selectedOption || session.stage !== 'booking_form' || session.lifecycleStatus === 'paused') {
+      throw new PersistenceError('conflict');
+    }
+    const bookingRequest = mapLogisticsBookingFormToRequest(
+      session.selectedOption.selectedOptionSnapshot, session.criteria, validatedForm);
+    await this.save({ ...session, bookingRequest,
+      state: 'provider_pending', stage: 'provider_pending', updatedAt: new Date().toISOString() });
+  }
+
   async getAuthoritative(userId: string): Promise<LogisticsSearchSession | null> {
     try {
-      const session = await this.repository.findLatestActiveByUserId(userId);
-      return session && Date.parse(session.expiresAt) <= Date.now() ? null : session;
+      return await this.repository.findLatestActiveByUserId(userId);
     }
     catch { throw new PersistenceError(); }
   }
@@ -241,19 +254,31 @@ export class LogisticsSearchSessionService {
     const criteria = { ...current.criteria, ...patch };
     validateCriteria('logistics', Object.fromEntries(Object.entries(criteria).filter(([key]) => canonicalField('logistics', key))));
     if (Object.entries(patch).every(([key, value]) => JSON.stringify(current.criteria[key as keyof typeof current.criteria]) === JSON.stringify(value))) return { status: 'durable' };
-    await this.save({ ...current, criteria, normalizedCriteria: criteria, results: [], resultBatches: [], nextOffset: 0, latestDisplayedBatchIndex: -1, state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
+    await this.save({ ...current, criteria, normalizedCriteria: criteria, state: 'awaiting_preferences', stage: 'awaiting_preferences', updatedAt: new Date().toISOString() });
     return { status: 'durable' };
   }
 
   async get(userId: string): Promise<LogisticsSearchSession | null> {
     const redisSession = await this.store.getJson<LogisticsSearchSession>(this.getKey(userId));
-    if (redisSession) return normalizeSession(redisSession);
+    if (redisSession) {
+      const cached = normalizeSession(redisSession);
+      const durable = await this.findDurableSession(userId).catch(() => undefined);
+      if (durable === undefined) return cached;
+      if (durable === null) {
+        await this.store.deleteKey(this.getKey(userId)).catch(() => false);
+        return null;
+      }
+      if (durable.id === cached.id && (durable.revision ?? 0) === (cached.revision ?? 0)) return cached;
+      const refreshed = normalizeSession(durable);
+      await this.store.setJson(this.getKey(userId), refreshed, LOGISTICS_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
+      return refreshed;
+    }
 
     const durableSession = await this.findDurableSession(userId);
     if (!durableSession) return null;
 
     const normalized = normalizeSession(durableSession);
-    await this.store.setJson(this.getKey(userId), normalized, LOGISTICS_SEARCH_SESSION_TTL_SECONDS);
+    await this.store.setJson(this.getKey(userId), normalized, LOGISTICS_SEARCH_SESSION_TTL_SECONDS).catch(() => undefined);
     return normalized;
   }
 
@@ -300,6 +325,7 @@ export class LogisticsSearchSessionService {
     existing?: LogisticsSearchSession | null
   ): LogisticsSearchSession {
     return {
+      schemaVersion: existing?.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
       id: existing?.id ?? crypto.randomUUID(),
       lifecycleStatus: existing?.lifecycleStatus ?? 'active',
       revision: existing?.revision ?? 0,
@@ -350,6 +376,7 @@ export function getLogisticsSearchSessionService(): LogisticsSearchSessionServic
 function normalizeSession(session: LogisticsSearchSession): LogisticsSearchSession {
   return {
     ...session,
+    schemaVersion: session.schemaVersion ?? WORKFLOW_SCHEMA_VERSION,
     normalizedCriteria: session.normalizedCriteria ?? {},
     criteria: session.criteria ?? {},
     resultBatches: session.resultBatches ?? [],

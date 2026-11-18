@@ -66,6 +66,7 @@ export interface OrchestrationSessionSnapshot {
   schemaVersion?: string;
   itinerary?: import('../services/ItineraryPlannerService.js').GeneratedItinerary;
   verifiedResults?: { source: string; retrievedAt: string; items: Array<{ resultId: string; position: number; name: string; rating?: number }> };
+  pendingDecisions?: { locationConfirmation?: string; sourcingConsent?: boolean; humanHandoffConsent?: boolean };
   flow: OrchestrationFlow;
   state?: string;
   activeSchema?: string;
@@ -78,6 +79,9 @@ export interface OrchestrationSessionSnapshot {
 
 export interface OrchestrationContext {
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  conversationTopic?: string;
+  pendingQuestion?: { text: string; expectedAnswerType?: string; workflowId?: string };
+  pendingClarification?: string;
   historyStatus?: 'available' | 'empty' | 'unavailable';
   userId: string;
   message: OrchestrationMessage;
@@ -92,6 +96,7 @@ export interface OrchestrationContext {
     form: unknown;
     createdAt: Date;
   }>;
+  uiWorkspace?: { workflowId?: string; selectedDay: number; revision: number };
   metadata: Record<string, unknown>;
 }
 
@@ -108,7 +113,7 @@ export interface ConversationAnalysis {
 }
 
 export interface LLMInterpretation {
-  suggestedAction?: 'ask_missing' | 'execute_tool' | 'clarify' | 'handoff';
+  suggestedAction?: 'none' | 'ask_missing' | 'execute_tool' | 'clarify' | 'handoff';
   role: ConversationRole;
   intent: OrchestrationIntent;
   entities: Record<string, unknown>;
@@ -120,7 +125,7 @@ export interface LLMInterpretation {
   taskTransition?: 'continue' | 'pause' | 'resume' | 'switch' | 'none';
   recommendedSchema?: string;
   uiRecommendation?: {
-    mode: 'chat_reply' | 'clarification' | 'clarification_form' | 'results_list' | 'itinerary_editor' | 'confirmation';
+    mode: 'chat_reply' | 'clarification' | 'clarification_form' | 'results_list' | 'search_editor' | 'itinerary_editor' | 'confirmation';
     schemaId?: string;
   };
   proposedAction?: { name: 'none' | 'search' | 'open_form' | 'handoff'; arguments: Record<string, unknown> };
@@ -204,6 +209,11 @@ export class Orchestrator {
       analysis,
       interpretation,
     });
+    if (interpretation) {
+      const responseText = this.promptService.reconcileDecisionResponse(decision, interpretation);
+      interpretation = { ...interpretation, responseText,
+        question: decision.action === 'ask_clarifying_question' ? responseText : interpretation.question };
+    }
     const memoryUpdate = this.memoryUpdater.prepareUpdate(context, decision, interpretation?.memoryCandidates);
 
     const result: OrchestrationResult = {

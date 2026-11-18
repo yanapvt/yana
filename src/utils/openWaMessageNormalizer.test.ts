@@ -7,6 +7,13 @@ import {
 } from './openWaMessageNormalizer.js';
 
 describe('OpenWA message normalizer', () => {
+  it('keeps button and list selections as interactive events', () => {
+    const base = { from: '94777269221@c.us', body: 'Second option' };
+    expect(normalizeOpenWaInboundMessage({ data: { ...base, id: 'button-1', type: 'buttons_response', selectedButtonId: 'details 2' } }).content)
+      .toEqual({ type: 'interactive', interactionType: 'button_reply', selectedId: 'details 2', selectedTitle: 'Second option' });
+    expect(normalizeOpenWaInboundMessage({ data: { ...base, id: 'list-1', type: 'list_response', selectedRowId: 'book 2' } }).content)
+      .toEqual({ type: 'interactive', interactionType: 'list_reply', selectedId: 'book 2', selectedTitle: 'Second option' });
+  });
   it('normalizes an OpenWA text webhook into Yana inbound format', () => {
     const payload: OpenWaWebhookPayload = {
       event: 'message.received',

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { getStateStore, type StateStore } from './StateStore.js';
 import type { GeneratedItinerary } from './ItineraryPlannerService.js';
 import type { ItineraryCriteria } from './itineraryRequestMapper.js';
+import { getItineraryPlannerService } from './ItineraryPlannerService.js';
 import { getItinerarySessionService, type ItinerarySessionService } from './itinerarySessionService.js';
 
 export interface ItineraryWorkspace {
@@ -31,6 +32,32 @@ const WORKSPACE_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 export class ItineraryWorkspaceService {
   constructor(private readonly store: StateStore = getStateStore(), private readonly sessions: ItinerarySessionService = getItinerarySessionService()) {}
+
+  async generateFromSubmittedForm(
+    userId: string,
+    criteria: ItineraryCriteria,
+    formResponseId: string
+  ): Promise<{ itinerary: GeneratedItinerary; workspace: ItineraryWorkspace }> {
+    await this.sessions.saveAwaitingPreferences(userId, criteria, { itineraryFormResponseId: formResponseId });
+    await this.sessions.savePlanning(userId, criteria);
+    const itinerary = await getItineraryPlannerService().plan(criteria);
+    await this.sessions.saveItinerary(userId, criteria, itinerary);
+    const workspace = await this.createOrUpdateWorkspace(userId, itinerary, criteria,
+      'Generated after trip form submission');
+    return { itinerary, workspace };
+  }
+
+  /** A bounded, token-free view of the current UI selection for conversation context. */
+  async getCurrentSelection(userId: string): Promise<{
+    workflowId?: string; selectedDay: number; revision: number;
+  } | null> {
+    const token = await this.store.getJson<string>(this.userKey(userId)).catch(() => null);
+    if (!token) return null;
+    const workspace = await this.getWorkspace(token);
+    if (!workspace || workspace.userId !== userId) return null;
+    return { workflowId: workspace.tripId, selectedDay: workspace.selectedDay,
+      revision: workspace.currentVersion };
+  }
 
   async createWorkspace(
     userId: string,
@@ -65,8 +92,8 @@ export class ItineraryWorkspaceService {
     workspace.tripId = session.id;
     workspace.itinerary = session.itinerary!;
     workspace.versions[0].version = workspace.currentVersion;
-    await this.save(workspace);
-    await this.store.setJson(this.userKey(userId), workspace.shareToken, WORKSPACE_TTL_SECONDS);
+    await this.save(workspace).catch(() => undefined);
+    await this.store.setJson(this.userKey(userId), workspace.shareToken, WORKSPACE_TTL_SECONDS).catch(() => undefined);
     return workspace;
   }
 
@@ -76,7 +103,7 @@ export class ItineraryWorkspaceService {
     criteria: ItineraryCriteria,
     note = 'Itinerary updated'
   ): Promise<ItineraryWorkspace> {
-    const existingToken = await this.store.getJson<string>(this.userKey(userId));
+    const existingToken = await this.store.getJson<string>(this.userKey(userId)).catch(() => null);
     const existing = existingToken ? await this.getWorkspace(existingToken) : null;
     if (!existing) {
       return this.createWorkspace(userId, itinerary, criteria);
@@ -106,14 +133,14 @@ export class ItineraryWorkspaceService {
       updatedAt: now,
     };
 
-    await this.save(workspace);
+    await this.save(workspace).catch(() => undefined);
     return workspace;
   }
 
   async getWorkspace(shareToken: string): Promise<ItineraryWorkspace | null> {
     const session = await this.sessions.getByWorkspaceToken(shareToken);
     if (!session?.itinerary) return null;
-    const cached = await this.store.getJson<ItineraryWorkspace>(this.workspaceKey(shareToken));
+    const cached = await this.store.getJson<ItineraryWorkspace>(this.workspaceKey(shareToken)).catch(() => null);
     const now = new Date().toISOString();
     const workspace: ItineraryWorkspace = {
       shareToken, userId: session.whatsappUserId, tripId: session.id, itinerary: session.itinerary,
@@ -121,8 +148,8 @@ export class ItineraryWorkspaceService {
       expandedDays: cached?.expandedDays ?? [1], pendingChanges: [], currentVersion: session.revision ?? 0,
       versions: cached?.versions ?? [], lastSave: session.updatedAt, createdAt: session.createdAt, updatedAt: now,
     };
-    await this.save(workspace);
-    await this.store.setJson(this.userKey(workspace.userId), shareToken, WORKSPACE_TTL_SECONDS);
+    await this.save(workspace).catch(() => undefined);
+    await this.store.setJson(this.userKey(workspace.userId), shareToken, WORKSPACE_TTL_SECONDS).catch(() => undefined);
     return workspace;
   }
 

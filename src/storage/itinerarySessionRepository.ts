@@ -1,5 +1,6 @@
 import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
+import { appendWorkflowTransition } from './WorkflowTransitionAudit.js';
 import type { ItinerarySession } from '../services/itinerarySessionService.js';
 
 const ITINERARY_SESSIONS_KEY = 'yanaItinerarySessions';
@@ -77,6 +78,7 @@ export class PostgresItinerarySessionRepository implements ItinerarySessionRepos
           }),
         ]
       );
+      await appendWorkflowTransition(client, 'itinerary', session);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');

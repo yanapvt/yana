@@ -1,10 +1,17 @@
 import { Router, type Request, type Response } from 'express';
+import { createHash } from 'node:crypto';
+import { assignCorrelationId } from '../middleware/correlationId.js';
+import { getConversationControlPlane } from '../orchestration/ConversationControlPlane.js';
+import { getCanonicalMessageProcessor } from '../services/CanonicalMessageProcessor.js';
+import { createWebsiteConversationEvent } from '../orchestration/CanonicalConversationEvent.js';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
-import { ItineraryEditService, resolveItineraryEdit } from '../services/ItineraryEditService.js';
+import { ItineraryEditService, itineraryEditSchema, resolveItineraryEdit } from '../services/ItineraryEditService.js';
 import { getItinerarySessionService } from '../services/itinerarySessionService.js';
 import { getFormTokenService } from '../services/formTokenService.js';
 import { validateSemanticUI, renderWebsiteDecision } from '../orchestration/SemanticUI.js';
 import { PersistenceError } from '../storage/Persistence.js';
+import { withWorkflowLock } from '../services/WorkflowLockService.js';
+import type { CanonicalConversationEvent, InboundMessage } from '../types/core.js';
 import type {
   DailyItineraryPlan,
   GeneratedItinerary,
@@ -21,9 +28,10 @@ router.get('/itinerary/:shareToken', async (req: Request, res: Response, next) =
   }
 
   const formToken = getFormTokenService().createToken(workspace.userId, 'itinerary');
+  getFormTokenService().bindRevision(formToken, 'itinerary', workspace.currentVersion, workspace.tripId);
   const csrf = getFormTokenService().createCsrfToken(formToken, 'itinerary')!;
   renderWebsiteDecision({ version: '1.0', mode: 'itinerary_editor', workflow: 'itinerary', schemaId: 'plan_itinerary', schemaVersion: '1.0',
-    values: {}, missingFields: [], actions: ['edit_itinerary'], correlationId: workspace.tripId!, expectedRevision: workspace.currentVersion, text: '' });
+    values: {}, missingFields: [], actions: ['select_day', 'edit_itinerary'], correlationId: workspace.tripId!, expectedRevision: workspace.currentVersion, text: '' });
   res
     .status(200)
     .type('html')
@@ -32,37 +40,77 @@ router.get('/itinerary/:shareToken', async (req: Request, res: Response, next) =
   } catch (error) { next(error); }
 });
 
-router.post(['/itinerary/:shareToken/state', '/itinerary/:shareToken/edit'], async (req: Request, res: Response) => { try {
-  const selectedDay = Number(req.body?.selectedDay);
-  const pendingChange = typeof req.body?.pendingChange === 'string' ? req.body.pendingChange : '';
-  const workspace = await getItineraryWorkspaceService().getWorkspace(req.params.shareToken);
-  if (!workspace) {
+router.post(['/itinerary/:shareToken/state', '/itinerary/:shareToken/edit'], assignCorrelationId, async (req: Request, res: Response) => { try {
+  const ownerWorkspace = await getItineraryWorkspaceService().getWorkspace(req.params.shareToken);
+  if (!ownerWorkspace) {
     res.status(404).json({ error: 'Workspace unavailable' });
     return;
   }
+  await withWorkflowLock(ownerWorkspace.userId, async () => {
+  const workspace = await getItineraryWorkspaceService().getWorkspace(req.params.shareToken);
+  if (!workspace || workspace.userId !== ownerWorkspace.userId) throw new PersistenceError('conflict');
+  const selectedDay = Number(req.body?.selectedDay);
+  const pendingChange = typeof req.body?.pendingChange === 'string' ? req.body.pendingChange.trim() : '';
 
   const tokens = getFormTokenService();
   const token = String(req.body?._formToken ?? '');
-  if (tokens.resolveToken(token, 'itinerary')?.userId !== workspace.userId ||
+  const tokenRecord = tokens.resolveToken(token, 'itinerary');
+  if (tokenRecord?.userId !== workspace.userId ||
+      tokenRecord.workflowId !== workspace.tripId ||
       !tokens.verifyAndConsumeCsrfToken(token, 'itinerary', String(req.body?._csrf ?? ''))) {
     res.status(403).json({ error: 'Reload this page before submitting a change.' }); return;
   }
+  if (tokenRecord.workflowRevision !== workspace.currentVersion) throw new PersistenceError('conflict');
   validateSemanticUI({ version: '1.0', mode: 'itinerary_editor', workflow: 'itinerary', schemaId: 'plan_itinerary', schemaVersion: '1.0',
-    values: {}, missingFields: [], actions: ['edit_itinerary'], correlationId: workspace.tripId!, expectedRevision: req.body.expectedRevision, text: '' }, workspace.currentVersion);
+    values: {}, missingFields: [], actions: [pendingChange || req.body.command ? 'edit_itinerary' : 'select_day'],
+    correlationId: workspace.tripId!, expectedRevision: req.body.expectedRevision, text: '' }, workspace.currentVersion);
+  const processAction = <T>(eventType: 'ui_selection' | 'ui_action', payload: Record<string, unknown>,
+    handle: (event: CanonicalConversationEvent) => Promise<T>) =>
+    getCanonicalMessageProcessor().process(createWebsiteConversationEvent({
+      sourceEventId: createHash('sha256').update(JSON.stringify({
+        token, csrf: req.body?._csrf, eventType, expectedRevision: workspace.currentVersion, payload,
+      })).digest('hex'),
+      correlationId: req.headers['x-correlation-id'] as string,
+      userId: workspace.userId, channel: 'website_ui', eventType,
+      workflowId: workspace.tripId, expectedStateVersion: workspace.currentVersion,
+      payload,
+    }), handle, { alreadyLocked: true });
   if (pendingChange || req.body.command) {
     const session = await getItinerarySessionService().getAuthoritative(workspace.userId);
     const command = req.body.command ?? (session && resolveItineraryEdit(pendingChange,
       { ...session, currentDay: Number.isInteger(selectedDay) && selectedDay >= 1 && selectedDay <= workspace.itinerary.days.length ? selectedDay : workspace.selectedDay }));
-    if (!command) { res.status(400).json({ error: 'Specify the day, morning/afternoon/evening/hotel/transport, and replacement text.' }); return; }
+    if (!command) {
+      if (!pendingChange || pendingChange.length > 500) {
+        res.status(400).json({ error: 'Describe the itinerary change in 500 characters or fewer.' }); return;
+      }
+      await processAction('ui_action', { action: 'edit_itinerary', pendingChange }, async (event) => {
+      let clarification = 'Specify the day, morning/afternoon/evening/hotel/transport, and replacement text.';
+      try {
+        const inboundMessage: InboundMessage = { messageId: event.sourceEventId, from: event.userId,
+          to: 'website:itinerary', timestamp: event.occurredAt, type: 'text', inputType: 'text',
+          content: { type: 'text', body: pendingChange } };
+        const plan = await getConversationControlPlane().interpret({ event, inboundMessage,
+          text: pendingChange, correlationId: event.correlationId, profileComplete: true });
+        clarification = plan.interpretation?.question ?? plan.interpretation?.responseText ?? clarification;
+      } catch { /* Keep the validated workflow and ask a deterministic clarification. */ }
+      res.status(400).json({ error: clarification });
+      });
+      return;
+    }
     if (command.tripId !== workspace.tripId || command.expectedRevision !== workspace.currentVersion) throw new PersistenceError('conflict');
-    const changed = await new ItineraryEditService().apply(workspace.userId, command);
+    const validatedCommand = itineraryEditSchema.parse(command);
+    await processAction('ui_action', { action: 'edit_itinerary', command: validatedCommand }, async () => {
+    const changed = await new ItineraryEditService().apply(workspace.userId, validatedCommand);
     const updated = await getItineraryWorkspaceService().createOrUpdateWorkspace(workspace.userId, changed.itinerary!, changed.criteria, 'Edited from website');
-    res.json({ ok: true, currentVersion: updated.currentVersion, selectedDay: updated.selectedDay, pendingChanges: [], lastSave: updated.lastSave }); return;
+    res.json({ ok: true, currentVersion: updated.currentVersion, selectedDay: updated.selectedDay, pendingChanges: [], lastSave: updated.lastSave });
+    });
+    return;
   }
   if (!Number.isInteger(selectedDay) || selectedDay < 1 || selectedDay > workspace.itinerary.days.length) {
     res.status(400).json({ error: 'Choose an existing itinerary day.' }); return;
   }
 
+  await processAction('ui_selection', { action: 'select_day', selectedDay }, async () => {
   const updated = await getItineraryWorkspaceService().updateWorkspaceState(req.params.shareToken, {
     selectedDay: Number.isFinite(selectedDay) && selectedDay > 0 ? selectedDay : workspace.selectedDay,
     pendingChanges: pendingChange
@@ -76,6 +124,8 @@ router.post(['/itinerary/:shareToken/state', '/itinerary/:shareToken/edit'], asy
     pendingChanges: updated?.pendingChanges ?? [],
     currentVersion: updated?.currentVersion,
     lastSave: updated?.lastSave,
+  });
+  });
   });
   } catch (error) {
     const conflict = error instanceof PersistenceError && error.status === 'conflict' || error instanceof Error && error.message === 'Stale UI revision';
@@ -235,7 +285,7 @@ function renderWorkspacePage(
         body: JSON.stringify({ pendingChange: requested, selectedDay: ${workspace.selectedDay}, expectedRevision: ${workspace.currentVersion}, _formToken: ${JSON.stringify(formToken)}, _csrf: ${JSON.stringify(csrf)} })
       });
       document.body.dataset.updating = 'false';
-      if (!response.ok) { const result = await response.json(); alert(result.error || 'The edit was not saved.'); return; }
+      if (!response.ok) { const result = await response.json(); alert(result.error || 'The edit was not saved.'); location.reload(); return; }
       location.reload();
     }
 

@@ -1,5 +1,6 @@
 import { assertExpectedRevision, PersistenceError } from './Persistence.js';
 import { pool } from '../db/connection.js';
+import { appendWorkflowTransition } from './WorkflowTransitionAudit.js';
 import type { LogisticsSearchSession } from '../services/logisticsSearchSessionService.js';
 
 const LOGISTICS_SESSIONS_KEY = 'yanaLogisticsSearchSessions';
@@ -68,6 +69,7 @@ export class PostgresLogisticsSearchSessionRepository
           }),
         ]
       );
+      await appendWorkflowTransition(client, 'logistics', session);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
