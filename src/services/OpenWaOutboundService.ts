@@ -30,13 +30,14 @@ export class OpenWaOutboundService {
   private async sendGuardedText(
     to: string, body: string, shouldContinue?: () => boolean | Promise<boolean>
   ): Promise<boolean> {
-    let sentAny = false;
-    for (const part of splitWhatsAppText(body, OPENWA_TEXT_LIMIT)) {
-      if (shouldContinue && !(await shouldContinue())) break;
+    const parts = splitWhatsAppText(body, OPENWA_TEXT_LIMIT);
+    if (!parts.length) return false;
+    for (const part of parts) {
+      if (shouldContinue && !(await shouldContinue())) return false;
       const sent = await this.sendTextMessage(to, part);
-      sentAny = sentAny || sent;
+      if (!sent) return false;
     }
-    return sentAny;
+    return true;
   }
 
   async sendWhatsAppMessages(

@@ -1,0 +1,9 @@
+# Stage 1 memory and outbound question policy
+
+Conversation details remain in conversation history and workflow state. Model-proposed traveller facts are stored as `proposed` in `traveller_memories`, with their source message and trip context. They are excluded from confirmed memory supplied to the model. An exact, separate `remember key: value` response (or `remember it` when one candidate is pending) is required to confirm one fact. Booking, payment and general yes responses do not confirm memory. A declined candidate remains rejected. Authenticated profile forms retain their separate validation path.
+
+WhatsApp questions are stored as `attempted` in the accepted-event checkpoint. They become active pending questions when the outbound adapter reports provider acceptance. `sent` and `delivered` strengthen that observation. A `failed` status removes the question if it is still the active question. Duplicate or older status callbacks cannot regress a terminal state. A fast reply matching the staged question may be interpreted before a callback arrives, because the reply itself is evidence that the question reached the traveller.
+
+Provider acceptance means that OpenWA, Twilio or Meta accepted the send request. It is not proof of handset delivery. Meta status callbacks can later mark `sent`, `delivered` or `failed`. The current OpenWA adapter returns a send result but no handset delivery receipt; Twilio's TwiML fallback likewise cannot prove handset delivery here. Live provider testing is required before treating either path as a delivery guarantee.
+
+Migration `031_journey_outbound_question.sql` adds the outbound question JSONB projection to the existing durable checkpoint. It is registered for migration validation and has been applied only to the isolated `yana_phase8_test` database during development. It has not been applied to `yana_ogo`.

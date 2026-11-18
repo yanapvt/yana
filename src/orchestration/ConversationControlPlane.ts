@@ -12,6 +12,7 @@ import { missingFields, validateCriteria, workflow } from './WorkflowDefinitions
 import { PostgresTravellerMemoryRepository } from '../storage/travellerMemoryRepository.js';
 import { validateCanonicalConversationEvent } from './CanonicalConversationEvent.js';
 import { JourneyEventCheckpointService } from '../services/JourneyEventCheckpointService.js';
+import { ConversationContinuationService } from '../services/ConversationContinuationService.js';
 import type { JourneyEventCheckpoint } from '../storage/JourneyEventCheckpointRepository.js';
 import { getItineraryWorkspaceService } from '../services/ItineraryWorkspaceService.js';
 import { getHotelSearchSessionService } from '../services/hotelSearchSessionService.js';
@@ -32,6 +33,7 @@ export interface ConversationControlInput {
 
 export interface ConversationControlPlaneDependencies {
   checkpoints?: JourneyEventCheckpointService;
+  continuation?: ConversationContinuationService;
   contextBuilder?: ContextBuilder;
   stateLoader?: ActiveConversationStateLoader;
   orchestrator?: Orchestrator;
@@ -49,9 +51,11 @@ export class ConversationControlPlane {
   private readonly orchestrator: Orchestrator;
   private readonly interpretingOrchestrator: Orchestrator;
   private readonly checkpoints: JourneyEventCheckpointService;
+  private readonly continuation: ConversationContinuationService;
 
   constructor(dependencies: ConversationControlPlaneDependencies = {}) {
     this.checkpoints = dependencies.checkpoints ?? new JourneyEventCheckpointService();
+    this.continuation = dependencies.continuation ?? new ConversationContinuationService();
     this.contextBuilder = dependencies.contextBuilder ?? new ContextBuilder(undefined, new PostgresTravellerMemoryRepository());
     this.stateLoader = dependencies.stateLoader ?? new ActiveConversationStateLoader();
     this.orchestrator = dependencies.orchestrator ?? new Orchestrator();
@@ -116,6 +120,26 @@ export class ConversationControlPlane {
     return this.runPlan(input, this.interpretingOrchestrator);
   }
 
+  async recordContinuation(event: CanonicalConversationEvent, result: OrchestrationResult | undefined,
+    reply: string, modelFailure = false): Promise<void> {
+    const state = await this.stateLoader.loadWithPaused(event.userId);
+    await this.continuation.record(event, result, { ...state, reply }, modelFailure);
+  }
+
+  async recordOutboundQuestion(event: CanonicalConversationEvent,
+    status: 'provider_accepted' | 'sent' | 'delivered' | 'failed', providerMessageId?: string): Promise<void> {
+    await this.continuation.recordOutbound(event, status, providerMessageId);
+  }
+
+  async recordProviderMessageStatus(providerMessageId: string,
+    status: 'sent' | 'delivered' | 'failed'): Promise<void> {
+    await this.continuation.recordProviderStatus(providerMessageId, status);
+  }
+
+  async resetContinuation(event: CanonicalConversationEvent): Promise<void> {
+    await this.continuation.reset(event);
+  }
+
   /** Deterministic CORE reconciliation for a validated form submission. */
   async reconcileFormSubmission(
     userId: string,
@@ -168,6 +192,7 @@ export class ConversationControlPlane {
     if (input.profileComplete && input.profile === null) throw new LLMServiceError('Saved profile context is unavailable', 'CONTEXT_UNAVAILABLE', true);
     const { activeSession, pausedSessions } = await this.stateLoader.loadWithPaused(input.inboundMessage.from);
     const history = await this.contextBuilder.loadHistory(input.inboundMessage.from);
+    const continuation = input.event ? await this.continuation.load(input.event) : undefined;
     const memory = await this.contextBuilder.loadMemories(input.inboundMessage.from, [
       'trip:current', activeSession?.id ? `task:${activeSession.id}` : '',
     ].filter(Boolean));
@@ -181,6 +206,7 @@ export class ConversationControlPlane {
     return orchestrator.plan({
       ...history,
       ...memory,
+      continuation,
       inboundMessage: input.inboundMessage,
       text: input.text,
       profileComplete: input.profileComplete,

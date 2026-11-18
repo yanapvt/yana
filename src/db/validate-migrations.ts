@@ -137,6 +137,8 @@ async function validateMigrations(): Promise<void> {
     '027_journey_event_checkpoints.sql',
     '028_journey_inbound_event_audit.sql',
     '029_journey_workflow_transitions.sql',
+    '030_journey_conversation_continuation.sql',
+    '031_journey_outbound_question.sql',
   ];
 
   let allContent = '';

@@ -3,6 +3,15 @@ import { PromptService, PROACTIVE_CONCIERGE_POLICY } from './PromptService.js';
 import type { ConversationAnalysis, OrchestrationContext } from './Orchestrator.js';
 
 describe('PromptService', () => {
+  it('returns the backend service choice even when the model insists on another field question', () => {
+    const reply = new PromptService().reconcileDecisionResponse(
+      { action: 'ask_clarifying_question', intent: 'excursion_search', targetFlow: 'excursion',
+        confidence: 0.95, entities: {}, missingFields: [],
+        reason: 'Confirm whether to switch from excursion to hotel.' },
+      { role: 'new_intent', intent: 'hotel_search', confidence: 0.95, entities: {},
+        clarificationRequired: true, question: 'Which hotel area?', responseText: 'Which hotel area?' });
+    expect(reply).toBe('Would you like to continue your current request or switch to the new one?');
+  });
   it('keeps action arguments separate from conversational field candidates', () => {
     const prompt = new PromptService().buildSystemPrompt('decision');
     expect(prompt).toContain('arguments may contain only schemaId');

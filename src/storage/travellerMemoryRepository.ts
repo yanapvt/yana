@@ -6,9 +6,9 @@ import { isSensitiveMemory } from '../orchestration/TravellerMemory.js';
 export interface TravellerMemoryRepository {
   findForContext(userId: string, contextIds?: string[]): Promise<TravellerMemoryFact[]>;
   saveCandidates(userId: string, sourceMessageId: string, candidates: MemoryCandidate[], contextId?: string): Promise<TravellerMemoryFact[]>;
-  confirmPending(userId: string): Promise<number>;
+  confirmPending(userId: string, key?: MemoryCandidate['key'], value?: string): Promise<number>;
   rejectPending(userId: string): Promise<number>;
-  forget(userId: string, key?: string): Promise<number>;
+  forget(userId: string, key?: string, value?: string): Promise<number>;
 }
 
 export class InMemoryTravellerMemoryRepository implements TravellerMemoryRepository {
@@ -25,18 +25,21 @@ export class InMemoryTravellerMemoryRepository implements TravellerMemoryReposit
       const existing = this.facts.find((fact) => fact.userId === userId && fact.sourceMessageId === sourceMessageId &&
         fact.scope === candidate.scope && fact.key === candidate.key && fact.value === candidate.value);
       if (existing) { saved.push(existing); continue; }
-      this.facts.filter((fact) => fact.userId === userId && fact.scope === candidate.scope && fact.contextId === scopedId && fact.key === candidate.key && fact.status === 'confirmed')
-        .forEach((fact) => { fact.status = 'superseded'; fact.updatedAt = now; });
       const fact: TravellerMemoryFact = { ...candidate, id: crypto.randomUUID(), userId, contextId: scopedId,
-        status: candidate.requiresConfirmation ? 'proposed' : 'confirmed', sensitive: isSensitiveMemory(candidate.key), sourceMessageId,
+        status: 'proposed', sensitive: isSensitiveMemory(candidate.key), sourceMessageId,
         createdAt: now, updatedAt: now, expiresAt: memoryExpiry(candidate.key) ?? undefined };
       this.facts.push(fact); saved.push(fact);
     }
     return structuredClone(saved);
   }
-  async confirmPending(userId: string): Promise<number> {
+  async confirmPending(userId: string, key?: MemoryCandidate['key'], value?: string): Promise<number> {
+    if (!key || !value) return 0;
     let count = 0;
-    this.facts.forEach((fact) => { if (fact.userId === userId && fact.status === 'proposed') { fact.status = 'confirmed'; fact.updatedAt = new Date().toISOString(); count++; } });
+    this.facts.forEach((fact) => { if (fact.userId === userId && fact.status === 'proposed' && fact.key === key && fact.value === value) {
+      this.facts.filter((previous) => previous.userId === userId && previous.status === 'confirmed' &&
+        previous.scope === fact.scope && previous.contextId === fact.contextId && previous.key === fact.key)
+        .forEach((previous) => { previous.status = 'superseded'; });
+      fact.status = 'confirmed'; fact.updatedAt = new Date().toISOString(); count++; } });
     return count;
   }
   async rejectPending(userId: string): Promise<number> {
@@ -44,9 +47,9 @@ export class InMemoryTravellerMemoryRepository implements TravellerMemoryReposit
     this.facts.forEach((fact) => { if (fact.userId === userId && fact.status === 'proposed') { fact.status = 'rejected'; fact.updatedAt = new Date().toISOString(); count++; } });
     return count;
   }
-  async forget(userId: string, key?: string): Promise<number> {
+  async forget(userId: string, key?: string, value?: string): Promise<number> {
     let count = 0;
-    this.facts.forEach((fact) => { if (fact.userId === userId && (!key || fact.key === key) && ['confirmed', 'proposed'].includes(fact.status)) { fact.status = 'rejected'; fact.updatedAt = new Date().toISOString(); count++; } });
+    this.facts.forEach((fact) => { if (fact.userId === userId && (!key || fact.key === key) && (!value || fact.value === value) && ['confirmed', 'proposed'].includes(fact.status)) { fact.status = 'rejected'; fact.updatedAt = new Date().toISOString(); count++; } });
     return count;
   }
   clear(): void { this.facts = []; }
@@ -79,33 +82,49 @@ export class PostgresTravellerMemoryRepository implements TravellerMemoryReposit
           WHERE user_id=$1 AND source_message_id=$2 AND scope=$3 AND memory_key=$4 AND memory_value=$5`,
           [user.rows[0].user_id, sourceMessageId, candidate.scope, candidate.key, candidate.value, normalize(userId)]);
         if (existing.rows[0]) { saved.push(mapRow(existing.rows[0])); continue; }
-        if (!candidate.requiresConfirmation) await client.query(`UPDATE traveller_memories SET status='superseded', updated_at=NOW()
-          WHERE user_id=$1 AND scope=$2 AND context_id IS NOT DISTINCT FROM $3 AND memory_key=$4 AND status='confirmed'`,
-          [user.rows[0].user_id, candidate.scope, scopedId, candidate.key]);
         const inserted = await client.query<MemoryRow>(`INSERT INTO traveller_memories
           (user_id, scope, context_id, memory_key, memory_value, status, sensitive, confidence, explicit, source_message_id, expires_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (user_id, source_message_id, scope, memory_key, memory_value) DO UPDATE SET updated_at=traveller_memories.updated_at
           RETURNING *, $12::text AS phone_number`, [user.rows[0].user_id, candidate.scope, scopedId, candidate.key, candidate.value,
-            candidate.requiresConfirmation ? 'proposed' : 'confirmed', isSensitiveMemory(candidate.key), candidate.confidence, candidate.explicit, sourceMessageId,
+            'proposed', isSensitiveMemory(candidate.key), candidate.confidence, candidate.explicit, sourceMessageId,
             memoryExpiry(candidate.key), normalize(userId)]);
         saved.push(mapRow(inserted.rows[0]));
       }
       await client.query('COMMIT'); return saved;
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
-  async confirmPending(userId: string): Promise<number> {
-    const result = await pool.query(`UPDATE traveller_memories tm SET status='confirmed', updated_at=NOW() FROM users u
-      WHERE tm.user_id=u.user_id AND u.phone_number=$1 AND tm.status='proposed'`, [normalize(userId)]);
-    return result.rowCount ?? 0;
+  async confirmPending(userId: string, key?: MemoryCandidate['key'], value?: string): Promise<number> {
+    if (!key || !value) return 0;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const user = await client.query<{ user_id: string }>('SELECT user_id FROM users WHERE phone_number=$1 FOR UPDATE', [normalize(userId)]);
+      if (!user.rows[0]) { await client.query('ROLLBACK'); return 0; }
+      const pending = await client.query<{ memory_id: string; scope: string; context_id: string | null }>(
+        `SELECT memory_id,scope,context_id FROM traveller_memories WHERE user_id=$1 AND memory_key=$2
+         AND memory_value=$3 AND status='proposed' ORDER BY updated_at DESC LIMIT 1`,
+        [user.rows[0].user_id, key, value]);
+      const chosen = pending.rows[0];
+      if (!chosen) { await client.query('ROLLBACK'); return 0; }
+      await client.query(`UPDATE traveller_memories SET status='superseded',updated_at=NOW()
+        WHERE user_id=$1 AND scope=$2 AND context_id IS NOT DISTINCT FROM $3 AND memory_key=$4 AND status='confirmed'`,
+        [user.rows[0].user_id, chosen.scope, chosen.context_id, key]);
+      const result = await client.query(`UPDATE traveller_memories SET status='confirmed',updated_at=NOW()
+        WHERE memory_id=$1 AND status='proposed'`, [chosen.memory_id]);
+      await client.query('COMMIT');
+      return result.rowCount ?? 0;
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
   async rejectPending(userId: string): Promise<number> {
     const result = await pool.query(`UPDATE traveller_memories tm SET status='rejected', updated_at=NOW() FROM users u
       WHERE tm.user_id=u.user_id AND u.phone_number=$1 AND tm.status='proposed'`, [normalize(userId)]);
     return result.rowCount ?? 0;
   }
-  async forget(userId: string, key?: string): Promise<number> {
+  async forget(userId: string, key?: string, value?: string): Promise<number> {
     const result = await pool.query(`UPDATE traveller_memories tm SET status='rejected', updated_at=NOW() FROM users u
-      WHERE tm.user_id=u.user_id AND u.phone_number=$1 AND tm.status IN ('confirmed','proposed') AND ($2::text IS NULL OR tm.memory_key=$2)`, [normalize(userId), key ?? null]);
+      WHERE tm.user_id=u.user_id AND u.phone_number=$1 AND tm.status IN ('confirmed','proposed')
+        AND ($2::text IS NULL OR tm.memory_key=$2) AND ($3::text IS NULL OR tm.memory_value=$3)`,
+    [normalize(userId), key ?? null, value ?? null]);
     return result.rowCount ?? 0;
   }
 }

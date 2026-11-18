@@ -25,6 +25,8 @@ Migrations are numbered sequentially and should be applied in order:
 27. **027_journey_event_checkpoints.sql** - Durable channel-neutral accepted-event references for journey recovery
 28. **028_journey_inbound_event_audit.sql** - Ordered, duplicate-safe audit of normalized inbound interactions
 29. **029_journey_workflow_transitions.sql** - Atomic, revisioned summaries of durable workflow transitions
+30. **030_journey_conversation_continuation.sql** - Structured conversational topic and pending question on the durable journey checkpoint
+31. **031_journey_outbound_question.sql** - Staged outbound questions and delivery status on the durable journey checkpoint
 
 ## Key Indexes
 

@@ -1,4 +1,6 @@
 import { workflow, missingFields as canonicalMissingFields, validateCriteria } from '../orchestration/WorkflowDefinitions.js';
+import { isInformationalRequest, supportedWorkflowFields } from '../orchestration/MutationAuthority.js';
+import { fieldQuestionPurpose, isExplicitServiceRequest } from '../orchestration/ConversationAnalyzer.js';
 import { PromptService } from '../orchestration/PromptService.js';
 import { handleMetaRestaurantFlowSubmission } from '../services/MetaRestaurantFlowSubmissionService.js';
 const searchSnapshots = new WeakMap<object, { id: string; revision: number }>();
@@ -152,13 +154,12 @@ const VOICE_TRANSCRIPTION_ERROR_MESSAGE =
   "Sorry, I couldn't clearly read that voice note. Could you send it again or type your request?";
 
 export function buildMemoryConfirmationPrompt(candidates: MemoryCandidate[]): string {
-  const sensitive = candidates.filter((candidate) => candidate.requiresConfirmation);
-  if (!sensitive.length) return '';
-  const descriptions = sensitive.map((candidate) => {
-    const label = candidate.key === 'allergy' ? 'allergy' : 'accessibility need';
-    return `${label}: ${candidate.value}`;
-  });
-  return `Before I use this personal information in future suggestions, may I remember ${descriptions.join(' and ')} for this trip? Reply “remember it” or “not now”.`;
+  if (!candidates.length) return '';
+  const descriptions = candidates.map((candidate) => `${candidate.key.replaceAll('_', ' ')}: ${candidate.value}`);
+  const scope = candidates.every((candidate) => candidate.scope === 'profile') ? 'future conversations' : 'this trip';
+  const choice = candidates.length === 1 ? 'Reply “remember it” or “not now”.'
+    : 'To save just one, reply “remember key: value” using one item above; otherwise reply “not now”.';
+  return `Would you like me to remember ${descriptions.join('; ')} for ${scope}? ${choice}`;
 }
 
 export function withConversationalLead(reply: string, plan: OrchestrationResult): string {
@@ -174,16 +175,25 @@ export async function handleTravellerMemoryConsent(
   repository = new PostgresTravellerMemoryRepository()
 ): Promise<string | null> {
   const normalized = text.trim().toLocaleLowerCase().replace(/[.!?]+$/g, '');
-  if (!['remember it', 'yes remember it', 'yes, remember it', 'not now', "don't remember it", 'do not remember it'].includes(normalized)) return null;
+  const remember = /^(?:yes,?\s+)?remember\s+(.+)$/.exec(normalized);
+  const decline = ['not now', "don't remember it", 'do not remember it'].includes(normalized);
+  if (!remember && !decline) return null;
   try {
     const pending = (await repository.findForContext(userId, ['trip:current'])).filter((fact) => fact.status === 'proposed');
     if (!pending.length) return null;
-    if (normalized === 'not now' || normalized.includes("don't") || normalized.includes('do not')) {
+    if (decline) {
       await repository.rejectPending(userId);
       return 'Of course — I won’t retain that personal information. We can continue with your current travel request.';
     }
-    await repository.confirmPending(userId);
-    return 'Thank you for confirming. I’ll keep that in mind for this trip and use it only when it is relevant.';
+    const selection = remember![1].trim();
+    const selected = selection === 'it' && pending.length === 1 ? pending[0]
+      : pending.find((fact) => `${fact.key.replaceAll('_', ' ')}: ${fact.value}`.toLocaleLowerCase() === selection);
+    if (!selected) return pending.length === 1
+      ? `Please reply “remember it” to save ${pending[0].key.replaceAll('_', ' ')}: ${pending[0].value}, or “not now”.`
+      : `Please choose one exact item to save: ${pending.map((fact) => `${fact.key.replaceAll('_', ' ')}: ${fact.value}`).join('; ')}.`;
+    const confirmed = await repository.confirmPending(userId, selected.key, selected.value);
+    return confirmed ? `I’ll remember ${selected.key.replaceAll('_', ' ')}: ${selected.value} ${selected.scope === 'profile' ? 'for future conversations' : 'for this trip'}.`
+      : 'I could not confirm that memory. Your travel request is still available.';
   } catch {
     return 'I couldn’t safely update that preference just now, so I have not treated it as confirmed. We can continue without it.';
   }
@@ -202,6 +212,29 @@ const UNSUPPORTED_MEDIA_MESSAGE =
 interface ConversationDeliveryOptions {
   voicePreferred?: boolean;
   event?: CanonicalConversationEvent;
+  continuationCapture?: { plan?: OrchestrationResult; modelFailure?: boolean };
+}
+
+/** Legacy handlers may use pending-answer authority only when the structured,
+ * delivered question and the accepted conversation both own that field. */
+function verifiedPendingPreference(plan: OrchestrationResult | undefined,
+  flow: 'hotel' | 'itinerary' | 'excursion' | 'logistics'): 'additionalPreferences' | undefined {
+  const question = plan?.context.pendingQuestion;
+  if (!question || question.expectedAnswerType !== 'preference' ||
+      plan?.decision.targetFlow !== flow ||
+      (plan.context.activeSession?.flow !== flow && plan.context.conversationTopic !== flow)) return undefined;
+  const purpose = fieldQuestionPurpose(question.text);
+  return purpose?.expectedAnswerType === 'preference' &&
+    !purpose.ambiguous && (purpose.flow === flow || purpose.flow === 'none')
+    ? 'additionalPreferences' : undefined;
+}
+
+function isUnrelatedServiceTurn(plan: OrchestrationResult | undefined,
+  flow: 'hotel' | 'itinerary' | 'excursion' | 'logistics'): boolean {
+  return plan?.analysis.role === 'new_intent' &&
+    plan.analysis.targetFlow !== 'none' && plan.analysis.targetFlow !== flow &&
+    isExplicitServiceRequest(plan.context.message.text.toLocaleLowerCase(),
+      plan.analysis.targetFlow, flow);
 }
 
 function shouldUseAsyncWhatsAppDelivery(options: ConversationDeliveryOptions): boolean {
@@ -236,23 +269,32 @@ export async function processWebhookPayload(
 
 export async function processNormalizedInboundMessage(
   inboundMessage: InboundMessage,
-  correlationId: string
-): Promise<{ inboundMessage: InboundMessage; reply: string }> {
+  correlationId: string,
+  outboundDeliveryManaged = false
+): Promise<{ inboundMessage: InboundMessage; reply: string; canonicalEvent?: CanonicalConversationEvent }> {
+  const event = createInboundConversationEvent(inboundMessage, correlationId);
   return processCanonicalInboundMessage(
     inboundMessage,
-    createInboundConversationEvent(inboundMessage, correlationId)
+    { ...event, metadata: { ...event.metadata, outboundDeliveryManaged } }
   );
 }
 
 export async function processCanonicalInboundMessage(
   inboundMessage: InboundMessage,
   input: CanonicalConversationEvent
-): Promise<{ inboundMessage: InboundMessage; reply: string }> {
+): Promise<{ inboundMessage: InboundMessage; reply: string; canonicalEvent?: CanonicalConversationEvent }> {
   try {
     return await getCanonicalMessageProcessor().process(input, async (event) => {
     const correlationId = event.correlationId;
     await getUnfinishedWorkflowReminderService().onInbound(inboundMessage.from).catch(() => undefined);
-    const result = await processNormalizedInboundMessageCore(inboundMessage, correlationId, event);
+    const continuationCapture: { plan?: OrchestrationResult; modelFailure?: boolean } = {};
+    const result = await processNormalizedInboundMessageCore(inboundMessage, correlationId, event, continuationCapture);
+    if (isResetCue(extractMessageText(result.inboundMessage) ?? '')) {
+      await getConversationControlPlane().resetContinuation(event);
+    } else {
+      await getConversationControlPlane().recordContinuation(event, continuationCapture.plan, result.reply,
+        continuationCapture.modelFailure);
+    }
     const messages = new MessageRepository();
     const historyText = event.metadata.interactionType === 'flow_reply'
       ? 'Submitted restaurant preferences form'
@@ -264,6 +306,9 @@ export async function processCanonicalInboundMessage(
            ...(isResetCue(historyText) ? { conversationBoundary: 'reset' as const } : {}) });
         await messages.appendConversationTurn({ traveller: inboundMessage.from, peer: inboundMessage.to,
           requestId: inboundMessage.messageId || correlationId, role: 'assistant', text: result.reply.replaceAll(CONCIERGE_BUBBLE_SEPARATOR, '\n\n') });
+        if (event.metadata.outboundDeliveryManaged !== true)
+          await messages.markAssistantDelivery(inboundMessage.from,
+            inboundMessage.messageId || correlationId, 'provider_accepted');
          if (savedUser === 'absent') throw new Error('Conversation history has no durable traveller');
       }
     } catch {
@@ -272,7 +317,7 @@ export async function processCanonicalInboundMessage(
     await getUnfinishedWorkflowReminderService().scheduleFromReply(
       inboundMessage.from, result.reply, historyText ?? ''
     ).catch(() => undefined);
-    return result;
+    return { ...result, canonicalEvent: event };
     });
   } catch (error) {
     if (error instanceof PersistenceError) return { inboundMessage, reply: error.message };
@@ -283,7 +328,8 @@ export async function processCanonicalInboundMessage(
 async function processNormalizedInboundMessageCore(
   inboundMessage: InboundMessage,
   correlationId: string,
-  event: CanonicalConversationEvent
+  event: CanonicalConversationEvent,
+  continuationCapture: { plan?: OrchestrationResult; modelFailure?: boolean }
 ): Promise<{ inboundMessage: InboundMessage; reply: string }> {
   if (event.channel === 'whatsapp_meta' && inboundMessage.content.type === 'interactive' &&
       inboundMessage.content.interactionType === 'flow_reply') {
@@ -327,6 +373,7 @@ async function processNormalizedInboundMessageCore(
   let reply = await processInboundMessage(effectiveMessage, correlationId, {
     voicePreferred: Boolean(voiceInput.transcript),
     event,
+    continuationCapture,
   });
   if (env.features.weatherContextEnabled && /\b(outdoor|hike|hiking|safari|beach|surf|surfing|walking tour|boat|kayak|cycling)\b/i.test(userText)) {
     const location = /\b(here|near me|nearby)\b/i.test(userText)
@@ -472,6 +519,7 @@ export async function processInboundMessage(
     profile: await getProfileService().getProfile(inboundMessage.from),
   };
   let orchestrationPlan = await getConversationControlPlane().plan(conversationControlInput);
+  if (options.continuationCapture) options.continuationCapture.plan = orchestrationPlan;
   // Acceptance of the saved restaurant draft is an unambiguous action against
   // the authoritative workflow. It does not need another model decision.
   if (orchestrationPlan.context.activeSession?.flow === 'restaurant' &&
@@ -489,8 +537,10 @@ export async function processInboundMessage(
   if (orchestrationPlan.analysis.shouldUseLLM) {
     try {
       orchestrationPlan = await getConversationControlPlane().interpret(conversationControlInput);
+      if (options.continuationCapture) options.continuationCapture.plan = orchestrationPlan;
     } catch (error) {
       logConversationInterpretationFailure('conversation_control_interpretation_failed', correlationId, error);
+      if (options.continuationCapture) options.continuationCapture.modelFailure = true;
       if (isOpeningGreeting(inboundText, orchestrationPlan.context)) return buildWelcomeMessage(userContext);
       return buildModelFailureReply(orchestrationPlan.context.activeSession?.flow);
     }
@@ -509,6 +559,13 @@ export async function processInboundMessage(
     redacted: true,
   });
 
+  if (orchestrationPlan.decision.action === 'ask_clarifying_question' &&
+      orchestrationPlan.decision.reason === 'The reply does not match the pending answer type.') {
+    const question = orchestrationPlan.context.pendingQuestion?.text;
+    return question ? `I may have misunderstood. ${question.replace(/\?*$/, '?')}` :
+      'I may have misunderstood that detail. Could you clarify it for me?';
+  }
+
   // A short acceptance of the active hotel's options question is a bounded
   // UI-like action. Resolve the authoritative active flow first; dates and
   // guest counts are not required for the discovery search.
@@ -520,28 +577,39 @@ export async function processInboundMessage(
     if (hotel?.lifecycleStatus !== 'paused' && hotel?.stage === 'awaiting_preferences' &&
         hotel.state === 'awaiting_extra_preferences' && hotel.criteria.location?.trim()) {
       const hotelReply = await handleActiveHotelSearchSession(
-        inboundMessage.from, inboundMessage.to, inboundText, correlationId, hotel, options);
+        inboundMessage.from, inboundMessage.to, inboundText, correlationId, hotel, options, orchestrationPlan);
       if (hotelReply) return hotelReply;
     }
   }
 
-  const hotelDraftEligible = (env.nodeEnv === 'test' && !orchestrationPlan.interpretation) ||
+  const hotelDraftEligible = orchestrationPlan.analysis.role !== 'answer_to_current_question' &&
+    ((env.nodeEnv === 'test' && !orchestrationPlan.interpretation) ||
     (orchestrationPlan.interpretation?.intent === 'hotel_search' &&
       orchestrationPlan.interpretation.role !== 'question_or_faq' &&
       orchestrationPlan.interpretation.role !== 'change_existing_criteria' &&
-      ['answer_general_question', 'continue_flow'].includes(orchestrationPlan.decision.action));
-  const hotelDraft = hotelDraftEligible && !isBookingIntentCue(userMessage) &&
+      ['answer_general_question', 'continue_flow'].includes(orchestrationPlan.decision.action)));
+  const hotelDraft = hotelDraftEligible && !isUnrelatedServiceTurn(orchestrationPlan, 'hotel') &&
+    !isBookingIntentCue(userMessage) &&
     !/\b(?:restaurants?|dining|dinner|lunch|excursions?|activities?|transport|taxi|itinerary)\b/i.test(userMessage)
     ? await getHotelSearchSessionService().get(inboundMessage.from) : null;
   if (hotelDraft?.lifecycleStatus !== 'paused' && hotelDraft?.stage === 'awaiting_preferences' &&
       hotelDraft.state === 'awaiting_extra_preferences' && !hasCompleteHotelCriteria(hotelDraft.criteria) &&
       !isResumeCue(inboundText)) {
-    const modelFields = validateCriteria('hotel', orchestrationPlan.interpretation?.entities ?? {}, false) as HotelSearchCriteria;
-    const statedArea = getHotelAreaFromText(userMessage, !hotelDraft.criteria.location);
-    const preference = /\b(?:beach|pool|colonial|quiet|luxury|budget|boutique|family|view|garden|spa)\b/i.test(userMessage)
+    const pendingPreference = verifiedPendingPreference(orchestrationPlan, 'hotel');
+    const approvedFields = supportedWorkflowFields('hotel', orchestrationPlan.decision.entities,
+      userMessage, { existingFields: hotelDraft.criteria,
+        pendingField: pendingPreference }) as HotelSearchCriteria;
+    const areaCandidate = getHotelAreaFromText(userMessage, !hotelDraft.criteria.location);
+    const statedArea = areaCandidate && supportedWorkflowFields('hotel',
+      { location: areaCandidate }, userMessage, { existingFields: hotelDraft.criteria }).location as string | undefined;
+    const preferenceCandidate = /\b(?:beach|pool|colonial|quiet|luxury|budget|boutique|family|view|garden|spa)\b/i.test(userMessage)
       ? userMessage.trim().slice(0, 300) : undefined;
+    const preference = preferenceCandidate && supportedWorkflowFields('hotel',
+      { additionalPreferences: preferenceCandidate }, userMessage,
+      { existingFields: hotelDraft.criteria,
+        pendingField: pendingPreference }).additionalPreferences as string | undefined;
     const proposed: HotelSearchCriteria = {
-      ...hotelDraft.criteria, ...modelFields,
+      ...hotelDraft.criteria, ...approvedFields,
       ...(statedArea ? { location: statedArea } : {}),
       ...(preference ? { additionalPreferences: preference } : {}),
     };
@@ -568,7 +636,7 @@ export async function processInboundMessage(
   }
 
   let memoryConfirmationPrompt = '';
-  if (orchestrationPlan.interpretation?.memoryCandidates?.length) {
+  if (orchestrationPlan.memoryUpdate.memoryCandidates?.length) {
     const memoryOutcome = await new MemoryUpdater().persistContextMemories(
       orchestrationPlan.context,
       orchestrationPlan.memoryUpdate
@@ -576,11 +644,11 @@ export async function processInboundMessage(
     console.log('conversation_context_reconciled', {
       correlationId,
       outcome: memoryOutcome.status,
-      candidateCount: orchestrationPlan.interpretation.memoryCandidates.length,
+      candidateCount: orchestrationPlan.memoryUpdate.memoryCandidates.length,
       redacted: true,
     });
     if (memoryOutcome.status === 'durable') {
-      memoryConfirmationPrompt = buildMemoryConfirmationPrompt(orchestrationPlan.interpretation.memoryCandidates);
+      memoryConfirmationPrompt = buildMemoryConfirmationPrompt(orchestrationPlan.memoryUpdate.memoryCandidates);
     }
   }
   const withMemoryConfirmation = (reply: string): string => memoryConfirmationPrompt && !reply.includes(memoryConfirmationPrompt)
@@ -639,6 +707,13 @@ export async function processInboundMessage(
   }
 
   if (orchestrationPlan.decision.reason === 'Persist the grounded answer to the current question.') {
+    if (correctedFieldsSaved && orchestrationPlan.context.activeSession?.pendingDecisions?.locationConfirmation &&
+        orchestrationPlan.decision.targetFlow === 'restaurant') {
+      const confirmedLocationReply = await handlePendingRestaurantLocationConfirmation(
+        inboundMessage.from, inboundMessage.to, inboundText, correlationId, options
+      );
+      if (confirmedLocationReply) return withMemoryConfirmation(confirmedLocationReply);
+    }
     return correctedFieldsSaved
       ? withMemoryConfirmation(orchestrationPlan.interpretation?.responseText || 'I have saved that detail for your request.')
       : 'I could not safely save that detail. Could you send it again?';
@@ -686,8 +761,7 @@ export async function processInboundMessage(
       if (!orchestrationPlan.context.activeSession) {
         await saveAwaitingSearchDetails(inboundMessage.from, userMessage, orchestrationPlan);
       }
-      return withMemoryConfirmation(new PromptService().reconcileDecisionResponse(
-        orchestrationPlan.decision, orchestrationPlan.interpretation) ??
+      return withMemoryConfirmation(orchestrationPlan.interpretation.responseText ??
         'Would you like me to show you a few options?');
     }
     if (orchestrationPlan.decision.missingFields.length > 0 &&
@@ -873,7 +947,8 @@ export async function processInboundMessage(
       inboundMessage.from,
       userMessage,
       inboundText,
-      correlationId
+      correlationId,
+      orchestrationPlan
     );
     if (latestItineraryContinuationReply) return latestItineraryContinuationReply;
   }
@@ -1492,12 +1567,13 @@ async function handleActiveItinerarySession(
   userMessage: string,
   inboundText: string,
   correlationId: string,
-  activeSession?: ItinerarySession | null
+  activeSession?: ItinerarySession | null,
+  plan?: OrchestrationResult
 ): Promise<string | null> {
   const sessionService = getItinerarySessionService();
   const session = activeSession ?? (await sessionService.get(userId));
 
-  if (!session || isGreeting(inboundText)) return null;
+  if (!session || isGreeting(inboundText) || isUnrelatedServiceTurn(plan, 'itinerary')) return null;
 
   if (isResetCue(inboundText)) {
     await sessionService.clear(userId);
@@ -1564,9 +1640,14 @@ async function handleActiveItinerarySession(
     return buildItineraryPreferencePrompt(session.criteria);
   }
 
+  if (isInformationalRequest(userMessage)) return null;
+  const preference = isNoExtraPreferenceCue(inboundText) ? undefined :
+    supportedWorkflowFields('itinerary', { additionalPreferences: userMessage }, userMessage,
+      { existingFields: session.criteria, pendingField: verifiedPendingPreference(plan, 'itinerary') }).additionalPreferences as string | undefined;
+  if (!isNoExtraPreferenceCue(inboundText) && !preference) return null;
   const criteria = {
     ...session.criteria,
-    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
+    additionalPreferences: preference,
   };
   await sessionService.savePlanning(userId, criteria);
 
@@ -1582,8 +1663,10 @@ async function handleLatestItineraryRequestContinuation(
   userId: string,
   userMessage: string,
   inboundText: string,
-  correlationId: string
+  correlationId: string,
+  plan?: OrchestrationResult
 ): Promise<string | null> {
+  if (isUnrelatedServiceTurn(plan, 'itinerary')) return null;
   if (
     !isNoExtraPreferenceCue(inboundText) &&
     !isResumeCue(inboundText) &&
@@ -1611,9 +1694,14 @@ async function handleLatestItineraryRequestContinuation(
     return buildItineraryPreferencePrompt(criteria);
   }
 
+  if (isInformationalRequest(userMessage)) return null;
+  const approvedPreference = isNoExtraPreferenceCue(inboundText) ? undefined :
+    supportedWorkflowFields('itinerary', { additionalPreferences: userMessage }, userMessage,
+      { existingFields: criteria, pendingField: verifiedPendingPreference(plan, 'itinerary') }).additionalPreferences as string | undefined;
+  if (!isNoExtraPreferenceCue(inboundText) && !approvedPreference) return null;
   const criteriaWithPreferences = {
     ...criteria,
-    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
+    additionalPreferences: approvedPreference,
   };
   await getItinerarySessionService().savePlanning(userId, criteriaWithPreferences);
 
@@ -1946,12 +2034,13 @@ async function handleActiveExcursionSearchSession(
   inboundText: string,
   correlationId: string,
   activeSession?: ExcursionSearchSession | null,
-  options: ConversationDeliveryOptions = {}
+  options: ConversationDeliveryOptions = {},
+  plan?: OrchestrationResult
 ): Promise<string | null> {
   const sessionService = getExcursionSearchSessionService();
   const session = activeSession ?? (await sessionService.get(userId));
 
-  if (!session || isGreeting(inboundText)) return null;
+  if (!session || isGreeting(inboundText) || isUnrelatedServiceTurn(plan, 'excursion')) return null;
 
   if (isResetCue(inboundText)) {
     await sessionService.clear(userId);
@@ -2090,10 +2179,12 @@ async function handleActiveExcursionSearchSession(
     return buildExcursionPreferencePrompt(session.criteria);
   }
 
-  const criteria = {
-    ...session.criteria,
-    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
-  };
+  const approvedPreference = isNoExtraPreferenceCue(inboundText) ? undefined :
+    supportedWorkflowFields('excursion', { additionalPreferences: userMessage }, userMessage,
+      { existingFields: session.criteria,
+        pendingField: verifiedPendingPreference(plan, 'excursion') }).additionalPreferences as string | undefined;
+  if (!isNoExtraPreferenceCue(inboundText) && !approvedPreference) return null;
+  const criteria = { ...session.criteria, additionalPreferences: approvedPreference };
   await sessionService.saveSearching(userId, criteria);
 
   const acknowledgement =
@@ -2118,12 +2209,13 @@ async function handleActiveHotelSearchSession(
   inboundText: string,
   correlationId: string,
   activeSession?: HotelSearchSession | null,
-  options: ConversationDeliveryOptions = {}
+  options: ConversationDeliveryOptions = {},
+  plan?: OrchestrationResult
 ): Promise<string | null> {
   const sessionService = getHotelSearchSessionService();
   const session = activeSession ?? (await sessionService.get(userId));
 
-  if (!session || session.lifecycleStatus === 'paused') {
+  if (!session || session.lifecycleStatus === 'paused' || isUnrelatedServiceTurn(plan, 'hotel')) {
     return null;
   }
 
@@ -2223,7 +2315,7 @@ async function handleActiveHotelSearchSession(
     if (session.sourcingRequestId) {
       if (isNextCue(inboundText) || parseNumberedCue(inboundText, 'book')) {
         await sessionService.saveResults(userId, session.criteria, session.results, session.nextOffset);
-        return handleActiveHotelSearchSession(userId, outboundFrom, inboundText, correlationId, await sessionService.get(userId), options);
+        return handleActiveHotelSearchSession(userId, outboundFrom, inboundText, correlationId, await sessionService.get(userId), options, plan);
       }
       return /\b(?:hotel|stay|request|status|booking)\b/i.test(inboundText)
         ? `Your request for ${session.selectedHotel?.selectedHotelSnapshot.name ?? 'this stay'} is saved with YANA. A price and reservation are still unconfirmed. Reply "next" to see more YANA options.`
@@ -2359,6 +2451,7 @@ async function handleActiveHotelSearchSession(
     return buildHotelPreferencePrompt(session.criteria);
   }
 
+  if (isInformationalRequest(inboundText)) return null;
   const wantsOptions = hasCompleteHotelCriteria(session.criteria) || isNoExtraPreferenceCue(inboundText) ||
     /^(?:yes|yes please|sure|show(?: me)?(?: the| some)? options|show(?: me)? hotels|find(?: me)? hotels)$/i.test(inboundText.trim());
   if (!wantsOptions) {
@@ -2366,8 +2459,11 @@ async function handleActiveHotelSearchSession(
     if (/\b(?:weekend|today|tomorrow|tonight|january|february|march|april|may|june|july|august|september|october|november|december)\b|\b\d{1,2}(?:st|nd|rd|th)?\b/i.test(inboundText)) {
       return `I can show you stays around ${session.criteria.location} now. We can use those dates when you decide to book.`;
     }
+    const approved = supportedWorkflowFields('hotel', { additionalPreferences: inboundText }, inboundText,
+      { existingFields: session.criteria, pendingField: verifiedPendingPreference(plan, 'hotel') }).additionalPreferences as string | undefined;
+    if (!approved) return null;
     await sessionService.saveAwaitingPreferences(userId, {
-      ...session.criteria, additionalPreferences: [session.criteria.additionalPreferences, inboundText]
+      ...session.criteria, additionalPreferences: [session.criteria.additionalPreferences, approved]
         .filter(Boolean).join('; ').slice(0, 500),
     }, { originalMessage: session.originalMessage });
     return 'I have that preference. Shall I show you a few options in the area?';
@@ -2377,7 +2473,9 @@ async function handleActiveHotelSearchSession(
     ...session.criteria,
     additionalPreferences: /^(?:yes|yes please|sure|show(?: me)?(?: the| some)? options|show(?: me)? hotels|find(?: me)? hotels)$/i.test(inboundText.trim()) ||
       isNoExtraPreferenceCue(inboundText)
-      ? session.criteria.additionalPreferences : inboundText,
+      ? session.criteria.additionalPreferences :
+        supportedWorkflowFields('hotel', { additionalPreferences: inboundText }, inboundText,
+          { existingFields: session.criteria, pendingField: verifiedPendingPreference(plan, 'hotel') }).additionalPreferences as string | undefined ?? session.criteria.additionalPreferences,
   };
   await sessionService.saveSearching(userId, criteria);
 
@@ -2473,12 +2571,13 @@ async function handleActiveLogisticsSearchSession(
   inboundText: string,
   correlationId: string,
   activeSession?: LogisticsSearchSession | null,
-  options: ConversationDeliveryOptions = {}
+  options: ConversationDeliveryOptions = {},
+  plan?: OrchestrationResult
 ): Promise<string | null> {
   const sessionService = getLogisticsSearchSessionService();
   const session = activeSession ?? (await sessionService.get(userId));
 
-  if (!session || isGreeting(inboundText)) return null;
+  if (!session || isGreeting(inboundText) || isUnrelatedServiceTurn(plan, 'logistics')) return null;
 
   if (isResetCue(inboundText)) {
     await sessionService.clear(userId);
@@ -2565,10 +2664,12 @@ async function handleActiveLogisticsSearchSession(
     return buildLogisticsPreferencePrompt(session.criteria);
   }
 
-  const criteria = {
-    ...session.criteria,
-    additionalPreferences: isNoExtraPreferenceCue(inboundText) ? undefined : userMessage,
-  };
+  const approvedPreference = isNoExtraPreferenceCue(inboundText) ? undefined :
+    supportedWorkflowFields('logistics', { additionalPreferences: userMessage }, userMessage,
+      { existingFields: session.criteria,
+        pendingField: verifiedPendingPreference(plan, 'logistics') }).additionalPreferences as string | undefined;
+  if (!isNoExtraPreferenceCue(inboundText) && !approvedPreference) return null;
+  const criteria = { ...session.criteria, additionalPreferences: approvedPreference };
   await sessionService.saveSearching(userId, criteria);
 
   const acknowledgement =
@@ -3778,7 +3879,7 @@ function isBookingIntentCue(message: string): boolean {
 }
 
 function isNoExtraPreferenceCue(message: string): boolean {
-  return /^(no|no thanks|none|nothing|nope|no extra|no preferences|nothing else|search|start search|start planning|plan it|go ahead|go ahead and plan)$/i.test(
+  return /^(no|no thanks|none|nothing|nope|no extra|no preferences|nothing else|done|search|start search|start planning|plan it|go ahead|go ahead and plan)$/i.test(
     message.trim()
   );
 }
@@ -3917,7 +4018,8 @@ async function executeActiveExcursionWorkflow(
     context.inboundText,
     context.correlationId,
     session,
-    context.options
+    context.options,
+    plan
   );
   return reply ? { handled: true, reply } : { handled: false };
 }
@@ -3948,7 +4050,8 @@ async function executeActiveLogisticsWorkflow(
     context.inboundText,
     context.correlationId,
     session,
-    context.options
+    context.options,
+    plan
   );
   return reply ? { handled: true, reply } : { handled: false };
 }
@@ -3978,7 +4081,8 @@ async function executeActiveHotelWorkflow(
     context.inboundText,
     context.correlationId,
     stored,
-    context.options
+    context.options,
+    plan
   );
   return reply ? { handled: true, reply } : { handled: false };
 }
@@ -3998,7 +4102,8 @@ async function executeActiveItineraryWorkflow(
     context.userMessage,
     context.inboundText,
     context.correlationId,
-    session
+    session,
+    plan
   );
   return reply ? { handled: true, reply } : { handled: false };
 }
@@ -4037,7 +4142,7 @@ function mapOrchestrationPlanToLegacyDecision(
     clarificationRequired: plan.interpretation?.clarificationRequired,
     clarificationQuestion: plan.interpretation?.question,
     parameters: { ...plan.decision.entities },
-    fieldUpdates: plan.interpretation ? { ...plan.interpretation.entities } : undefined,
+    fieldUpdates: plan.interpretation ? { ...plan.decision.entities } : undefined,
     missingFields: [...plan.decision.missingFields],
     taskTransition: plan.interpretation?.taskTransition,
     recommendedSchema: plan.interpretation?.recommendedSchema,
@@ -5276,6 +5381,8 @@ function getDiscoveryLocation(parameters: Record<string, unknown>, message: stri
 }
 
 function getHotelAreaFromText(message: string, awaitingArea: boolean): string | null {
+  const explicitArea = message.match(/\b(?:change|update|set|move)\s+(?:(?:my|our|the)\s+)?(?:(?:hotel|stay)\s+)?(?:area|location)\s+to\s+([\p{L}\p{M}' -]{2,40})(?=[,.!?]|$)/iu)?.[1]?.trim();
+  if (explicitArea) return getPendingDiscoveryLocation(explicitArea);
   const directed = getDiscoveryLocation({}, message);
   if (directed) return directed;
   const beforePreference = message.match(/^\s*([\p{L}\p{M}' -]{2,40}?)\s*,\s*(?:close|near|by|on)\b/iu)?.[1]?.trim();

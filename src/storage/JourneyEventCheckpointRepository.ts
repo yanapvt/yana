@@ -13,6 +13,124 @@ export interface JourneyEventCheckpointRepository {
   findByUserId(userId: string): Promise<JourneyEventCheckpoint | null>;
 }
 
+export interface ConversationContinuation {
+  topic: string | null;
+  pendingQuestion: { text: string; expectedAnswerType?: string; workflowId?: string;
+    remaining?: Array<{ text: string; expectedAnswerType?: string }> } | null;
+  outboundQuestion?: { eventId: string; question: NonNullable<ConversationContinuation['pendingQuestion']>;
+    status: 'attempted' | 'provider_accepted' | 'sent' | 'delivered' | 'failed';
+    providerMessageId?: string; priorQuestion?: ConversationContinuation['pendingQuestion'] } | null;
+  revision: number;
+  generation: number;
+  eventId: string | null;
+}
+
+export interface ConversationContinuationRepository {
+  find(userId: string, conversationId: string): Promise<ConversationContinuation | null>;
+  save(userId: string, conversationId: string, acceptedEventId: string,
+    state: Pick<ConversationContinuation, 'topic' | 'pendingQuestion' | 'outboundQuestion'>,
+    advanceGeneration: boolean): Promise<ConversationContinuation | null>;
+  updateOutbound(userId: string, conversationId: string, eventId: string,
+    status: NonNullable<ConversationContinuation['outboundQuestion']>['status'],
+    providerMessageId?: string): Promise<ConversationContinuation | null>;
+  updateOutboundByProviderId(providerMessageId: string,
+    status: 'sent' | 'delivered' | 'failed'): Promise<{ userId: string; state: ConversationContinuation } | null>;
+}
+
+/** Extends the existing accepted-event checkpoint; no second session store. */
+export class PostgresConversationContinuationRepository implements ConversationContinuationRepository {
+  async find(userId: string, conversationId: string): Promise<ConversationContinuation | null> {
+    const result = await pool.query<{
+      conversation_topic: string | null; pending_question: ConversationContinuation['pendingQuestion'];
+      outbound_question: ConversationContinuation['outboundQuestion'];
+      conversation_revision: number; conversation_generation: number;
+      conversation_state_event_id: string | null;
+    }>(`SELECT conversation_topic,pending_question,outbound_question,conversation_revision,
+        conversation_generation,conversation_state_event_id
+        FROM journey_event_checkpoints WHERE user_key=$1 AND conversation_id=$2`,
+    [userId, conversationId]);
+    return result.rows[0] ? continuationFromRow(result.rows[0]) : null;
+  }
+
+  async save(userId: string, conversationId: string, acceptedEventId: string,
+    state: Pick<ConversationContinuation, 'topic' | 'pendingQuestion' | 'outboundQuestion'>,
+    advanceGeneration: boolean): Promise<ConversationContinuation | null> {
+    const result = await pool.query<{
+      conversation_topic: string | null; pending_question: ConversationContinuation['pendingQuestion'];
+      outbound_question: ConversationContinuation['outboundQuestion'];
+      conversation_revision: number; conversation_generation: number;
+      conversation_state_event_id: string | null;
+    }>(`UPDATE journey_event_checkpoints SET conversation_topic=$4,pending_question=$5::jsonb,
+        outbound_question=$7::jsonb,
+        conversation_revision=conversation_revision+1,
+        conversation_generation=conversation_generation+CASE WHEN $6 THEN 1 ELSE 0 END,
+        conversation_state_event_id=$3
+        WHERE user_key=$1 AND conversation_id=$2 AND event_id=$3
+         RETURNING conversation_topic,pending_question,outbound_question,conversation_revision,
+          conversation_generation,conversation_state_event_id`,
+    [userId, conversationId, acceptedEventId, state.topic,
+      state.pendingQuestion ? JSON.stringify(state.pendingQuestion) : null, advanceGeneration,
+      state.outboundQuestion ? JSON.stringify(state.outboundQuestion) : null]);
+    return result.rows[0] ? continuationFromRow(result.rows[0]) : null;
+  }
+  async updateOutbound(userId: string, conversationId: string, eventId: string,
+    status: NonNullable<ConversationContinuation['outboundQuestion']>['status'],
+    providerMessageId?: string): Promise<ConversationContinuation | null> {
+    const result = await pool.query<{
+      conversation_topic: string | null; pending_question: ConversationContinuation['pendingQuestion'];
+      outbound_question: ConversationContinuation['outboundQuestion']; conversation_revision: number;
+      conversation_generation: number; conversation_state_event_id: string | null;
+    }>(`UPDATE journey_event_checkpoints SET
+      pending_question=CASE WHEN $4='failed' AND pending_question=outbound_question->'question'
+        THEN outbound_question->'priorQuestion'
+        WHEN event_id=$3::uuid AND $4 IN ('provider_accepted','sent','delivered')
+        THEN outbound_question->'question' ELSE pending_question END,
+      outbound_question=jsonb_set(jsonb_set(outbound_question,'{status}',to_jsonb($4::text)),
+        '{providerMessageId}',to_jsonb(COALESCE($5::text,outbound_question->>'providerMessageId'))),
+      conversation_revision=conversation_revision+1
+      WHERE user_key=$1 AND conversation_id=$2 AND outbound_question->>'eventId'=$3
+        AND (outbound_question->>'status'='attempted'
+          OR outbound_question->>'status'='provider_accepted' AND $4 IN ('sent','delivered','failed')
+          OR outbound_question->>'status'='sent' AND $4 IN ('delivered','failed'))
+      RETURNING conversation_topic,pending_question,outbound_question,conversation_revision,
+        conversation_generation,conversation_state_event_id`,
+    [userId, conversationId, eventId, status, providerMessageId ?? null]);
+    return result.rows[0] ? continuationFromRow(result.rows[0]) : null;
+  }
+  async updateOutboundByProviderId(providerMessageId: string,
+    status: 'sent' | 'delivered' | 'failed'): Promise<{ userId: string; state: ConversationContinuation } | null> {
+    const result = await pool.query<{
+      user_key: string; conversation_topic: string | null;
+      pending_question: ConversationContinuation['pendingQuestion'];
+      outbound_question: ConversationContinuation['outboundQuestion']; conversation_revision: number;
+      conversation_generation: number; conversation_state_event_id: string | null;
+    }>(`UPDATE journey_event_checkpoints SET
+      pending_question=CASE WHEN $2='failed' AND pending_question=outbound_question->'question'
+        THEN outbound_question->'priorQuestion' ELSE pending_question END,
+      outbound_question=jsonb_set(outbound_question,'{status}',to_jsonb($2::text)),
+      conversation_revision=conversation_revision+1
+      WHERE outbound_question->>'providerMessageId'=$1
+        AND (outbound_question->>'status'='provider_accepted' AND $2 IN ('sent','delivered','failed')
+          OR outbound_question->>'status'='sent' AND $2 IN ('delivered','failed'))
+      RETURNING user_key,conversation_topic,pending_question,outbound_question,conversation_revision,
+        conversation_generation,conversation_state_event_id`, [providerMessageId, status]);
+    return result.rows[0] ? { userId: result.rows[0].user_key,
+      state: continuationFromRow(result.rows[0]) } : null;
+  }
+}
+
+function continuationFromRow(row: {
+  conversation_topic: string | null; pending_question: ConversationContinuation['pendingQuestion'];
+  outbound_question?: ConversationContinuation['outboundQuestion'];
+  conversation_revision: number; conversation_generation: number;
+  conversation_state_event_id: string | null;
+}): ConversationContinuation {
+  return { topic: row.conversation_topic, pendingQuestion: row.pending_question,
+    outboundQuestion: row.outbound_question ?? null,
+    revision: row.conversation_revision, generation: row.conversation_generation,
+    eventId: row.conversation_state_event_id };
+}
+
 export class PostgresJourneyEventCheckpointRepository implements JourneyEventCheckpointRepository {
   async saveAccepted(event: JourneyEventCheckpoint, payload: Record<string, unknown> = {},
     metadata: CanonicalConversationEvent['metadata'] = {}): Promise<boolean> {

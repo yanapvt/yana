@@ -6,6 +6,7 @@ interface SendMetaOptions {
   voice?: boolean;
   from?: string;
   shouldContinue?: () => boolean | Promise<boolean>;
+  onProviderAccepted?: (messageId?: string) => Promise<void>;
 }
 
 export interface MetaRestaurantFlowInput {
@@ -67,15 +68,18 @@ export class MetaWhatsAppOutboundService {
   }
 
   private async sendGuardedText(
-    to: string, body: string, shouldContinue?: () => boolean | Promise<boolean>
+    to: string, body: string, shouldContinue?: () => boolean | Promise<boolean>,
+    onProviderAccepted?: (messageId?: string) => Promise<void>
   ): Promise<boolean> {
-    let sentAny = false;
-    for (const part of splitWhatsAppText(body, META_TEXT_LIMIT)) {
-      if (shouldContinue && !(await shouldContinue())) break;
-      const sent = await this.sendTextMessage(to, part);
-      sentAny = sentAny || sent;
+    const parts = splitWhatsAppText(body, META_TEXT_LIMIT);
+    if (!parts.length) return false;
+    for (const [index, part] of parts.entries()) {
+      if (shouldContinue && !(await shouldContinue())) return false;
+      const sent = await this.sendTextMessage(to, part,
+        index === parts.length - 1 ? onProviderAccepted : undefined);
+      if (!sent) return false;
     }
-    return sentAny;
+    return true;
   }
 
   async sendWhatsAppMessages(
@@ -123,7 +127,7 @@ export class MetaWhatsAppOutboundService {
 
   async sendWhatsAppReply(to: string, body: string, options: SendMetaOptions = {}): Promise<boolean> {
     if (options.shouldContinue && !(await options.shouldContinue())) return false;
-    const textSent = await this.sendGuardedText(to, body, options.shouldContinue);
+    const textSent = await this.sendGuardedText(to, body, options.shouldContinue, options.onProviderAccepted);
 
     if (!options.voice) {
       return textSent;
@@ -137,7 +141,8 @@ export class MetaWhatsAppOutboundService {
     return Boolean(env.meta.accessToken && env.meta.phoneNumberId);
   }
 
-  private async sendTextMessage(to: string, text: string): Promise<boolean> {
+  private async sendTextMessage(to: string, text: string,
+    onProviderAccepted?: (messageId?: string) => Promise<void>): Promise<boolean> {
     return this.sendMessage({
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -147,7 +152,7 @@ export class MetaWhatsAppOutboundService {
         preview_url: true,
         body: text,
       },
-    });
+    }, 'message', onProviderAccepted);
   }
 
   private async sendImageWithTextFallback(
@@ -265,7 +270,8 @@ export class MetaWhatsAppOutboundService {
 
   private async sendMessage(
     payload: Record<string, unknown>,
-    label = 'message'
+    label = 'message',
+    onProviderAccepted?: (messageId?: string) => Promise<void>
   ): Promise<boolean> {
     if (!this.isConfigured()) {
       console.warn('[MetaWhatsAppOutboundService] Meta WhatsApp is not configured; skipping message');
@@ -291,6 +297,10 @@ export class MetaWhatsAppOutboundService {
       return false;
     }
 
+    if (onProviderAccepted) {
+      const receipt = await response.json().catch(() => ({})) as { messages?: Array<{ id?: string }> };
+      await onProviderAccepted(receipt.messages?.[0]?.id);
+    }
     return true;
   }
 

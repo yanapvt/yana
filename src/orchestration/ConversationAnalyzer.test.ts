@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConversationAnalyzer } from './ConversationAnalyzer.js';
+import { ConversationAnalyzer, fieldQuestionPurpose, fieldQuestionPurposes } from './ConversationAnalyzer.js';
 import type { OrchestrationContext } from './Orchestrator.js';
 
 function context(text: string): OrchestrationContext {
@@ -17,6 +17,109 @@ function context(text: string): OrchestrationContext {
 }
 
 describe('ConversationAnalyzer', () => {
+  it('uses the question wording rather than optional model metadata to identify a field request', () => {
+    expect(fieldQuestionPurpose('Would you like more information?', {
+      text: 'Would you like more information?', expectedAnswerType: 'location',
+    })).toBeNull();
+    expect(fieldQuestionPurpose('Which area would you prefer for dining?')).toMatchObject({
+      flow: 'restaurant', expectedAnswerType: 'location',
+    });
+  });
+  it.each([
+    ['Which neighbourhood would you prefer for your stay?', 'hotel', 'location'],
+    ['How many nights would you like for your stay?', 'hotel', 'nights'],
+    ['Which day would you like in your itinerary?', 'itinerary', 'date'],
+    ['Where should your transfer pick you up?', 'logistics', 'location'],
+    ['Which part of town for dining?', 'restaurant', 'location'],
+    ['Which destination for your excursion?', 'excursion', 'location'],
+  ] as const)('recognizes the registered question owner: %s', (question, flow, expectedAnswerType) => {
+    expect(fieldQuestionPurpose(question)).toMatchObject({ flow, expectedAnswerType });
+  });
+  it('uses returned wording when model question metadata conflicts and clarifies multiple owners', () => {
+    expect(fieldQuestionPurpose('Which area for dining?', {
+      text: 'Which area for your hotel?', expectedAnswerType: 'location',
+    })).toMatchObject({ flow: 'restaurant' });
+    expect(fieldQuestionPurpose('Which area for your hotel or restaurant?')).toMatchObject({
+      flow: 'none', ambiguous: true,
+    });
+    expect(fieldQuestionPurpose('Which area for your hotel? Which area for dining?')).toMatchObject({
+      flow: 'none', ambiguous: true,
+    });
+  });
+  it('keeps the first dining-area question separate from the following guest-count question', () => {
+    const question = fieldQuestionPurpose('Which area for dining? How many guests for dining?');
+    expect(question).toMatchObject({ text: 'Which area for dining?',
+      expectedAnswerType: 'location', flow: 'restaurant' });
+    const current = context('2');
+    current.conversationTopic = 'hotel';
+    current.pendingQuestion = { text: 'How many nights for your stay?', expectedAnswerType: 'nights' };
+    const answer = new ConversationAnalyzer().analyze(current);
+    expect(answer).toMatchObject({ role: 'answer_to_current_question',
+      targetFlow: 'hotel', entities: { durationNights: 2 } });
+  });
+  it.each([
+    ['Which dining area and how many guests?', ['location', 'guests']],
+    ['Which hotel area and how many nights?', ['location', 'nights']],
+    ['Which day and what time would you prefer?', ['date', 'time']],
+    ['Could you share your check-in and check-out dates and guest count?',
+      ['checkinDate', 'checkoutDate', 'guests']],
+  ] as const)('retains distinct requirements in one coordinated question: %s', (text, types) => {
+    expect(fieldQuestionPurposes(text).map((question) => question.expectedAnswerType)).toEqual(types);
+    expect(fieldQuestionPurpose(text)?.ambiguous).not.toBe(true);
+  });
+  it('does not split every and and clarifies an unrecognized independent detail', () => {
+    expect(fieldQuestionPurposes('Which area in Brighton and Hove?')).toHaveLength(1);
+    expect(fieldQuestionPurpose('Which hotel area and what else would matter?'))
+      .toMatchObject({ ambiguous: true, ambiguousField: true });
+  });
+  it.each(['transport please', 'airport taxi', 'I need a transfer', 'actually, hotels',
+    'show me accommodation'])('keeps an explicit service request out of a pending airport answer: %s', (text) => {
+    const current = context(text);
+    current.conversationTopic = 'hotel';
+    current.pendingQuestion = { text: 'Which airport do you mean?', expectedAnswerType: 'airport' };
+    const result = new ConversationAnalyzer().analyze(current);
+    expect(result.role).not.toBe('answer_to_current_question');
+    expect(result.entities).not.toHaveProperty('location');
+    expect(result.shouldUseLLM).toBe(true);
+  });
+
+  it.each([
+    ['hotel', 'airport', 'Colombo Airport', 'location'],
+    ['hotel', 'airport', 'Need Colombo Airport', 'location'],
+    ['excursion', 'location', 'Colombo', 'destination'],
+    ['hotel', 'guests', '2', 'guests'],
+    ['logistics', 'passengers', '3', 'passengers'],
+  ])('accepts a grounded short answer for %s %s', (topic, expectedAnswerType, text, field) => {
+    const current = context(text);
+    current.conversationTopic = topic;
+    current.pendingQuestion = { text: 'Please clarify', expectedAnswerType };
+    const result = new ConversationAnalyzer().analyze(current);
+    expect(result.role).toBe('answer_to_current_question');
+    expect(result.entities).toHaveProperty(field);
+    expect(result.shouldUseLLM).toBe(true);
+  });
+
+  it.each([
+    ['restaurant', 'location', '2'],
+    ['restaurant', 'location', '2 guests'],
+    ['restaurant', 'guests', 'Colombo'],
+    ['restaurant', 'guests', 'Colombo Airport'],
+    ['hotel', 'location', '2 nights'],
+  ])('rejects %s %s pending-answer mismatch: %s', (topic, answerType, text) => {
+    const current = context(text);
+    current.conversationTopic = topic;
+    current.pendingQuestion = { text: 'Which detail?', expectedAnswerType: answerType };
+    expect(new ConversationAnalyzer().analyze(current)).toMatchObject({
+      pendingAnswerMismatch: true, entities: {}, shouldUseLLM: true,
+    });
+  });
+
+  it('preserves a bare result selection when there is no pending question', () => {
+    expect(new ConversationAnalyzer().analyze(context('2'))).toMatchObject({
+      role: 'command', command: 'book', entities: { selection: 2 },
+    });
+  });
+
   it('detects deterministic commands with selection entities', () => {
     const result = new ConversationAnalyzer().analyze(context('details 2'));
 

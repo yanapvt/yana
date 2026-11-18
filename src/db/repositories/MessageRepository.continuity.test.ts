@@ -10,6 +10,10 @@ vi.mock('../connection.js', () => {
     if (sql.includes('SELECT message_id FROM messages')) return { rows: fixture.rows.filter((row) => row.correlation === values[1] && row.role === values[2]) };
     if (sql.includes('SELECT session_id FROM sessions')) return { rows: [{ session_id: 'fixture-session' }] };
     if (sql.includes('INSERT INTO messages')) fixture.rows.push({ correlation: values[2], role: values[5], content: JSON.parse(values[6]), metadata: JSON.parse(values[7]) });
+    if (sql.includes('UPDATE messages m SET metadata')) fixture.rows.filter((row) =>
+      row.correlation === values[1] && row.role === 'assistant').forEach((row) => {
+        row.metadata.delivery = values[2]; row.metadata.providerMessageId = values[3];
+      });
     if (sql.includes('SELECT m.role')) return { rows: [...fixture.rows].reverse() };
     return { rows: [] };
   });
@@ -29,9 +33,12 @@ describe('durable conversation repository continuity', () => {
     expect(fixture.statements.some((sql) => sql.includes('FROM users') && sql.includes('FOR UPDATE'))).toBe(true);
     const history = await new ContextBuilder(new MessageRepository()).loadHistory(input.traveller);
     expect(history.historyStatus).toBe('available');
-    expect(history.conversationHistory?.map((entry) => entry.role)).toEqual(['user', 'assistant']);
+    expect(fixture.statements.some((sql) => sql.includes("m.metadata->>'delivery' IN"))).toBe(true);
+    expect(history.conversationHistory?.map((entry) => entry.role)).toEqual(['user']);
     expect(history.conversationHistory?.[0].content).toContain('vegetarian');
-    expect(history.conversationHistory?.[1].content).toContain('delivery not verified');
+    await repository.markAssistantDelivery(input.traveller, input.requestId, 'provider_accepted');
+    expect((await new ContextBuilder(repository).loadHistory(input.traveller)).conversationHistory
+      ?.map((entry) => entry.role)).toEqual(['user', 'assistant']);
   });
   it('rolls back a failed write and exposes a safe failure instead of reporting success', async () => {
     fixture.fail = true;
@@ -47,6 +54,7 @@ describe('durable conversation repository continuity', () => {
     await repository.appendConversationTurn({ ...input, requestId: 'before', role: 'assistant', text: 'Which area?' });
     await repository.appendConversationTurn({ ...input, requestId: 'reset', role: 'user', text: 'reset', conversationBoundary: 'reset' });
     await repository.appendConversationTurn({ ...input, requestId: 'reset', role: 'assistant', text: 'Your saved requests are paused.' });
+    await repository.markAssistantDelivery(input.traveller, 'reset', 'provider_accepted');
     await repository.appendConversationTurn({ ...input, requestId: 'after', role: 'user', text: 'What can I do in Galle?' });
     const history = await new ContextBuilder(repository).loadHistory(input.traveller);
     expect(fixture.rows).toHaveLength(5);
